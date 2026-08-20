@@ -1,0 +1,31 @@
+# dependencies
+node_modules/
+.pnpm-store/
+.yarn/
+
+# build output
+dist/
+build/
+coverage/
+
+# environment / secrets
+.env
+.env.*
+!.env.example
+*.local
+
+# logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# test artifacts
+playwright-report/
+test-results/
