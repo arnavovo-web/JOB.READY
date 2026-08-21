@@ -1119,7 +1119,14 @@ function App() {
 }
 Rules: mini study guide, not an essay. core_knowledge 3-5 points, key_points 3-5, quick_check 2-3 questions with 3-4 options each. "grounded" is true only for points you are confident are accurate and current; mark false for general guidance and never present an unverified company fact as confirmed. If you can't establish reliable specifics, say so in grounding_note and stay general. example_answer_snippet shows how to use the knowledge, not fabricated achievements. Match depth to the candidate's level given.`;
       const userText = `Weakness topic: ${topic.topic}\nCategory: ${topic.category}\nWeakness as identified: ${topic.description}\nCompany: ${topic.company}\nRole: ${topic.role}\nRelated interview question: ${topic.relatedQuestion || "n/a"}\nCandidate level: ${candidateLevel()}\n\n${wantsWeb ? "This likely requires real, current, company-specific or market information — use web search to verify facts before teaching them." : "General interview-technique or subject-matter topic; no need to search."}`;
-      const result = validateLesson(await callClaude(system, userText, 2200, wantsWeb, { requestType: "classroom_lesson", applicationId: topic.applicationId }));
+      // ROOT-CAUSE FIX (found via live testing 2026-08-21): when wantsWeb is true, Anthropic's
+      // web_search tool runs its search+reasoning round-trip inside the SAME max_tokens budget
+      // as the final answer. 2200 tokens was enough for the search step alone, leaving nothing
+      // for the model to actually write the lesson JSON — the response got cut off mid-JSON
+      // (confirmed live: output_tokens 2370 on a call whose result never parsed/saved), so
+      // callClaude() threw "cut off" / "could not parse" and the whole lesson silently failed.
+      // Non-web lessons need no search round-trip, so they keep the original, cheaper budget.
+      const result = validateLesson(await callClaude(system, userText, wantsWeb ? 4500 : 2200, wantsWeb, { requestType: "classroom_lesson", applicationId: topic.applicationId }));
       const saved = await dbInsertClassroomLesson(topic.id, result);
       setLesson({ ...result, id: saved?.id });
       setScreen("lesson");
