@@ -75,7 +75,9 @@ function loadSupabase() {
     const script = document.createElement("script");
     script.src = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js";
     script.onload = () => resolve(window.supabase);
-    script.onerror = () => reject(new Error("Couldn't load the authentication service. Please check your connection and try again."));
+    // Clear the cached promise on failure so a later retry actually re-fetches
+    // instead of permanently replaying this one rejection (same fix as loadPdfJs above).
+    script.onerror = () => { supabaseLoadPromise = null; reject(new Error("Couldn't load the authentication service. Please check your connection and try again.")); };
     document.head.appendChild(script);
   });
   return supabaseLoadPromise;
@@ -504,14 +506,23 @@ function loadPdfJs() {
   if (pdfjsLoadPromise) return pdfjsLoadPromise;
   pdfjsLoadPromise = new Promise((resolve, reject) => {
     const script = document.createElement("script");
-    script.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.min.js";
+    // Pinned to the latest pdf.js release that still ships the classic UMD
+    // "pdf.min.js" / "pdf.worker.min.js" build on cdnjs. From 4.x onward,
+    // cdnjs only publishes ESM ("pdf.min.mjs") builds, which 404 when loaded
+    // as a classic <script> tag the way this loader works — verified live
+    // against cdnjs before making this change (4.0.379's file list contains
+    // only pdf.min.mjs / pdf.worker.min.mjs, no .js UMD build).
+    script.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
     script.onload = () => {
       try {
-        window.pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.worker.min.js";
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
         resolve(window.pdfjsLib);
-      } catch (e) { reject(e); }
+      } catch (e) { pdfjsLoadPromise = null; reject(e); }
     };
-    script.onerror = () => reject(new Error("pdf-loader-failed"));
+    // On failure, clear the cached promise so a later retry (new upload
+    // attempt, "try again") actually re-fetches the script instead of
+    // permanently replaying this one rejection for the rest of the session.
+    script.onerror = () => { pdfjsLoadPromise = null; reject(new Error("pdf-loader-failed")); };
     document.head.appendChild(script);
   });
   return pdfjsLoadPromise;
