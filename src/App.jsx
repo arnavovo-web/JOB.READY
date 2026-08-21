@@ -87,8 +87,18 @@ let supabaseClient = null;
 async function getSupabase() {
   if (supabaseClient) return supabaseClient;
   const sb = await loadSupabase();
+  // ROOT-CAUSE FIX (2026-08-21): this was "false", which meant Supabase's client never parsed
+  // the access/refresh tokens Supabase Auth appends to the redirect URL after an email-confirm
+  // or password-recovery link is clicked. That's the single shared root cause behind two bugs:
+  // (1) new users landing back on the site after confirming their email with no session
+  //     established, so they appeared "stuck" and had to sign in manually; and
+  // (2) password reset being a structural dead end — resetPasswordForEmail() sent a real email,
+  //     but clicking its link never gave the app a session to call updateUser() with.
+  // Turning this on lets supabase-js do this parsing itself (both the legacy hash-token flow and
+  // the PKCE ?code= flow), and it emits a distinct "PASSWORD_RECOVERY" auth event so recovery
+  // links can be routed to a "set new password" screen instead of silently signing the user in.
   supabaseClient = sb.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false },
+    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
   });
   return supabaseClient;
 }
@@ -821,7 +831,7 @@ function App() {
   const [user, setUser] = useState(null); // { id, email, first_name, last_name }
   const [session, setSession] = useState(null);
   const [authChecked, setAuthChecked] = useState(false); // true once initial session restore attempt has completed
-  const [authView, setAuthView] = useState("signin"); // "signin" | "signup" | "forgot"
+  const [authView, setAuthView] = useState("signin"); // "signin" | "signup" | "forgot" | "reset"
   const [firstNameInput, setFirstNameInput] = useState("");
   const [lastNameInput, setLastNameInput] = useState("");
   const [emailInput, setEmailInput] = useState("");
@@ -882,17 +892,36 @@ function App() {
   /* ---------------- AUTH (real Supabase Auth) ---------------- */
   useEffect(() => {
     let unsub = null;
+    // Captured synchronously, before any async work, so it reflects the URL exactly as the
+    // page loaded — a password-recovery redirect from Supabase carries "type=recovery" in
+    // either the hash (legacy implicit flow) or the query string (PKCE flow).
+    const isRecoveryLink = typeof window !== "undefined" && /type=recovery/.test(window.location.hash + window.location.search);
     (async () => {
       try {
         const supabase = await getSupabase();
-        const { data } = await supabase.auth.getSession();
-        if (data?.session) await onAuthed(data.session);
-        setAuthChecked(true);
+        // Subscribe BEFORE calling getSession(): detectSessionInUrl's one-time processing of
+        // the redirect URL (and the PASSWORD_RECOVERY event it can emit) is gated behind the
+        // same internal init sequence getSession() awaits, so subscribing first avoids a race
+        // where that event fires before anything is listening for it.
         const { data: sub } = supabase.auth.onAuthStateChange(async (event, newSession) => {
           if (event === "SIGNED_OUT") { clearAllUserState(); return; }
+          if (event === "PASSWORD_RECOVERY") {
+            setSession(newSession); setError(""); setAuthNotice("");
+            setScreen("login"); setAuthView("reset");
+            return;
+          }
           if (newSession) await onAuthed(newSession);
         });
         unsub = sub?.subscription;
+        const { data } = await supabase.auth.getSession();
+        if (data?.session) {
+          // A recovery-link session is intentionally NOT treated as a normal sign-in — the
+          // PASSWORD_RECOVERY handler above (or this same check) routes to "set new password"
+          // instead, so a stale/foreign recovery link never dumps someone straight into the app.
+          if (isRecoveryLink) { setSession(data.session); setScreen("login"); setAuthView("reset"); }
+          else { await onAuthed(data.session); }
+        }
+        setAuthChecked(true);
       } catch (e) {
         setError(e.message || "Couldn't connect to the authentication service.");
         setAuthChecked(true);
@@ -973,6 +1002,26 @@ function App() {
       if (resetErr) { setError(resetErr.message); return; }
       setAuthNotice("If an account exists for that email, a reset link has been sent.");
     } catch (e) { setError(e.message || "Couldn't send the reset email. Please try again."); }
+  }
+
+  // Only reachable via authView === "reset", which is only ever set from a live PASSWORD_RECOVERY
+  // session (see the auth useEffect above) — so a valid session for updateUser() is guaranteed here.
+  async function handleResetPassword() {
+    setError(""); setAuthNotice("");
+    if (!passwordInput) { setError("Enter a new password."); return; }
+    if (passwordInput.length < 8) { setError("Password must be at least 8 characters."); return; }
+    if (passwordInput !== confirmPasswordInput) { setError("Passwords don't match."); return; }
+    try {
+      const supabase = await getSupabase();
+      const { error: updateErr } = await supabase.auth.updateUser({ password: passwordInput });
+      if (updateErr) { setError(updateErr.message); return; }
+      setPasswordInput(""); setConfirmPasswordInput("");
+      // updateUser() succeeding means the recovery session is now a normal, valid session —
+      // sign the user straight into the app rather than making them log in again.
+      const { data: refreshed } = await supabase.auth.getSession();
+      if (refreshed?.session) await onAuthed(refreshed.session);
+      else { setAuthNotice("Your password has been updated. Please sign in."); setAuthView("signin"); }
+    } catch (e) { setError(e.message || "Couldn't update your password. Please try again."); }
   }
 
   async function handleSignOut() {
@@ -1709,6 +1758,24 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
               </Card>
               <div style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 16, textAlign: "center" }}>
                 <span onClick={() => { setError(""); setAuthNotice(""); setAuthView("signin"); }} style={{ color: "var(--blue)", fontWeight: 600, cursor: "pointer" }}>Back to sign in</span>
+              </div>
+            </>
+          )}
+
+          {authView === "reset" && (
+            <>
+              <h2 style={{ fontSize: 24, fontWeight: 800, color: "var(--navy)", marginBottom: 20 }}>Set a new password</h2>
+              <Card style={{ padding: 24 }}>
+                <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>New password</label>
+                <input type="password" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} placeholder="At least 8 characters" style={{ ...inputStyle, marginTop: 6, marginBottom: 16 }} />
+                <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Confirm new password</label>
+                <input type="password" value={confirmPasswordInput} onChange={(e) => setConfirmPasswordInput(e.target.value)} style={{ ...inputStyle, marginTop: 6, marginBottom: 8 }} />
+                {error && <div style={{ color: "var(--bad)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
+                {authNotice && <div style={{ color: "var(--good)", fontSize: 13, marginBottom: 10 }}>{authNotice}</div>}
+                <Btn variant="accent" full onClick={() => guarded(handleResetPassword)} style={{ marginTop: 8 }}>Update password <ChevronRight size={16} /></Btn>
+              </Card>
+              <div style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 16, textAlign: "center" }}>
+                <span onClick={() => { setError(""); setAuthNotice(""); guarded(handleSignOut); setAuthView("signin"); }} style={{ color: "var(--blue)", fontWeight: 600, cursor: "pointer" }}>Cancel</span>
               </div>
             </>
           )}
