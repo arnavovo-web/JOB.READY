@@ -6,6 +6,11 @@ AI-powered interview and graduate recruitment preparation.
 
 **Current phase:** Phase 1 complete; Phase 2B productionisation in progress.
 
+## Deployment
+
+Deployed to Vercel (Preview) from the `development` branch. Production URL: TBD pending full live-validation pass.
+
+
 JOB.READY currently includes interview preparation, AI-generated interview questions, answer evaluation, reports, Classroom, Candidate DNA, Interview Memory, Progress, Assessment Centre preparation, and document input for TXT/DOCX/PDF.
 
 ## Development workflow
