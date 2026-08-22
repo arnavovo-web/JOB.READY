@@ -1608,7 +1608,7 @@ Rules: "basis" must honestly mark whether each competency is explicitly stated i
       // single-opening-question path (interview_turn generates the rest, one at a time).
       if (ivConfig.pipeline === "independent_batch") {
         const cvBackground = cvBackgroundSummary(result.candidate_profile);
-        const batch = await generateQuestionBatch(ivConfig, result.interview_profile, cvBackground, cleanJd, weaknessNote, { applicationId });
+        const batch = await generateQuestionBatch(ivConfig, result.interview_profile, cvBackground, cleanJd, weaknessNote, { applicationId, interviewId: ivRow.id });
         if (!batch.questions.length) throw new Error("Couldn't generate the interview questions. Please try again.");
         const savedRows = await dbInsertQuestionBatch(ivRow.id, batch.questions, { prepSeconds: ivConfig.preparation_time, answerSeconds: ivConfig.answer_time });
         const questions = savedRows.map((row, i) => ({
