@@ -905,7 +905,17 @@ function App() {
         // where that event fires before anything is listening for it.
         const { data: sub } = supabase.auth.onAuthStateChange(async (event, newSession) => {
           if (event === "SIGNED_OUT") { clearAllUserState(); return; }
-          if (event === "PASSWORD_RECOVERY") {
+          // ROOT-CAUSE FIX (2026-08-21, round 2): live testing showed the app landing straight in
+          // the dashboard after clicking a real recovery link, instead of the "set new password"
+          // screen. Cause: Supabase doesn't reliably fire the distinct "PASSWORD_RECOVERY" event —
+          // observed live, this recovery session actually arrived as a plain "SIGNED_IN" event,
+          // which fell through to onAuthed() and signed the user straight into the dashboard before
+          // the isRecoveryLink check below (a separate, slower async path) could win the race back.
+          // Fix: treat ANY event carrying a session as a recovery event whenever the page was loaded
+          // from a recovery link (isRecoveryLink, captured synchronously above, closed over here) —
+          // not just the ones literally named "PASSWORD_RECOVERY". This makes routing deterministic
+          // regardless of which event name Supabase actually emits.
+          if (event === "PASSWORD_RECOVERY" || (isRecoveryLink && newSession)) {
             setSession(newSession); setError(""); setAuthNotice("");
             setScreen("login"); setAuthView("reset");
             return;
