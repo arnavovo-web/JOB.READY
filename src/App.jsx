@@ -4,7 +4,7 @@ import {
   ChevronRight, Loader2, TrendingDown, CheckCircle2, ArrowLeft, ArrowRight, Sparkles,
   Target, BarChart3, AlertCircle, Upload, Mic, Menu, X,
   GraduationCap, BookOpen, Globe, HelpCircle, XCircle,
-  Users, Briefcase, Mail, FileText, History
+  Users, Briefcase, Mail, FileText, History, Clock
 } from "lucide-react";
 
 /* ================================================================== *
@@ -164,6 +164,7 @@ function num(v, fallback = 0, min = 0, max = 100) {
 }
 function arr(v) { return Array.isArray(v) ? v.filter((x) => x !== null && x !== undefined) : []; }
 function str(v, fallback = "") { return typeof v === "string" ? v : (v == null ? fallback : String(v)); }
+function bool(v, fallback = false) { return typeof v === "boolean" ? v : fallback; }
 function scoreMap(obj) {
   const out = {};
   if (obj && typeof obj === "object") Object.entries(obj).forEach(([k, v]) => { out[k] = num(v, 0); });
@@ -259,6 +260,30 @@ function validateAcResult(r) {
     updated_candidate_weaknesses: arr(r.updated_candidate_weaknesses).map((s) => str(s)),
     updated_candidate_strengths: arr(r.updated_candidate_strengths).map((s) => str(s)),
   };
+}
+
+// Phase 4B: independent/batch interview engine validators.
+function validateQuestionBatch(r, expectedCount) {
+  r = r || {};
+  const CATS = ["motivation_fit", "cv_behavioural", "role_specific", "technical", "commercial_awareness"];
+  const DIFFS = ["foundational", "intermediate", "advanced"];
+  let questions = arr(r.questions).map((q) => ({
+    text: str(q?.text),
+    category: CATS.includes(q?.category) ? q.category : "role_specific",
+    competency: str(q?.competency),
+    difficulty: DIFFS.includes(q?.difficulty) ? q.difficulty : "intermediate",
+    is_technical: bool(q?.is_technical, false),
+    role_relevance: str(q?.role_relevance),
+    expected_answer_characteristics: str(q?.expected_answer_characteristics),
+  })).filter((q) => q.text);
+  if (expectedCount && questions.length > expectedCount) questions = questions.slice(0, expectedCount);
+  return { questions };
+}
+function validateBatchEvaluation(r) {
+  r = r || {};
+  // Deliberately reuses validateEvaluation() per item — same rubric shape as the adaptive
+  // pipeline (Phase 4 plan §4.2) rather than a fragmented, format-specific evaluation schema.
+  return { evaluations: arr(r.evaluations).map((e) => validateEvaluation(e)) };
 }
 
 /* ================================================================== *
@@ -375,6 +400,40 @@ async function dbInsertAnswer(questionId, answerText, evaluation, decision) {
   if (eErr) console.error("evaluation insert failed:", eErr.message);
   return answer;
 }
+
+// Phase 4B: independent/batch pipeline DB helpers. These never call dbInsertQuestion/
+// dbInsertAnswer above (the adaptive pipeline's per-turn insert path) — the batch pipeline
+// persists the whole question set up front, then persists each answer on its own with
+// evaluation deferred until the batch evaluation call completes.
+async function dbInsertQuestionBatch(interviewId, questions, meta) {
+  const supabase = await getSupabase();
+  const rows = questions.map((q, i) => ({
+    interview_id: interviewId,
+    question_number: i + 1,
+    question_text: q.text,
+    category: q.category || null,
+    competency: q.competency || null,
+    generation_mode: "independent",
+    prep_seconds: Number.isFinite(meta?.prepSeconds) ? meta.prepSeconds : null,
+    answer_seconds: Number.isFinite(meta?.answerSeconds) ? meta.answerSeconds : null,
+    metadata: { difficulty: q.difficulty || null, is_technical: !!q.is_technical, role_relevance: q.role_relevance || null, expected_answer_characteristics: q.expected_answer_characteristics || null },
+  }));
+  const { data, error } = await supabase.from("interview_questions").insert(rows).select();
+  if (error) throw new Error("Couldn't save the interview questions. Please try again.");
+  return (data || []).slice().sort((a, b) => a.question_number - b.question_number);
+}
+async function dbInsertAnswerOnly(questionId, answerText, timeExpired) {
+  const supabase = await getSupabase();
+  const { data, error } = await supabase.from("answers").insert({ question_id: questionId, answer_text: answerText, time_expired: !!timeExpired }).select().single();
+  if (error) throw new Error("Couldn't save your answer. Please try again.");
+  return data;
+}
+async function dbInsertEvaluationForAnswer(answerId, evaluation, decision) {
+  const supabase = await getSupabase();
+  const { error } = await supabase.from("evaluations").insert({ answer_id: answerId, relevance: evaluation.relevance, specificity: evaluation.specificity, structure: evaluation.structure, evidence: evaluation.evidence, clarity: evaluation.clarity, competency_demonstration: evaluation.competency_demonstration, strengths: evaluation.strengths, issues: evaluation.issues, decision: decision || null });
+  if (error) console.error("evaluation insert failed:", error.message);
+}
+
 async function dbCompleteInterview(interviewId, report) {
   const supabase = await getSupabase();
   await supabase.from("interviews").update({ status: "completed", completed_at: new Date().toISOString(), overall_score: report.overall_score, readiness: report.readiness }).eq("id", interviewId);
@@ -645,6 +704,101 @@ function resolveInterviewConfig(stageKey, formatKeyOverride) {
   const base = INTERVIEW_FORMATS[formatKey];
   const resolved = { ...base, ...(stage.overrides || {}), stage: stage.key, format: formatKey };
   return resolved;
+}
+
+/* ================================================================== *
+ * PHASE 4B: INDEPENDENT / BATCH INTERVIEW ENGINE (AI CALLS)
+ * Two new AI calls, both routed through the existing callClaude() so they get
+ * ai_usage logging + api_usage_limits rate-limiting for free, same as every
+ * other call in this file. Neither of these ever feeds into interview_turn,
+ * and interview_turn is never called anywhere in this section.
+ * ================================================================== */
+
+// "CV-informed but not CV-chasing": deliberately expose only headline candidate facts
+// to the batch question generator — never the full behavioural_examples /
+// potential_probe_areas detail the adaptive engine leans on to build live follow-ups.
+// This keeps the *data itself* lighter-touch, not just a prompt instruction, so the
+// independent pipeline structurally can't build a CV-chasing chain even by accident.
+function cvBackgroundSummary(candidateProfile) {
+  const cp = candidateProfile || {};
+  return {
+    education: arr(cp.education).map((s) => str(s)),
+    experience: arr(cp.experience).map((s) => str(s)),
+    skills: arr(cp.skills).map((s) => str(s)),
+  };
+}
+
+function buildQuestionBatchPrompt(config, interviewProfile, cvBackground, jdText, weaknessNote) {
+  const stageLabel = stageByKey(config.stage).label;
+  const formatLabel = INTERVIEW_FORMATS[config.format].label;
+  const system = `You are an expert interview designer building a COMPLETE, FIXED set of independent interview questions for an asynchronous, one-way video interview (${stageLabel} — ${formatLabel}). Every question must be answerable entirely on its own, with zero dependency on any other question or its answer — this set is generated once, in full, before the candidate sees question 1, and none of it changes based on how they answer.
+
+Return strict JSON only, no prose, no markdown fences, in this exact shape:
+{
+  "questions": [
+    {
+      "text": "",
+      "category": "motivation_fit|cv_behavioural|role_specific|technical|commercial_awareness",
+      "competency": "",
+      "difficulty": "foundational|intermediate|advanced",
+      "is_technical": false,
+      "role_relevance": "one sentence on why this question matters for this specific role",
+      "expected_answer_characteristics": "one sentence on what a strong answer would contain, to guide evaluation later"
+    }
+  ]
+}
+
+Rules:
+- Generate exactly ${config.question_count} questions.
+- Target composition (approximate weighting, not a rigid quota): motivation ${config.motivation_weight}%, behavioural ${config.behavioural_weight}%, technical ${config.technical_weight}%, commercial awareness ${config.commercial_weight}%, role-specific ${config.role_specific_weight}%.
+- Only mark "is_technical": true, and only include a genuinely technical question, where THIS SPECIFIC role actually requires technical assessment at THIS stage. Do NOT include technical questions just because the role sounds finance-related or technical-sounding — judge from the actual job description, division, and stage. A recruiter/HR screen in particular should very rarely, if ever, include a technical question.
+- The candidate's background below is BACKGROUND CONTEXT ONLY, for light, natural personalisation (e.g. referencing something real they listed). Do NOT build any question that only makes sense given a specific expected answer to an earlier question — every question must be self-contained and independently gradable, with no chain: question 2 must not depend on how question 1 might be answered, question 3 must not depend on question 2, and so on for the entire set.
+- Vary categories and difficulty sensibly across the set rather than clustering.`;
+
+  const userText = `${weaknessNote}\n\nInterview stage: ${stageLabel}\nInterview format: ${formatLabel}\n\nInterview profile (from JD analysis): ${JSON.stringify(interviewProfile)}\n\nCandidate background (context only — do not chain questions off this): ${JSON.stringify(cvBackground)}\n\nJob description:\n${jdText}`;
+  return { system, userText };
+}
+
+async function generateQuestionBatch(config, interviewProfile, cvBackground, jdText, weaknessNote, meta) {
+  const { system, userText } = buildQuestionBatchPrompt(config, interviewProfile, cvBackground, jdText, weaknessNote);
+  const maxTokens = Math.min(7500, 1200 + config.question_count * 350);
+  const raw = await callClaude(system, userText, maxTokens, false, { ...meta, requestType: "interview_question_batch" });
+  return validateQuestionBatch(raw, config.question_count);
+}
+
+function buildBatchEvaluationPrompt(config, interviewProfile, cvBackground, questions, answers) {
+  const stageLabel = stageByKey(config.stage).label;
+  const system = `You are a real, professional interviewer scoring a completed asynchronous (${stageLabel}) interview HOLISTICALLY, after the fact. This is NOT a live conversational interview — there were no follow-ups, no clarifying questions, and no chance for the candidate to be redirected. Evaluate accordingly:
+- Do NOT penalise the candidate for a lack of conversational depth, follow-up handling, or dynamic back-and-forth — that is structurally impossible in this format and is not a fair criticism here.
+- Only assess technical accuracy or rigour on questions explicitly marked "is_technical": true in the input below. Do not invent technical weaknesses when the question set contains no technical questions.
+- If an answer is blank or near-blank, score it honestly and low — do not invent content the candidate never gave.
+- If a question's "time_expired" flag is true, treat the answer as cut short by a hard time limit: note this as a possible factor rather than silently scoring it as if the candidate simply chose to give a short answer.
+
+Return strict JSON only, no prose, in this exact shape:
+{
+  "evaluations": [
+    { "relevance": 0, "specificity": 0, "structure": 0, "evidence": 0, "clarity": 0, "competency_demonstration": 0, "strengths": [""], "issues": [""] }
+  ]
+}
+Return exactly one evaluation object per question, in the SAME ORDER as the questions are listed below.`;
+
+  const userText = `Interview stage: ${stageLabel}\nInterview profile: ${JSON.stringify(interviewProfile)}\nCandidate background (context only): ${JSON.stringify(cvBackground)}\n\nQuestions and answers, in order:\n${JSON.stringify(questions.map((q, i) => ({
+    index: i + 1, question: q.text, category: q.category, competency: q.competency, is_technical: q.is_technical,
+    expected_answer_characteristics: q.expected_answer_characteristics, answer: answers[i]?.text ?? "", time_expired: !!answers[i]?.timeExpired,
+  })))}`;
+  return { system, userText };
+}
+
+async function generateBatchEvaluation(config, interviewProfile, cvBackground, questions, answers, meta) {
+  const { system, userText } = buildBatchEvaluationPrompt(config, interviewProfile, cvBackground, questions, answers);
+  const maxTokens = Math.min(7500, 1500 + questions.length * 380);
+  const raw = await callClaude(system, userText, maxTokens, false, { ...meta, requestType: "interview_batch_evaluation" });
+  const result = validateBatchEvaluation(raw);
+  // Defensive: pad/truncate to exactly questions.length so downstream indexed access
+  // (matching evaluation[i] back to question[i]/answer[i]) can never go out of bounds.
+  while (result.evaluations.length < questions.length) result.evaluations.push(validateEvaluation(null));
+  if (result.evaluations.length > questions.length) result.evaluations = result.evaluations.slice(0, questions.length);
+  return result;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1028,8 +1182,45 @@ function App() {
   const [acResult, setAcResult] = useState(null);
   const [acAttempts, setAcAttempts] = useState([]);
 
+  // Phase 4B: independent/batch (asynchronous video) interview engine.
+  // asyncPhase: "prep" | "answering". asyncSecondsLeft: null = untimed phase, otherwise
+  // the live countdown. Kept entirely separate from the adaptive interview's state above —
+  // the two pipelines never read or write each other's state.
+  const [asyncPhase, setAsyncPhase] = useState("prep");
+  const [asyncSecondsLeft, setAsyncSecondsLeft] = useState(null);
+
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [interview?.transcript?.length]);
   useEffect(() => { window.scrollTo(0, 0); }, [screen]);
+
+  // Reset the prep/answer cycle whenever a new async question comes into view.
+  useEffect(() => {
+    if (screen !== "async_interview" || !interview || interview.config?.pipeline !== "independent_batch") return;
+    const q = interview.questions?.[interview.currentIndex];
+    if (!q) return;
+    if (Number.isFinite(q.prepSeconds) && q.prepSeconds > 0) { setAsyncPhase("prep"); setAsyncSecondsLeft(q.prepSeconds); }
+    else if (Number.isFinite(q.answerSeconds) && q.answerSeconds > 0) { setAsyncPhase("answering"); setAsyncSecondsLeft(q.answerSeconds); }
+    else { setAsyncPhase("answering"); setAsyncSecondsLeft(null); }
+  }, [screen, interview?.currentIndex]);
+
+  // Countdown ticker. setTimeout-chained (not setInterval) so it naturally re-arms itself
+  // correctly whenever asyncPhase/asyncSecondsLeft change, including the prep->answering
+  // transition below. Untimed phases (asyncSecondsLeft === null) simply never tick.
+  useEffect(() => {
+    if (screen !== "async_interview" || asyncSecondsLeft === null) return;
+    if (asyncSecondsLeft <= 0) {
+      if (asyncPhase === "prep") {
+        const q = interview?.questions?.[interview.currentIndex];
+        if (Number.isFinite(q?.answerSeconds) && q.answerSeconds > 0) { setAsyncPhase("answering"); setAsyncSecondsLeft(q.answerSeconds); }
+        else { setAsyncPhase("answering"); setAsyncSecondsLeft(null); }
+      } else {
+        // Answer timer expired — never silently discard whatever the candidate has typed.
+        guarded(() => submitAsyncAnswer(true));
+      }
+      return;
+    }
+    const t = setTimeout(() => setAsyncSecondsLeft((s) => (s === null ? null : s - 1)), 1000);
+    return () => clearTimeout(t);
+  }, [screen, asyncPhase, asyncSecondsLeft]);
 
   /* ---------------- AUTH (real Supabase Auth) ---------------- */
   useEffect(() => {
@@ -1410,10 +1601,40 @@ Rules: "basis" must honestly mark whether each competency is explicitly stated i
 
       await dbUpdateApplication(applicationId, { job_description: cleanJd, interview_stage: stageLabel, interview_type: formatLabel, interview_length: length, status: "active" });
       const ivRow = await dbCreateInterview(user.id, applicationId, ivConfig);
-      const q1 = await dbInsertQuestion(ivRow.id, 1, result.opening_question);
 
+      // Phase 4B: branch on the resolved pipeline. independent_batch generates and persists
+      // the COMPLETE question set now, before the candidate sees question 1, and never
+      // touches interview_turn. adaptive_turn falls through to the existing, unmodified
+      // single-opening-question path (interview_turn generates the rest, one at a time).
+      if (ivConfig.pipeline === "independent_batch") {
+        const cvBackground = cvBackgroundSummary(result.candidate_profile);
+        const batch = await generateQuestionBatch(ivConfig, result.interview_profile, cvBackground, cleanJd, weaknessNote, { applicationId });
+        if (!batch.questions.length) throw new Error("Couldn't generate the interview questions. Please try again.");
+        const savedRows = await dbInsertQuestionBatch(ivRow.id, batch.questions, { prepSeconds: ivConfig.preparation_time, answerSeconds: ivConfig.answer_time });
+        const questions = savedRows.map((row, i) => ({
+          dbId: row.id, questionNumber: row.question_number, text: row.question_text, category: row.category, competency: row.competency,
+          difficulty: batch.questions[i]?.difficulty, is_technical: !!batch.questions[i]?.is_technical, role_relevance: batch.questions[i]?.role_relevance,
+          expected_answer_characteristics: batch.questions[i]?.expected_answer_characteristics,
+          prepSeconds: ivConfig.preparation_time ?? null, answerSeconds: ivConfig.answer_time ?? null,
+        }));
+
+        const newInterview = {
+          id: ivRow.id, applicationId, company: cleanCompany, role: cleanRole, stage: ivConfig.stage, format: ivConfig.format, stageLabel, formatLabel, startedAt: Date.now(),
+          config: ivConfig, cvBackground, questions, currentIndex: 0, answers: [], status: "planned",
+        };
+        setInterview(newInterview);
+        setScreen("preview");
+        return;
+      }
+
+      const q1 = await dbInsertQuestion(ivRow.id, 1, result.opening_question);
       const newInterview = {
         id: ivRow.id, applicationId, company: cleanCompany, role: cleanRole, stage: ivConfig.stage, format: ivConfig.format, stageLabel, formatLabel, startedAt: Date.now(),
+        // config is threaded through starting Phase 4B (per redesign plan §11) so the
+        // adaptive engine has access to the resolved configuration for future Phase 4C
+        // tuning. It is NOT yet read anywhere in submitAnswer/finishInterview's own logic
+        // below — purely additive, current adaptive behaviour is unchanged.
+        config: ivConfig,
         maxQuestions: length, transcript: [], currentQuestion: { ...result.opening_question, dbId: q1.id, questionNumber: 1 }, status: "planned",
       };
       setInterview(newInterview);
@@ -1424,11 +1645,23 @@ Rules: "basis" must honestly mark whether each competency is explicitly stated i
     }
   }
 
-  function beginInterview() { setScreen("interview"); }
+  // Phase 4B: routes to the dedicated one-way async screen for independent_batch
+  // interviews, leaving the existing chat-style "interview" screen untouched for
+  // adaptive_turn interviews.
+  function beginInterview() { setScreen(interview?.config?.pipeline === "independent_batch" ? "async_interview" : "interview"); }
 
   /* ---------------- STEP 2: SUBMIT ANSWER ---------------- */
   async function submitAnswer() {
     if (!answerInput.trim() || !interview || !profile) return;
+    // Structural guard (Phase 4B §3): interview_turn must be UNREACHABLE for an
+    // independent_batch interview, not merely discouraged by a prompt. This check exists
+    // so that even a future accidental wiring of a button/handler to submitAnswer() cannot
+    // invoke the adaptive engine for a batch-pipeline interview.
+    if (interview.config?.pipeline === "independent_batch") {
+      console.error("submitAnswer() (interview_turn) was called for an independent_batch interview — this is a routing bug, not a valid interview state.");
+      setError("Internal error: this interview type does not use live follow-up questions. Please refresh and try again.");
+      return;
+    }
     setError("");
     const cleanAnswer = sanitizeText(answerInput);
     const currentQ = interview.currentQuestion;
@@ -1443,7 +1676,11 @@ Rules: "basis" must honestly mark whether each competency is explicitly stated i
   "interview_should_end": false
 }
 Rules: honest 0-100 scores. If vague/generic/no example, note it and probe for specifics. If dodged, redirect back to it. Don't repeat a thoroughly covered competency unless the answer revealed a weakness worth re-testing. Vary categories per question_mix. Set interview_should_end true once roughly ${interview.maxQuestions} questions have been asked and core competencies are covered.`;
-      const userText = `Interview profile: ${JSON.stringify(profile.interview_profile)}\nCandidate profile: ${JSON.stringify(profile.candidate_profile)}\nQuestions asked so far: ${askedSoFar} of target ${interview.maxQuestions}\nTranscript so far: ${JSON.stringify(interview.transcript)}\n\nQuestion just asked: ${JSON.stringify(currentQ)}\nCandidate's answer: ${cleanAnswer}`;
+      // Resolved configuration context (Phase 4B §11) — currently inert. Not referenced by
+      // any rule in the system prompt above; threaded through purely so Phase 4C can later
+      // tune technical/CV/behavioural/commercial weighting and challenge intensity for the
+      // adaptive engine without another plumbing change here.
+      const userText = `Interview profile: ${JSON.stringify(profile.interview_profile)}\nCandidate profile: ${JSON.stringify(profile.candidate_profile)}\nQuestions asked so far: ${askedSoFar} of target ${interview.maxQuestions}\nTranscript so far: ${JSON.stringify(interview.transcript)}\n\nQuestion just asked: ${JSON.stringify(currentQ)}\nCandidate's answer: ${cleanAnswer}\n\nResolved interview configuration (context only, currently unused by the rules above): ${JSON.stringify(interview.config || {})}`;
       const result = validateNextTurn(await callClaude(system, userText, 1200, false, { requestType: "interview_turn", applicationId: interview.applicationId, interviewId: interview.id }));
 
       await dbInsertAnswer(currentQ.dbId, cleanAnswer, result.evaluation, result.decision);
@@ -1471,6 +1708,14 @@ Rules: honest 0-100 scores. If vague/generic/no example, note it and probe for s
   async function finishInterview(finalInterview) {
     setScreen("reporting");
     try {
+      const isAsync = finalInterview.config?.pipeline === "independent_batch";
+      // Phase 4B §8: report infrastructure stays shared/compatible — one extra conditional
+      // paragraph keys off the pipeline so an async report doesn't invent conversational
+      // follow-through as a weakness, and doesn't invent technical weaknesses when the
+      // question set (correctly, per §2) contained no technical questions.
+      const formatNote = isAsync
+        ? `\nThis was an ASYNCHRONOUS, one-way interview (no live follow-ups, no clarification, questions were fixed in advance and answered independently). Do NOT criticise the candidate for lack of conversational depth, not building on follow-ups, or not adapting to a redirect — none of that was possible in this format. Report per_question_feedback and weakest_areas honestly, but only flag a technical weakness if the transcript actually contains a technical question the candidate answered poorly — do not invent one. If any answer's underlying evaluation notes a timer cut it short, mention that as context in note_on_missing_data rather than treating it as a pure content gap.`
+        : "";
       const system = `You produce a final interview performance report as strict JSON only, no prose. Shape:
 {
   "overall_score": 0, "readiness": "not_ready|needs_improvement|interview_ready|strong",
@@ -1481,7 +1726,7 @@ Rules: honest 0-100 scores. If vague/generic/no example, note it and probe for s
   "interview_style_notes": [""],
   "classroom_topics": [{"topic": "", "category": "company_knowledge|technical|commercial_awareness|behavioural|technique|role_specific", "description": "", "related_question": "", "initial_score": 0}]
 }
-Rules: scores computed honestly from the transcript's evaluations. Never fabricate achievements the candidate never claimed. classroom_topics: only genuine, specific, teachable weaknesses (usually 1-3), with a short reusable "topic" title so progress on it can be tracked over time. interview_style_notes: 1-3 short, concrete observations about HOW this candidate interviews across the transcript as a whole (e.g. "Answers tend to run long", "Strong examples but rarely quantifies results", "Good technical grounding but motivation answers stay generic") — behavioural/stylistic patterns, not one-off scores.`;
+Rules: scores computed honestly from the transcript's evaluations. Never fabricate achievements the candidate never claimed. classroom_topics: only genuine, specific, teachable weaknesses (usually 1-3), with a short reusable "topic" title so progress on it can be tracked over time. interview_style_notes: 1-3 short, concrete observations about HOW this candidate interviews across the transcript as a whole (e.g. "Answers tend to run long", "Strong examples but rarely quantifies results", "Good technical grounding but motivation answers stay generic") — behavioural/stylistic patterns, not one-off scores.${formatNote}`;
       const userText = `Company: ${finalInterview.company}\nRole: ${finalInterview.role}\nInterview profile: ${JSON.stringify(profile.interview_profile)}\nPre-existing candidate performance profile: ${JSON.stringify(perf)}\nFull transcript: ${JSON.stringify(finalInterview.transcript)}`;
       const result = validateReport(await callClaude(system, userText, 4500, false, { requestType: "interview_report", applicationId: finalInterview.applicationId, interviewId: finalInterview.id }));
 
@@ -1528,7 +1773,60 @@ Rules: scores computed honestly from the transcript's evaluations. Never fabrica
       setScreen("report");
     } catch (e) {
       setError(e.message || "Something went wrong generating the report.");
-      setScreen("interview");
+      setScreen(finalInterview.config?.pipeline === "independent_batch" ? "async_interview" : "interview");
+    }
+  }
+
+  /* ---------------- PHASE 4B: INDEPENDENT/BATCH (ASYNC) INTERVIEW ---------------- */
+  // Persists the current answer against the already-generated question (its question ID/
+  // dbId never changes, per §6), then advances to the next pre-generated question or, if
+  // this was the last one, finishes the interview. Never regenerates a question, never
+  // calls interview_turn, never calls callClaude at all — persistence only.
+  async function submitAsyncAnswer(timeExpired) {
+    if (!interview || interview.config?.pipeline !== "independent_batch") return;
+    const q = interview.questions[interview.currentIndex];
+    if (!q) return;
+    setError("");
+    const cleanAnswer = sanitizeText(answerInput || "");
+    try {
+      const savedAnswer = await dbInsertAnswerOnly(q.dbId, cleanAnswer, !!timeExpired);
+      const newAnswers = [...interview.answers, { questionDbId: q.dbId, answerDbId: savedAnswer.id, text: cleanAnswer, timeExpired: !!timeExpired }];
+      const nextIndex = interview.currentIndex + 1;
+      const updated = { ...interview, answers: newAnswers, currentIndex: nextIndex };
+      setInterview(updated);
+      setAnswerInput("");
+      if (nextIndex >= interview.questions.length) { await finishAsyncInterview(updated); } else { setScreen("async_interview"); }
+    } catch (e) {
+      setError(e.message || "Something went wrong saving that answer.");
+      setScreen("async_interview");
+    }
+  }
+
+  // Runs the single batch evaluation call once every question has been answered, persists
+  // one evaluation row per answer, then builds a transcript array in EXACTLY the shape the
+  // existing, unmodified finishInterview() already expects — deliberately reusing 100% of
+  // its report generation, Interview Memory, Classroom, and Candidate DNA logic rather than
+  // forking a second copy of it (Phase 4B §7/§8).
+  async function finishAsyncInterview(finalInterview) {
+    setScreen("async_evaluating");
+    try {
+      const evalResult = await generateBatchEvaluation(
+        finalInterview.config, profile.interview_profile, finalInterview.cvBackground, finalInterview.questions, finalInterview.answers,
+        { applicationId: finalInterview.applicationId, interviewId: finalInterview.id }
+      );
+      const transcript = finalInterview.questions.map((q, i) => {
+        const a = finalInterview.answers[i];
+        const evaluation = evalResult.evaluations[i];
+        return { question: { text: q.text, category: q.category, competency: q.competency, dbId: q.dbId, questionNumber: q.questionNumber }, answer: a?.text ?? "", evaluation };
+      });
+      for (let i = 0; i < transcript.length; i++) {
+        const a = finalInterview.answers[i];
+        if (a?.answerDbId) await dbInsertEvaluationForAnswer(a.answerDbId, transcript[i].evaluation, null);
+      }
+      await finishInterview({ ...finalInterview, transcript });
+    } catch (e) {
+      setError(e.message || "Something went wrong evaluating your interview.");
+      setScreen("async_interview");
     }
   }
 
@@ -2183,7 +2481,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
       {screen === "preview" && profile && (
         <div className="jr-fade" style={{ maxWidth: 680, margin: "0 auto", padding: "44px 24px" }}>
           <h2 style={{ fontSize: 24, fontWeight: 800, color: "var(--navy)", marginBottom: 4 }}>{role} <span style={{ color: "var(--text-faint)", fontWeight: 600 }}>· {company}</span></h2>
-          <div style={{ fontSize: 13.5, color: "var(--text-dim)", marginBottom: 22 }}>{interview?.stageLabel} · {interview?.formatLabel} · {length} questions</div>
+          <div style={{ fontSize: 13.5, color: "var(--text-dim)", marginBottom: 22 }}>{interview?.stageLabel} · {interview?.formatLabel} · {interview?.config?.pipeline === "independent_batch" ? (interview.questions?.length || 0) : length} questions</div>
 
           <Card style={{ padding: 22, marginBottom: 16 }}>
             <div style={{ fontSize: 15, fontWeight: 700, color: "var(--navy)", marginBottom: 12 }}>Key competencies this interview will test</div>
@@ -2268,6 +2566,76 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
 
       {screen === "evaluating" && <LoadingScreen messages={["Reading your answer...", "Checking for specifics and evidence...", "Deciding what to ask next..."]} />}
       {screen === "reporting" && <LoadingScreen messages={["Scoring your responses...", "Comparing against role competencies...", "Writing your feedback...", "Finalising your report..."]} />}
+
+      {/* ---------------- PHASE 4B: ASYNC (INDEPENDENT/BATCH) INTERVIEW ---------------- */}
+      {/* Deliberately NOT styled like the adaptive chat-style "interview" screen above —
+          this simulates a one-way video interview: question -> prep timer -> answer timer ->
+          submit -> next independent question. There is no "Tell me more" / "Why?" / "Based
+          on your previous answer..." anywhere here, because there is nothing dynamic to
+          generate — the entire question set was generated and persisted before this screen
+          ever rendered (Phase 4B §5). */}
+      {screen === "async_interview" && interview && interview.config?.pipeline === "independent_batch" && (() => {
+        const q = interview.questions[interview.currentIndex];
+        const qNum = interview.currentIndex + 1;
+        const total = interview.questions.length;
+        if (!q) return null;
+        return (
+          <div className="jr-fade" style={{ minHeight: "100vh", background: "var(--navy)" }}>
+            <div style={{ borderBottom: "1px solid rgba(255,255,255,0.12)" }}>
+              <div style={{ maxWidth: 680, margin: "0 auto", padding: "16px 24px" }}>
+                <div className="flex justify-between items-center mb-3">
+                  <JobReadyLogo size={20} background="dark" />
+                  <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.7)", fontWeight: 600 }}>{company} · {role} — {interview.formatLabel}</div>
+                </div>
+                <div className="flex justify-between items-center mb-2">
+                  <span style={{ fontSize: 12, color: "rgba(255,255,255,0.55)" }}>Question {qNum} of {total}</span>
+                  {asyncSecondsLeft !== null && (
+                    <span style={{ fontSize: 12, color: "rgba(255,255,255,0.9)", display: "flex", alignItems: "center", gap: 4, fontWeight: 700 }}>
+                      <Clock size={13} /> {Math.floor(Math.max(0, asyncSecondsLeft) / 60)}:{String(Math.max(0, asyncSecondsLeft) % 60).padStart(2, "0")} {asyncPhase === "prep" ? "to prepare" : "remaining"}
+                    </span>
+                  )}
+                </div>
+                <div style={{ height: 4, background: "rgba(255,255,255,0.15)", borderRadius: 999 }}>
+                  <div className="jr-bar" style={{ height: 4, borderRadius: 999, background: "var(--blue)", width: Math.min(100, (qNum / total) * 100) + "%" }} />
+                </div>
+              </div>
+            </div>
+
+            <div style={{ maxWidth: 680, margin: "0 auto", padding: "56px 24px", color: "#fff" }}>
+              <Pill color="var(--violet)" bg="rgba(241,233,254,0.18)">{(q.category || "").replace(/_/g, " ")}</Pill>
+              <div style={{ fontSize: 26, fontWeight: 700, lineHeight: 1.4, margin: "18px 0 30px" }}>{q.text}</div>
+
+              {asyncPhase === "prep" ? (
+                <Card hover={false} style={{ padding: 28, textAlign: "center", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.14)" }}>
+                  <div style={{ fontSize: 12, color: "rgba(255,255,255,0.6)", marginBottom: 10, textTransform: "uppercase", fontWeight: 700, letterSpacing: 0.5 }}>Preparation time</div>
+                  <div style={{ fontSize: 44, fontWeight: 800 }}>{asyncSecondsLeft ?? 0}s</div>
+                  <div style={{ fontSize: 13, color: "rgba(255,255,255,0.55)", marginTop: 10 }}>Read the question. Your answer timer starts automatically once prep ends.</div>
+                  <div style={{ marginTop: 18 }}>
+                    <Btn variant="secondary" onClick={() => guarded(async () => {
+                      const answerSecs = Number.isFinite(q.answerSeconds) && q.answerSeconds > 0 ? q.answerSeconds : null;
+                      setAsyncPhase("answering"); setAsyncSecondsLeft(answerSecs);
+                    })}>Start answering now</Btn>
+                  </div>
+                </Card>
+              ) : (
+                <>
+                  <textarea value={answerInput} onChange={(e) => setAnswerInput(e.target.value)} placeholder="Type your answer..."
+                    style={{ width: "100%", height: 220, padding: 16, border: "1.5px solid rgba(255,255,255,0.22)", borderRadius: "var(--radius)", fontSize: 15, lineHeight: 1.55, fontFamily: "var(--font)", background: "rgba(255,255,255,0.07)", color: "#fff" }} />
+                  {error && <div style={{ color: "#FF9B9B", fontSize: 13, marginTop: 10 }}>{error}</div>}
+                  <div className="flex justify-between items-center mt-4">
+                    <span style={{ fontSize: 12, color: "rgba(255,255,255,0.5)" }}>{answerInput.trim().split(/\s+/).filter(Boolean).length} words</span>
+                    <Btn variant="accent" onClick={() => guarded(() => submitAsyncAnswer(false))}>
+                      {qNum >= total ? "Submit final answer" : "Submit & continue"} <ChevronRight size={16} />
+                    </Btn>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+
+      {screen === "async_evaluating" && <LoadingScreen messages={["Reviewing your answers as a whole...", "Weighing motivation, competency and communication...", "Checking technical answers where relevant...", "Finalising your report..."]} />}
 
       {/* ---------------- REPORT ---------------- */}
       {screen === "report" && report && (
