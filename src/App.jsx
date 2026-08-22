@@ -348,9 +348,16 @@ async function dbUploadDocumentFile(userId, applicationId, file) {
   return path;
 }
 
-async function dbCreateInterview(userId, applicationId) {
+async function dbCreateInterview(userId, applicationId, config) {
   const supabase = await getSupabase();
-  const { data, error } = await supabase.from("interviews").insert({ user_id: userId, application_id: applicationId, status: "in_progress", started_at: new Date().toISOString() }).select().single();
+  // Phase 4A: persist the resolved stage/format/config (see resolveInterviewConfig above).
+  // `config` may be omitted/undefined by any future caller — stage/format/config all stay
+  // NULL in that case, which is exactly the legacy shape historical interview rows already
+  // have, so no other code path needs a special case for "old vs new" interviews.
+  const { data, error } = await supabase.from("interviews").insert({
+    user_id: userId, application_id: applicationId, status: "in_progress", started_at: new Date().toISOString(),
+    stage: config?.stage || null, format: config?.format || null, config: config || null,
+  }).select().single();
   if (error) throw new Error("Couldn't start the interview. Please try again.");
   return data;
 }
@@ -504,6 +511,141 @@ const EXERCISE_TYPES = [
     competencies: ["Prioritisation", "Judgement", "Risk awareness", "Communication"] },
 ];
 function slugify(s) { return s.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, ""); }
+
+/* ================================================================== *
+ * PHASE 4A — INTERVIEW CONFIGURATION FOUNDATION
+ * ------------------------------------------------------------------
+ * Establishes the STAGE/FORMAT split identified in the interview-generation
+ * audit: previously "stage" and "itype" were two freeform strings that only
+ * ever reached the initial profile-generation call as one line of text, then
+ * vanished from the AI's context for the rest of the interview. This catalog
+ * (same pattern as EXERCISE_TYPES above, which already works well for
+ * Assessment Centre) makes format-specific behaviour a resolvable, code-level
+ * CONFIGURATION rather than an unenforced label — the foundation the next
+ * phase (the independent/batch HireVue engine) will build on.
+ *
+ * IMPORTANT — Phase 4A SCOPE: this catalog is deliberately declarative only.
+ * `submitAnswer` (interview_turn) and `finishInterview` (interview_report)
+ * are NOT modified to branch on this config yet — every interview, of every
+ * stage/format, still runs through today's existing adaptive engine exactly
+ * as before. `pipeline` below documents which engine each format WILL use
+ * once Phase 4B (the independent_batch engine) is built; in 4A only
+ * "adaptive_turn" is actually wired up. Nothing here changes runtime
+ * question-generation or evaluation behaviour.
+ *
+ * A STAGE is a point in a real recruitment process (what the candidate is
+ * actually facing). A FORMAT is how that interview is delivered. Some stages
+ * can plausibly go either way (a recruiter screen or a first round can be
+ * live OR an async video link) — that's `allowedFormats` below — so we do
+ * NOT hard-code every stage x format combination; a stage just carries a
+ * sensible default format plus optional overrides merged on top of it.
+ * ================================================================== */
+const INTERVIEW_FORMATS = {
+  asynchronous_video: {
+    label: "Asynchronous video (HireVue-style)",
+    blurb: "Independent, pre-set questions with prep and answer time — no live follow-ups.",
+    pipeline: "independent_batch", // NOT implemented until Phase 4B — declarative only in 4A
+    adaptive_level: "none",
+    followups_enabled: false,
+    challenge_enabled: false,
+    question_independence: "independent",
+    // "CV-informed but not CV-chasing": the CV still provides background context and
+    // controlled personalisation for question generation — it is NOT excluded — but it must
+    // never drive a live, per-answer follow-up chain the way it does in the adaptive engine.
+    // "background_context" signals a deliberately lighter-touch use of candidate_profile
+    // (headline facts, not the full behavioural_examples/potential_probe_areas detail the
+    // adaptive engine leans on) — the actual data-shaping happens when Phase 4B builds the
+    // batch-question call; this field just records the intent so that build starts from the
+    // right premise instead of re-litigating "excluded vs informed".
+    cv_weight: "background_context",
+    jd_weight: "high",
+    motivation_weight: 30, behavioural_weight: 25, technical_weight: 15, commercial_weight: 20, role_specific_weight: 10,
+    question_count: 8,
+    preparation_time: 45, // seconds; null = untimed
+    answer_time: 120,     // seconds; null = untimed
+    evaluation_framework: "standard_rubric", // all formats share one rubric today (validateEvaluation) — see Phase 4 plan §4.2
+  },
+  live_conversational: {
+    label: "Live conversational",
+    blurb: "Adaptive back-and-forth — follow-ups, clarification, challenge.",
+    pipeline: "adaptive_turn", // == today's existing, unmodified engine (submitAnswer/interview_turn)
+    adaptive_level: "moderate",
+    followups_enabled: true,
+    challenge_enabled: true,
+    question_independence: "chained",
+    cv_weight: "full",
+    jd_weight: "high",
+    motivation_weight: 20, behavioural_weight: 30, technical_weight: 15, commercial_weight: 15, role_specific_weight: 20,
+    question_count: 12,
+    preparation_time: null,
+    answer_time: null,
+    evaluation_framework: "standard_rubric",
+  },
+  technical: {
+    label: "Technical",
+    blurb: "Adaptive, technical-weighted questioning drawn from role-specific topics.",
+    pipeline: "adaptive_turn",
+    adaptive_level: "moderate",
+    followups_enabled: true,
+    challenge_enabled: true,
+    question_independence: "chained",
+    cv_weight: "moderate",
+    jd_weight: "high",
+    motivation_weight: 10, behavioural_weight: 15, technical_weight: 50, commercial_weight: 10, role_specific_weight: 15,
+    question_count: 10,
+    preparation_time: null,
+    answer_time: null,
+    evaluation_framework: "standard_rubric",
+  },
+};
+
+const INTERVIEW_STAGES = [
+  {
+    key: "recruiter_screen", label: "Recruiter / HR Screen",
+    blurb: "Motivation, fit and logistics — usually the first conversation.",
+    defaultFormat: "asynchronous_video", allowedFormats: ["asynchronous_video", "live_conversational"],
+    overrides: { question_count: 5, motivation_weight: 45, behavioural_weight: 20, technical_weight: 5, commercial_weight: 25, role_specific_weight: 5, preparation_time: 20, answer_time: 90 },
+  },
+  {
+    key: "first_round", label: "First Round",
+    blurb: "The standard first interview for the role.",
+    defaultFormat: "live_conversational", allowedFormats: ["live_conversational", "asynchronous_video"],
+    overrides: null,
+  },
+  {
+    key: "technical", label: "Technical Interview",
+    blurb: "Technical-weighted, role-specific questioning.",
+    defaultFormat: "technical", allowedFormats: ["technical"],
+    overrides: null,
+  },
+  {
+    key: "final_round", label: "Final Round / Superday",
+    blurb: "Deeper, more assertive — strong CV and technical usage.",
+    defaultFormat: "live_conversational", allowedFormats: ["live_conversational"],
+    overrides: { adaptive_level: "high", question_count: 15, motivation_weight: 15, behavioural_weight: 25, technical_weight: 25, commercial_weight: 15, role_specific_weight: 20, cv_weight: "full" },
+  },
+];
+// Note: Assessment Centre is deliberately NOT a stage/format here — it is a separate,
+// dedicated engine (EXERCISE_TYPES/generateAcScenario/submitAcResponse) with its own entry
+// point (the "Assessment Centre" nav item -> screen "ac_home"). Phase 4A removes the old
+// "Assessment Centre" option from this normal interview builder's stage list entirely,
+// rather than representing it in this catalog, so there is no path by which selecting it
+// here could ever reach the wrong engine again.
+
+function stageByKey(key) { return INTERVIEW_STAGES.find((s) => s.key === key) || INTERVIEW_STAGES[1]; }
+
+// Resolves a stage + optional format override into a full, concrete configuration object.
+// Stage-level `overrides` are merged on top of the chosen format's base config — this is
+// deliberately NOT a full stage x format matrix (the audit's plan explicitly called that out
+// as unnecessary complexity); most stages just need a sensible default plus a handful of
+// tweaked weights/timing, not a wholly separate config.
+function resolveInterviewConfig(stageKey, formatKeyOverride) {
+  const stage = stageByKey(stageKey);
+  const formatKey = (formatKeyOverride && stage.allowedFormats.includes(formatKeyOverride)) ? formatKeyOverride : stage.defaultFormat;
+  const base = INTERVIEW_FORMATS[formatKey];
+  const resolved = { ...base, ...(stage.overrides || {}), stage: stage.key, format: formatKey };
+  return resolved;
+}
 
 /* ------------------------------------------------------------------ */
 /* PDF TEXT EXTRACTION — dynamically loads pdf.js from cdnjs at runtime */
@@ -843,8 +985,8 @@ function App() {
   const [wizardStep, setWizardStep] = useState(1);
   const [company, setCompany] = useState("");
   const [role, setRole] = useState("");
-  const [stage, setStage] = useState("First Round");
-  const [itype, setItype] = useState("Mixed");
+  const [interviewStage, setInterviewStage] = useState("first_round"); // recruiter_screen | first_round | technical | final_round
+  const [interviewFormat, setInterviewFormat] = useState(null); // null = use the stage's default format; only meaningful when the stage allows a choice
   const [length, setLength] = useState(12);
   const [jdText, setJdText] = useState("");
   const [cvText, setCvText] = useState("");
@@ -1215,7 +1357,7 @@ Rules: mini study guide, not an essay. core_knowledge 3-5 points, key_points 3-5
 
   function loadDemo() {
     setCompany("JPMorgan"); setRole("Global Markets Summer Analyst");
-    setJdText(DEMO_JD); setCvText(DEMO_CV); setStage("First Round"); setItype("Mixed");
+    setJdText(DEMO_JD); setCvText(DEMO_CV); setInterviewStage("first_round"); setInterviewFormat(null);
   }
 
   function startCreateFlow(focusWeak = false) {
@@ -1229,6 +1371,11 @@ Rules: mini study guide, not an essay. core_knowledge 3-5 points, key_points 3-5
     const cleanRole = sanitizeText(role);
     const cleanJd = sanitizeText(jdText);
     const cleanCv = sanitizeText(cvText);
+    // Phase 4A: resolve the chosen stage (+ optional format override) into a concrete config.
+    // This is persisted below and is what Phase 4B's independent/batch engine will branch on;
+    // in 4A it is NOT yet used to change question-generation or evaluation behaviour — every
+    // interview still runs through the existing adaptive engine unchanged (see catalog comment).
+    const ivConfig = resolveInterviewConfig(interviewStage, interviewFormat);
     try {
       const weaknessNote = targetTopic
         ? `The candidate came here specifically from a Classroom lesson to practise this exact weakness: "${targetTopic}". Weight the question plan heavily toward re-testing this specific competency — it should be tested more than once, with rising difficulty if the candidate does well.` +
@@ -1255,16 +1402,18 @@ Rules: mini study guide, not an essay. core_knowledge 3-5 points, key_points 3-5
 }
 Rules: "basis" must honestly mark whether each competency is explicitly stated in the JD, reasonably inferred, or just generally expected for this role type. question_mix percentages sum to 100 and reflect the actual role type. potential_probe_areas should point at specific claims worth challenging. opening_question must be natural and specific, not generic.`;
 
-      const userText = `${weaknessNote}\n\nCompany: ${cleanCompany}\nRole: ${cleanRole}\nInterview stage: ${stage}\nInterview type requested: ${itype}\n\nJob description:\n${cleanJd}\n\nCandidate CV:\n${cleanCv}`;
+      const stageLabel = stageByKey(ivConfig.stage).label;
+      const formatLabel = INTERVIEW_FORMATS[ivConfig.format].label;
+      const userText = `${weaknessNote}\n\nCompany: ${cleanCompany}\nRole: ${cleanRole}\nInterview stage: ${stageLabel}\nInterview format: ${formatLabel}\n\nJob description:\n${cleanJd}\n\nCandidate CV:\n${cleanCv}`;
       const result = validateProfile(await callClaude(system, userText, 3000, false, { requestType: "interview_profile", applicationId }));
       setProfile(result);
 
-      await dbUpdateApplication(applicationId, { job_description: cleanJd, interview_stage: stage, interview_type: itype, interview_length: length, status: "active" });
-      const ivRow = await dbCreateInterview(user.id, applicationId);
+      await dbUpdateApplication(applicationId, { job_description: cleanJd, interview_stage: stageLabel, interview_type: formatLabel, interview_length: length, status: "active" });
+      const ivRow = await dbCreateInterview(user.id, applicationId, ivConfig);
       const q1 = await dbInsertQuestion(ivRow.id, 1, result.opening_question);
 
       const newInterview = {
-        id: ivRow.id, applicationId, company: cleanCompany, role: cleanRole, stage, itype, startedAt: Date.now(),
+        id: ivRow.id, applicationId, company: cleanCompany, role: cleanRole, stage: ivConfig.stage, format: ivConfig.format, stageLabel, formatLabel, startedAt: Date.now(),
         maxQuestions: length, transcript: [], currentQuestion: { ...result.opening_question, dbId: q1.id, questionNumber: 1 }, status: "planned",
       };
       setInterview(newInterview);
@@ -1384,7 +1533,7 @@ Rules: scores computed honestly from the transcript's evaluations. Never fabrica
   }
 
   function resetForNewInterview() {
-    setCompany(""); setRole(""); setJdText(""); setCvText(""); setStage("First Round"); setItype("Mixed"); setLength(12);
+    setCompany(""); setRole(""); setJdText(""); setCvText(""); setInterviewStage("first_round"); setInterviewFormat(null); setLength(12);
     setProfile(null); setInterview(null); setReport(null); setError(""); setFocusWeaknesses(false); setWizardStep(1); setApplicationId(null);
     setScreen("create");
   }
@@ -1962,25 +2111,46 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
             </div>
           )}
 
-          {wizardStep === 4 && (
+          {wizardStep === 4 && (() => {
+            const currentStage = stageByKey(interviewStage);
+            const canChooseFormat = currentStage.allowedFormats.length > 1;
+            return (
             <div className="jr-fade">
               <h2 style={{ fontSize: 23, fontWeight: 800, color: "var(--navy)", margin: "14px 0 6px" }}>Choose your interview.</h2>
-              <p style={{ fontSize: 14, color: "var(--text-dim)", marginBottom: 20 }}>Stage, type and length.</p>
+              <p style={{ fontSize: 14, color: "var(--text-dim)", marginBottom: 20 }}>What stage are you preparing for?</p>
               <Card style={{ padding: 22 }}>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-                  <div>
-                    <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Interview stage</label>
-                    <select value={stage} onChange={(e) => setStage(e.target.value)} style={{ ...inputStyle, marginTop: 6, background: "#fff" }}>
-                      {["First Round", "HireVue / Video Interview", "Assessment Centre", "Superday / Final Round", "Technical Interview", "Behavioural Interview", "Other"].map((s) => <option key={s}>{s}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Interview type</label>
-                    <select value={itype} onChange={(e) => setItype(e.target.value)} style={{ ...inputStyle, marginTop: 6, background: "#fff" }}>
-                      {["Mixed", "Behavioural", "Technical", "Commercial"].map((s) => <option key={s}>{s}</option>)}
-                    </select>
-                  </div>
+                <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Interview stage</label>
+                <div className="flex flex-col gap-2 mt-2 mb-4">
+                  {INTERVIEW_STAGES.map((s) => (
+                    <button key={s.key} onClick={() => { setInterviewStage(s.key); setInterviewFormat(null); }} style={{
+                      textAlign: "left", padding: "12px 14px", borderRadius: "var(--radius-sm)", cursor: "pointer",
+                      border: interviewStage === s.key ? "1.5px solid var(--blue)" : "1.5px solid var(--border)",
+                      background: interviewStage === s.key ? "var(--highlight)" : "#fff",
+                    }}>
+                      <div style={{ fontSize: 14, fontWeight: 700, color: interviewStage === s.key ? "var(--blue)" : "var(--navy)" }}>{s.label}</div>
+                      <div style={{ fontSize: 12.5, color: "var(--text-dim)", marginTop: 2 }}>{s.blurb}</div>
+                    </button>
+                  ))}
                 </div>
+
+                {canChooseFormat && (
+                  <>
+                    <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Format</label>
+                    <div className="flex gap-2 mt-2 mb-4">
+                      {currentStage.allowedFormats.map((fKey) => {
+                        const active = (interviewFormat || currentStage.defaultFormat) === fKey;
+                        return (
+                          <button key={fKey} onClick={() => setInterviewFormat(fKey)} style={{
+                            flex: 1, padding: "10px 12px", borderRadius: "var(--radius-sm)", fontSize: 13, fontWeight: 600, cursor: "pointer", textAlign: "left",
+                            border: active ? "1.5px solid var(--blue)" : "1.5px solid var(--border)",
+                            background: active ? "var(--highlight)" : "#fff", color: active ? "var(--blue)" : "var(--text-dim)",
+                          }}>{INTERVIEW_FORMATS[fKey].label}</button>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
+
                 <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Length</label>
                 <div className="flex gap-2 mt-2">
                   {[["Short", 8], ["Standard", 12], ["Long", 18]].map(([l, v]) => (
@@ -1992,13 +2162,18 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                   ))}
                 </div>
               </Card>
+              <div style={{ fontSize: 12.5, color: "var(--text-faint)", marginTop: 14 }}>
+                Looking for a group exercise, case study, or written test instead?{" "}
+                <span onClick={() => setScreen("ac_home")} style={{ color: "var(--blue)", fontWeight: 600, cursor: "pointer" }}>Try Assessment Centre</span>.
+              </div>
               {error && <div style={{ color: "var(--bad)", fontSize: 13, marginTop: 14 }}>{error}</div>}
               <div className="flex flex-wrap gap-3 mt-5">
                 <Btn variant="secondary" onClick={() => setWizardStep(3)}><ArrowLeft size={15} /> Back</Btn>
                 <Btn variant="accent" full onClick={() => guarded(analyseAndPlan)}>Build my interview <Sparkles size={16} /></Btn>
               </div>
             </div>
-          )}
+            );
+          })()}
         </div>
       )}
 
@@ -2008,7 +2183,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
       {screen === "preview" && profile && (
         <div className="jr-fade" style={{ maxWidth: 680, margin: "0 auto", padding: "44px 24px" }}>
           <h2 style={{ fontSize: 24, fontWeight: 800, color: "var(--navy)", marginBottom: 4 }}>{role} <span style={{ color: "var(--text-faint)", fontWeight: 600 }}>· {company}</span></h2>
-          <div style={{ fontSize: 13.5, color: "var(--text-dim)", marginBottom: 22 }}>{stage} · {itype} · {length} questions</div>
+          <div style={{ fontSize: 13.5, color: "var(--text-dim)", marginBottom: 22 }}>{interview?.stageLabel} · {interview?.formatLabel} · {length} questions</div>
 
           <Card style={{ padding: 22, marginBottom: 16 }}>
             <div style={{ fontSize: 15, fontWeight: 700, color: "var(--navy)", marginBottom: 12 }}>Key competencies this interview will test</div>
