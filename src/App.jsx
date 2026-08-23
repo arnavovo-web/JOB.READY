@@ -29,7 +29,7 @@ import { runSimulatedAdaptiveTurn, stampQuestionFromDecision } from "./adaptiveE
 // candidate_claims). Tells Phase 2C what it should know about the candidate; never decides
 // category, turn type, or anchor source itself (those stay the scheduler's, above).
 import {
-  dedupeNewClaims, classifyClaimStatus, buildCandidateSignals, isCandidateIntelligenceUsable,
+  dedupeNewClaims, buildCandidateSignals, isCandidateIntelligenceUsable,
   mergeProbeAreasForInterview, matchClaimIdForProbeArea,
 } from "./candidateIntelligence";
 // Phase 2E: candidate strategy — turns Candidate Intelligence (2D, above) into a compact,
@@ -37,6 +37,14 @@ import {
 // small, BOUNDED nudge, plus informational-only context for Call 2's prompt. Never decides
 // category, turn type, or anchor source itself — see interviewStrategy.js's own docstring.
 import { buildInterviewStrategy } from "./interviewStrategy";
+// Phase 2F: candidate state & evidence engine — deterministically classifies the STRENGTH of
+// the evidence Call 1's own evaluation rubric already produced (strong/moderate/weak/
+// contradictory/insufficient — no new AI call), and folds it into a structured, explainable
+// Candidate State (per-claim/competency evidence history, confidence, trend). Candidate State
+// is a strict superset of candidateIntelligence's own signals — Interview Strategy (above)
+// consumes it as a drop-in replacement, never a second input. Never decides category, turn
+// type, or anchor source itself — see candidateState.js's own docstring.
+import { buildEvidenceEvent, updateClaimEvidence, buildCandidateState, updateCandidateState } from "./candidateState";
 
 /* ================================================================== *
  * JOB.READY — DESIGN SYSTEM (unchanged from previous build)
@@ -2154,6 +2162,57 @@ Rules: honest 0-100 scores. follow_up_worthy: true only if the answer surfaced s
       const userText = `Interview profile: ${JSON.stringify(profile.interview_profile)}\nCandidate profile: ${JSON.stringify(profile.candidate_profile)}\nQuestions asked so far: ${askedSoFar} of target ${interview.maxQuestions}\nTranscript so far: ${JSON.stringify(interview.transcript)}\n\nQuestion just asked: ${JSON.stringify(currentQ)}${wasFollowUp ? " (this question was itself a follow-up to the previous one)" : ""}\nCandidate's answer: ${cleanAnswer}`;
       const evalResult = validateEvaluationSignals(await callClaude(system, userText, 900, false, { requestType: "interview_turn_evaluate", applicationId: interview.applicationId, interviewId: interview.id }));
 
+      // ---- PHASE 2F: CANDIDATE STATE & EVIDENCE ENGINE — runs BEFORE Candidate Strategy is
+      // built, per the Phase 2F flow (evaluation -> evidence engine -> candidate state ->
+      // strategy -> scheduler). Two INDEPENDENT try/catches, deliberately — a failure building
+      // the broader Candidate State snapshot must never suppress the (separate, simpler)
+      // evidence-event computation for the claim just tested, or vice versa; each degrades on
+      // its own, same "one Candidate Intelligence failure never blocks another" contract every
+      // other call site in this function already follows. ----
+      // (1) candidateStateForStrategy: a Candidate State snapshot built from already-hydrated
+      // state (candidateIntelligence, candidateClaims, questionHistory — all loaded once at
+      // session hydration, no DB read here). Never fatal: a failure degrades to the plain
+      // candidateIntelligence signals (pre-2F behaviour) for candidateStrategy's input below.
+      let candidateStateForStrategy = candidateIntelligence;
+      try {
+        candidateStateForStrategy = buildCandidateState({ candidateSignals: candidateIntelligence, claims: candidateClaims, questionHistory });
+      } catch (csfErr) { console.error("candidate state build failed:", csfErr.message); }
+
+      // (2) if the question just answered (currentQ) was itself targeting a persistent
+      // candidate claim (set when THAT question was generated, in a prior turn — see
+      // generateAndPersistNextQuestion), compute this turn's evidence event HERE (using
+      // evalResult, already available) and the claim's updated row — folded into
+      // liveClaimsForStrategy (a copy of candidateClaims with just that one claim's row
+      // updated) so buildInterviewStrategy's own `claims` argument below reflects THIS turn's
+      // evidence, not merely next turn's (its `claims` param reads off liveClaimsForStrategy
+      // directly, never off candidateStateForStrategy). currentTurnEvidenceEvent and
+      // updatedTargetedClaimRow are both reused verbatim by the claim-update block further
+      // down, which persists them — the classification is never computed twice. Never fatal to
+      // the interview.
+      let currentTurnEvidenceEvent = null;
+      let updatedTargetedClaimRow = null;
+      let liveClaimsForStrategy = candidateClaims;
+      try {
+        if (currentQ?.targetedClaimId) {
+          const targetedClaim = candidateClaims.find((c) => c.id === currentQ.targetedClaimId);
+          currentTurnEvidenceEvent = buildEvidenceEvent({
+            interviewId: interview.id, questionId: currentQ.dbId, claimId: currentQ.targetedClaimId,
+            category: currentQ.category, competency: currentQ.competency, evaluation: evalResult.evaluation,
+            answerExcerpt: cleanAnswer, priorStatus: targetedClaim?.status,
+          });
+          if (targetedClaim) {
+            updatedTargetedClaimRow = updateClaimEvidence(targetedClaim, currentTurnEvidenceEvent);
+            liveClaimsForStrategy = candidateClaims.map((c) => (c.id === targetedClaim.id ? updatedTargetedClaimRow : c));
+          }
+          // Also folded into candidateStateForStrategy's own claims/competencies/categories
+          // (the current-interview live-update path, § performance) — safe regardless of
+          // whether (1) above succeeded, since updateCandidateState never throws on any input
+          // shape; this is purely additive bookkeeping and never what makes THIS turn's
+          // strategy reflect the evidence (liveClaimsForStrategy above already does that).
+          candidateStateForStrategy = updateCandidateState(candidateStateForStrategy, currentTurnEvidenceEvent);
+        }
+      } catch (ceErr) { console.error("candidate evidence event build failed:", ceErr.message); }
+
       // ---- PHASE 2E: CANDIDATE STRATEGY — derived entirely from already-hydrated state
       // (candidateIntelligence, candidateClaims — both loaded once at session hydration, see
       // loadFullUserState) plus this interview's own in-memory transcript, WITH the turn just
@@ -2162,12 +2221,15 @@ Rules: honest 0-100 scores. follow_up_worthy: true only if the answer surfaced s
       // this function than newTranscript's own declaration). No DB read, no AI call, never
       // fatal: a build failure here degrades to an inert strategy (empty categoryPreference),
       // which methodology.js's scheduler treats as "no nudge" — the interview continues
-      // exactly as it would have pre-2E. ----
+      // exactly as it would have pre-2E. candidateSignals is candidateStateForStrategy (Phase
+      // 2F's Candidate State) rather than raw candidateIntelligence — a strict superset (see
+      // candidateState.js's own docstring), so this is byte-identical to pre-2F behaviour
+      // whenever Candidate State itself degrades back to candidateIntelligence above. ----
       let candidateStrategy = null;
       try {
         const answeredTurn = { question: currentQ, answer: cleanAnswer, evaluation: evalResult.evaluation };
         candidateStrategy = buildInterviewStrategy({
-          candidateSignals: candidateIntelligence, claims: candidateClaims,
+          candidateSignals: candidateStateForStrategy, claims: liveClaimsForStrategy,
           requiredCompetencies: profile?.interview_profile?.competencies,
           transcript: [...interview.transcript, answeredTurn],
         });
@@ -2210,21 +2272,20 @@ Rules: honest 0-100 scores. follow_up_worthy: true only if the answer surfaced s
       // Phase 2D: if the question just answered was itself targeting a persistent candidate
       // claim (set below when that challenge_claim question was generated), update that
       // claim's status/confidence deterministically from the SAME evaluation scores Call 1
-      // already produced above — no new AI call. Never fatal to the interview.
+      // already produced above — no new AI call. Phase 2F: routed through the Evidence Engine
+      // (updateClaimEvidence), already computed once above (updatedTargetedClaimRow, BEFORE
+      // the scheduler ran) — reused verbatim here, never recomputed. Never fatal to the
+      // interview.
       if (currentQ?.targetedClaimId) {
         try {
-          const target = candidateClaims.find((c) => c.id === currentQ.targetedClaimId);
-          if (target) {
-            const { status, confidence } = classifyClaimStatus({ currentStatus: target.status, evaluation: evalResult.evaluation });
-            const evidence = [...(Array.isArray(target.evidence) ? target.evidence : []), {
-              source: "interview", interview_id: interview.id, question_id: currentQ.dbId, quote: cleanAnswer.slice(0, 300),
-            }];
+          if (updatedTargetedClaimRow) {
             const fields = {
-              status, confidence, evidence, evidence_count: evidence.length,
+              status: updatedTargetedClaimRow.status, confidence: updatedTargetedClaimRow.confidence,
+              evidence: updatedTargetedClaimRow.evidence, evidence_count: updatedTargetedClaimRow.evidence_count,
               last_tested_interview_id: interview.id, last_tested_at: new Date().toISOString(), updated_at: new Date().toISOString(),
             };
-            await dbUpdateClaim(target.id, fields);
-            setCandidateClaims(candidateClaims.map((c) => (c.id === target.id ? { ...c, ...fields } : c)));
+            await dbUpdateClaim(currentQ.targetedClaimId, fields);
+            setCandidateClaims(candidateClaims.map((c) => (c.id === currentQ.targetedClaimId ? { ...c, ...fields } : c)));
           }
         } catch (ciErr) { console.error("candidate intelligence claim update failed:", ciErr.message); }
       }
@@ -2327,8 +2388,13 @@ Rules: honest 0-100 scores. follow_up_worthy: true only if the answer surfaced s
     // Never fatal: a build failure degrades to no strategy context for the retried prompt.
     let candidateStrategy = null;
     try {
+      // Phase 2F: candidateClaims here already reflects any evidence update submitAnswer
+      // persisted for the just-answered question BEFORE Call 2 failed (see the claim-update
+      // block above, which always runs before the Call-2 try/catch) — so building Candidate
+      // State from it now picks that up with no extra computation needed.
+      const candidateStateForStrategy = buildCandidateState({ candidateSignals: candidateIntelligence, claims: candidateClaims, questionHistory });
       candidateStrategy = buildInterviewStrategy({
-        candidateSignals: candidateIntelligence, claims: candidateClaims,
+        candidateSignals: candidateStateForStrategy, claims: candidateClaims,
         requiredCompetencies: profile?.interview_profile?.competencies, transcript: interview.transcript,
       });
     } catch (csErr) { console.error("candidate strategy build failed:", csErr.message); }
