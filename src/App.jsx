@@ -6,17 +6,18 @@ import {
   GraduationCap, BookOpen, Globe, HelpCircle, XCircle,
   Users, Briefcase, Mail, FileText, History, Clock
 } from "lucide-react";
-// Phase 2A: canonical taxonomy / anchor-source / stage-methodology engine.
-// A companion layer to the Phase 4A INTERVIEW_STAGES/INTERVIEW_FORMATS
-// catalog below — it does not read, write, or duplicate that catalog.
-// Only category normalization is wired into this file for now (the three
-// call sites below). anchor_source normalization has no call site yet —
-// no schema in this file emits anchor_source until Phase 2B adds it to
-// the batch pipeline — so normalizeAnchorSource is deliberately not
-// imported here; it stays exported from methodology.js for that phase.
-// The methodology calculation itself (computeMethodologyDistribution) is
-// likewise not called anywhere yet — that's also Phase 2B's job.
-import { mapLegacyCategory, mapCategoryWithLegacyFallback, normalizeCategoryMix } from "./methodology";
+// Phase 2A/2B: canonical taxonomy / anchor-source / stage-methodology
+// engine. A companion layer to the Phase 4A INTERVIEW_STAGES/
+// INTERVIEW_FORMATS catalog below — it does not read, write, or duplicate
+// that catalog. Phase 2B wires computeMethodologyDistribution and
+// BATCH_ANCHOR_SOURCES into the independent/batch pipeline only (see
+// analyseAndPlan's independent_batch branch, buildQuestionBatchPrompt,
+// and validateQuestionBatch below); submitAnswer/interview_turn is
+// untouched.
+import {
+  mapLegacyCategory, mapCategoryWithLegacyFallback, normalizeCategoryMix,
+  BATCH_ANCHOR_SOURCES, computeMethodologyDistribution,
+} from "./methodology";
 
 /* ================================================================== *
  * JOB.READY — DESIGN SYSTEM (unchanged from previous build)
@@ -212,7 +213,9 @@ function validateReport(r) {
     })).filter((t) => t.topic),
   };
 }
-function validateProfile(p) {
+// Exported (like validateQuestionBatch) so it's directly unit-testable —
+// see src/App.validators.test.js.
+export function validateProfile(p) {
   p = p || {};
   const ip = p.interview_profile || {};
   const cp = p.candidate_profile || {};
@@ -233,6 +236,18 @@ function validateProfile(p) {
       question_mix: normalizeCategoryMix(
         Object.keys(scoreMap(ip.question_mix)).length ? scoreMap(ip.question_mix) : { motivation_fit: 30, cv_behavioural: 25, role_specific: 20, technical: 15, commercial_awareness: 10 }
       ),
+      // Phase 2B: structured JD signals feeding computeMethodologyDistribution
+      // (see buildJdProfile below). "direction" is deliberately not part of
+      // this schema — the AI is only asked for the five fields below;
+      // buildJdProfile constructs direction: 1 internally. confidence
+      // reuses the same explicit|inferred|general enum as competencies.basis.
+      jd_requirements: arr(ip.jd_requirements).map((r) => ({
+        requirement: str(r?.requirement),
+        evidence_quote: str(r?.evidence_quote),
+        confidence: ["explicit", "inferred", "general"].includes(r?.confidence) ? r.confidence : "general",
+        category: mapLegacyCategory(r?.category),
+        occurrences: num(r?.occurrences, 1, 1, 50),
+      })).filter((r) => r.requirement && r.evidence_quote),
     },
     candidate_profile: {
       education: arr(cp.education).map((s) => str(s)), experience: arr(cp.experience).map((s) => str(s)),
@@ -246,6 +261,48 @@ function validateProfile(p) {
     },
   };
 }
+
+// Phase 2B: evidence-quote verification (methodology.js's B.10 requirement)
+// lives here, not in methodology.js — methodology.js is a pure module with
+// no access to the raw JD text, only to already-built signal objects.
+// Drops any requirement whose evidence_quote isn't an actual substring of
+// the real JD text supplied to the extraction call — a hallucinated quote
+// never reaches computeMethodologyDistribution at all.
+export function filterEvidencedSignals(jdRequirements, jdText) {
+  const haystack = str(jdText);
+  return arr(jdRequirements).filter((r) => r?.evidence_quote && haystack.includes(r.evidence_quote));
+}
+
+// Builds the structured jd_profile.signals shape computeMethodologyDistribution
+// expects, from validateProfile's already-normalized jd_requirements plus the
+// raw JD text used for the substring check. direction is always 1 here — see
+// the "drop direction from the AI-facing schema" decision on validateProfile's
+// jd_requirements field above; methodology.js itself keeps supporting a
+// direction field for any future non-AI signal source.
+export function buildJdProfile(jdRequirements, jdText) {
+  const evidenced = filterEvidencedSignals(jdRequirements, jdText);
+  return {
+    signals: evidenced.map((r) => ({
+      requirement: r.requirement,
+      evidence_quote: r.evidence_quote,
+      confidence: r.confidence,
+      category: r.category,
+      occurrences: r.occurrences,
+      direction: 1,
+    })),
+  };
+}
+
+// Small non-cryptographic string hash (djb2) for applications.jd_profile_hash.
+// Write-only in Phase 2B — nothing reads this back to skip re-extraction yet;
+// it's persisted now so a future caching optimization doesn't need a migration.
+function hashText(text) {
+  let hash = 5381;
+  const s = str(text);
+  for (let i = 0; i < s.length; i++) hash = ((hash * 33) ^ s.charCodeAt(i)) >>> 0;
+  return hash.toString(16);
+}
+
 function validateNextTurn(n) {
   n = n || {};
   return {
@@ -298,6 +355,14 @@ export function validateQuestionBatch(r, expectedCount) {
     // rather than a re-hardcoded legacy enum.
     category: mapCategoryWithLegacyFallback(q?.category, "role_specific"),
     competency: str(q?.competency),
+    // Phase 2B: independent of category/competency (2A.3). Bare string,
+    // structurally restricted to BATCH_ANCHOR_SOURCES — "previous_answer"
+    // is a legitimate anchor_source value in general (the scheduler uses
+    // it, 2C.1), but is meaningless at batch-creation time (no answer
+    // exists yet), so it's rejected here the same as any other invalid
+    // value, falling back to "generic" rather than trusting the prompt
+    // instruction alone.
+    anchor_source: BATCH_ANCHOR_SOURCES.includes(q?.anchor_source) ? q.anchor_source : "generic",
     difficulty: DIFFS.includes(q?.difficulty) ? q.difficulty : "intermediate",
     is_technical: bool(q?.is_technical, false),
     role_relevance: str(q?.role_relevance),
@@ -400,15 +465,18 @@ async function dbUploadDocumentFile(userId, applicationId, file) {
   return path;
 }
 
-async function dbCreateInterview(userId, applicationId, config) {
+async function dbCreateInterview(userId, applicationId, config, methodologyDistribution) {
   const supabase = await getSupabase();
   // Phase 4A: persist the resolved stage/format/config (see resolveInterviewConfig above).
   // `config` may be omitted/undefined by any future caller — stage/format/config all stay
   // NULL in that case, which is exactly the legacy shape historical interview rows already
   // have, so no other code path needs a special case for "old vs new" interviews.
+  // Phase 2B: methodologyDistribution is likewise optional/undefined-safe — stays NULL for
+  // any caller that doesn't pass one, same "legacy shape stays valid" principle.
   const { data, error } = await supabase.from("interviews").insert({
     user_id: userId, application_id: applicationId, status: "in_progress", started_at: new Date().toISOString(),
     stage: config?.stage || null, format: config?.format || null, config: config || null,
+    methodology_distribution: methodologyDistribution || null,
   }).select().single();
   if (error) throw new Error("Couldn't start the interview. Please try again.");
   return data;
@@ -444,6 +512,10 @@ async function dbInsertQuestionBatch(interviewId, questions, meta) {
     prep_seconds: Number.isFinite(meta?.prepSeconds) ? meta.prepSeconds : null,
     answer_seconds: Number.isFinite(meta?.answerSeconds) ? meta.answerSeconds : null,
     metadata: { difficulty: q.difficulty || null, is_technical: !!q.is_technical, role_relevance: q.role_relevance || null, expected_answer_characteristics: q.expected_answer_characteristics || null },
+    // Phase 2B: independent from category/competency (2A.3) — one of
+    // BATCH_ANCHOR_SOURCES ("generic"/"cv"/"jd"/"company"), never
+    // "previous_answer" at batch-creation time.
+    anchor_source: q.anchor_source || null,
   }));
   const { data, error } = await supabase.from("interview_questions").insert(rows).select();
   if (error) throw new Error("Couldn't save the interview questions. Please try again.");
@@ -755,9 +827,20 @@ function cvBackgroundSummary(candidateProfile) {
   };
 }
 
-function buildQuestionBatchPrompt(config, interviewProfile, cvBackground, jdText, weaknessNote) {
+// Phase 2B: methodologyDistribution (the output of computeMethodologyDistribution,
+// keyed by config.stage) replaces the legacy config.*_weight fields as the
+// "target composition" hint below — the only place those legacy fields were
+// ever read (see the Phase 2A/2B audit). config.*_weight/cv_weight/jd_weight
+// stay declared on INTERVIEW_FORMATS/INTERVIEW_STAGES, deprecated not
+// removed, per the standing rollback-safety decision.
+function buildQuestionBatchPrompt(config, interviewProfile, cvBackground, jdText, weaknessNote, methodologyDistribution) {
   const stageLabel = stageByKey(config.stage).label;
   const formatLabel = INTERVIEW_FORMATS[config.format].label;
+  const md = methodologyDistribution || {};
+  // case_problem_solving is deliberately omitted from this sentence — it is
+  // always 0 for interview methodology (reserved for future Assessment
+  // Centre / case-study work) and would only confuse the model.
+  const compositionLine = `motivation ${num(md.motivation_fit)}%, behavioural ${num(md.behavioural_competency)}%, situational judgement ${num(md.situational_judgement)}%, technical/functional ${num(md.technical_functional)}%, commercial awareness ${num(md.commercial_awareness)}%`;
   const system = `You are an expert interview designer building a COMPLETE, FIXED set of independent interview questions for an asynchronous, one-way video interview (${stageLabel} — ${formatLabel}). Every question must be answerable entirely on its own, with zero dependency on any other question or its answer — this set is generated once, in full, before the candidate sees question 1, and none of it changes based on how they answer.
 
 Return strict JSON only, no prose, no markdown fences, in this exact shape:
@@ -767,6 +850,7 @@ Return strict JSON only, no prose, no markdown fences, in this exact shape:
       "text": "",
       "category": "motivation_fit|cv_behavioural|role_specific|technical|commercial_awareness",
       "competency": "",
+      "anchor_source": "generic|cv|jd|company",
       "difficulty": "foundational|intermediate|advanced",
       "is_technical": false,
       "role_relevance": "one sentence on why this question matters for this specific role",
@@ -777,7 +861,8 @@ Return strict JSON only, no prose, no markdown fences, in this exact shape:
 
 Rules:
 - Generate exactly ${config.question_count} questions.
-- Target composition (approximate weighting, not a rigid quota): motivation ${config.motivation_weight}%, behavioural ${config.behavioural_weight}%, technical ${config.technical_weight}%, commercial awareness ${config.commercial_weight}%, role-specific ${config.role_specific_weight}%.
+- Target composition (approximate weighting, not a rigid quota): ${compositionLine}.
+- "anchor_source" describes what grounds the question: "cv" when it references a specific fact from the candidate's background below, "jd" when it's built directly from a specific requirement in the job description, "company" when it's grounded in company-specific context, or "generic" when it's a standard question for the category/competency with no specific anchor.
 - Only mark "is_technical": true, and only include a genuinely technical question, where THIS SPECIFIC role actually requires technical assessment at THIS stage. Do NOT include technical questions just because the role sounds finance-related or technical-sounding — judge from the actual job description, division, and stage. A recruiter/HR screen in particular should very rarely, if ever, include a technical question.
 - The candidate's background below is BACKGROUND CONTEXT ONLY, for light, natural personalisation (e.g. referencing something real they listed). Do NOT build any question that only makes sense given a specific expected answer to an earlier question — every question must be self-contained and independently gradable, with no chain: question 2 must not depend on how question 1 might be answered, question 3 must not depend on question 2, and so on for the entire set.
 - Vary categories and difficulty sensibly across the set rather than clustering.`;
@@ -786,8 +871,8 @@ Rules:
   return { system, userText };
 }
 
-async function generateQuestionBatch(config, interviewProfile, cvBackground, jdText, weaknessNote, meta) {
-  const { system, userText } = buildQuestionBatchPrompt(config, interviewProfile, cvBackground, jdText, weaknessNote);
+async function generateQuestionBatch(config, interviewProfile, cvBackground, jdText, weaknessNote, meta, methodologyDistribution) {
+  const { system, userText } = buildQuestionBatchPrompt(config, interviewProfile, cvBackground, jdText, weaknessNote, methodologyDistribution);
   const maxTokens = Math.min(7500, 1200 + config.question_count * 350);
   const raw = await callClaude(system, userText, maxTokens, false, { ...meta, requestType: "interview_question_batch" });
   return validateQuestionBatch(raw, config.question_count);
@@ -1609,7 +1694,8 @@ Rules: mini study guide, not an essay. core_knowledge 3-5 points, key_points 3-5
     "responsibilities": [""], "required_skills": [""], "preferred_skills": [""],
     "competencies": [{"name": "", "basis": "explicit|inferred|general"}],
     "technical_topics": [""], "behavioural_topics": [""], "commercial_topics": [""],
-    "question_mix": {"motivation_fit": 30, "cv_behavioural": 25, "role_specific": 20, "technical": 15, "commercial_awareness": 10}
+    "question_mix": {"motivation_fit": 30, "cv_behavioural": 25, "role_specific": 20, "technical": 15, "commercial_awareness": 10},
+    "jd_requirements": [{"requirement": "", "evidence_quote": "", "confidence": "explicit|inferred|general", "category": "motivation_fit|behavioural_competency|situational_judgement|technical_functional|commercial_awareness", "occurrences": 1}]
   },
   "candidate_profile": {
     "education": [""], "experience": [""], "leadership": [""], "achievements": [""],
@@ -1618,7 +1704,7 @@ Rules: mini study guide, not an essay. core_knowledge 3-5 points, key_points 3-5
   },
   "opening_question": { "text": "", "category": "motivation_fit|cv_behavioural|role_specific|technical|commercial_awareness", "competency": "" }
 }
-Rules: "basis" must honestly mark whether each competency is explicitly stated in the JD, reasonably inferred, or just generally expected for this role type. question_mix percentages sum to 100 and reflect the actual role type. potential_probe_areas should point at specific claims worth challenging. opening_question must be natural and specific, not generic.`;
+Rules: "basis" must honestly mark whether each competency is explicitly stated in the JD, reasonably inferred, or just generally expected for this role type. question_mix percentages sum to 100 and reflect the actual role type. potential_probe_areas should point at specific claims worth challenging. opening_question must be natural and specific, not generic. jd_requirements should list distinct requirements actually evidenced in the job description — "evidence_quote" must be an exact short quote copied verbatim from the job description text (not a paraphrase or summary), "confidence" follows the same explicit/inferred/general distinction as competencies' basis, and "occurrences" is how many times this requirement (or a clear restatement of it) appears in the job description text.`;
 
       const stageLabel = stageByKey(ivConfig.stage).label;
       const formatLabel = INTERVIEW_FORMATS[ivConfig.format].label;
@@ -1626,8 +1712,22 @@ Rules: "basis" must honestly mark whether each competency is explicitly stated i
       const result = validateProfile(await callClaude(system, userText, 3000, false, { requestType: "interview_profile", applicationId }));
       setProfile(result);
 
-      await dbUpdateApplication(applicationId, { job_description: cleanJd, interview_stage: stageLabel, interview_type: formatLabel, interview_length: length, status: "active" });
-      const ivRow = await dbCreateInterview(user.id, applicationId, ivConfig);
+      // Phase 2B: build the structured jd_profile (evidence-quote-verified
+      // subset of result.interview_profile.jd_requirements — see
+      // buildJdProfile/filterEvidencedSignals above) and compute the
+      // deterministic methodology distribution for this stage. Computed for
+      // every pipeline (not just independent_batch) so an adaptive-turn
+      // interview's row also carries a real methodology_distribution instead
+      // of NULL — nothing reads it on the adaptive path yet (that's 2C.3),
+      // this is purely additive persistence.
+      const jdProfile = buildJdProfile(result.interview_profile.jd_requirements, cleanJd);
+      const methodologyDistribution = computeMethodologyDistribution(ivConfig.stage, jdProfile);
+
+      await dbUpdateApplication(applicationId, {
+        job_description: cleanJd, interview_stage: stageLabel, interview_type: formatLabel, interview_length: length, status: "active",
+        jd_profile: jdProfile, jd_profile_hash: hashText(cleanJd),
+      });
+      const ivRow = await dbCreateInterview(user.id, applicationId, ivConfig, methodologyDistribution);
 
       // Phase 4B: branch on the resolved pipeline. independent_batch generates and persists
       // the COMPLETE question set now, before the candidate sees question 1, and never
@@ -1635,11 +1735,12 @@ Rules: "basis" must honestly mark whether each competency is explicitly stated i
       // single-opening-question path (interview_turn generates the rest, one at a time).
       if (ivConfig.pipeline === "independent_batch") {
         const cvBackground = cvBackgroundSummary(result.candidate_profile);
-        const batch = await generateQuestionBatch(ivConfig, result.interview_profile, cvBackground, cleanJd, weaknessNote, { applicationId, interviewId: ivRow.id });
+        const batch = await generateQuestionBatch(ivConfig, result.interview_profile, cvBackground, cleanJd, weaknessNote, { applicationId, interviewId: ivRow.id }, methodologyDistribution);
         if (!batch.questions.length) throw new Error("Couldn't generate the interview questions. Please try again.");
         const savedRows = await dbInsertQuestionBatch(ivRow.id, batch.questions, { prepSeconds: ivConfig.preparation_time, answerSeconds: ivConfig.answer_time });
         const questions = savedRows.map((row, i) => ({
           dbId: row.id, questionNumber: row.question_number, text: row.question_text, category: row.category, competency: row.competency,
+          anchor_source: row.anchor_source,
           difficulty: batch.questions[i]?.difficulty, is_technical: !!batch.questions[i]?.is_technical, role_relevance: batch.questions[i]?.role_relevance,
           expected_answer_characteristics: batch.questions[i]?.expected_answer_characteristics,
           prepSeconds: ivConfig.preparation_time ?? null, answerSeconds: ivConfig.answer_time ?? null,
