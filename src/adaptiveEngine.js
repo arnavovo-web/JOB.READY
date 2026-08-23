@@ -36,11 +36,12 @@ import {
 } from "./methodology.js";
 
 // ---- 2C.2.1 decision <-> {signal, turn_type} maps ------------------------
-// The live interview_turn AI call already returns a free-text "decision"
+// The live interview layer works in terms of a free-text "decision" string
 // (follow_up|new_competency|challenge_claim|clarify|next_section — see
-// App.jsx's validateNextTurn). These two maps are the ONLY place that
-// legacy decision string is interpreted; both funnel an unrecognized or
-// missing decision to the safe "resume normal scheduling" default, same
+// App.jsx's evaluations.decision / legacyDecisionFromTurnType). These two
+// maps are the ONLY place that legacy decision string is interpreted; both
+// funnel an unrecognized or missing decision to the safe "resume normal
+// scheduling" default, same
 // defensive shape as every fallback elsewhere in this codebase.
 const DECISION_OBSERVED_SIGNAL = {
   follow_up: "strong_signal",
@@ -61,8 +62,8 @@ const DECISION_TURN_TYPE = {
 /**
  * normalizeEvaluationResult(evaluationResult)
  *
- * evaluationResult: the live interview_turn result shape (validateNextTurn's
- * output) — { evaluation, decision, next_question, interview_should_end }.
+ * evaluationResult: the { evaluation, decision, next_question,
+ * interview_should_end } shape the live interview layer works in.
  * next_question is deliberately never read here: 2C's entire point is that
  * the scheduler, not the AI's own next_question guess, decides what comes
  * next.
@@ -312,8 +313,9 @@ export function stampQuestionFromDecision(generatedQuestion, decision) {
  * answerText: the candidate's just-submitted answer (submitAnswer's own
  * `cleanAnswer` — not part of evaluationResult, which only carries the
  * AI's judgement of it).
- * evaluationResult: the live interview_turn result (validateNextTurn's
- * shape) for the question just answered (interview.currentQuestion).
+ * evaluationResult: the { evaluation, decision, ... } shape (see
+ * normalizeEvaluationResult above) for the question just answered
+ * (interview.currentQuestion).
  * generateQuestion: (genInput) => generatedQuestion — the injected mock.
  *
  * Returns { evaluation, shouldEnd, probeDepth, decision, genInput, question }.

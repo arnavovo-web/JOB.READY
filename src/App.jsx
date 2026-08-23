@@ -10,14 +10,20 @@ import {
 // engine. A companion layer to the Phase 4A INTERVIEW_STAGES/
 // INTERVIEW_FORMATS catalog below — it does not read, write, or duplicate
 // that catalog. Phase 2B wires computeMethodologyDistribution and
-// BATCH_ANCHOR_SOURCES into the independent/batch pipeline only (see
+// BATCH_ANCHOR_SOURCES into the independent/batch pipeline (see
 // analyseAndPlan's independent_batch branch, buildQuestionBatchPrompt,
-// and validateQuestionBatch below); submitAnswer/interview_turn is
-// untouched.
+// and validateQuestionBatch below); Phase 2C.3 wires the SAME
+// computeMethodologyDistribution() output into the live adaptive_turn
+// pipeline too (submitAnswer) — no second methodology calculation.
 import {
   mapLegacyCategory, mapCategoryWithLegacyFallback, normalizeCategoryMix,
   BATCH_ANCHOR_SOURCES, computeMethodologyDistribution,
 } from "./methodology";
+// Phase 2C.3: the live adaptive interview's deterministic scheduler wiring.
+// submitAnswer/regenerateNextQuestion never compute a category, turn type,
+// anchor source, or competency themselves — every one of those decisions
+// is made by these two already-built, untouched modules.
+import { runSimulatedAdaptiveTurn, stampQuestionFromDecision } from "./adaptiveEngine";
 
 /* ================================================================== *
  * JOB.READY — DESIGN SYSTEM (unchanged from previous build)
@@ -303,15 +309,196 @@ function hashText(text) {
   return hash.toString(16);
 }
 
-function validateNextTurn(n) {
+// Phase 2C.3 Call 1 (evaluation only). Replaces the old validateNextTurn:
+// no decision, no next_question, no interview_should_end — the model no
+// longer proposes any of those. follow_up_worthy/challenge_worthy/
+// flagged_claim are lightweight signals only; App.jsx's submitAnswer
+// turns them into a scheduler observedSignal, it never trusts them as a
+// decision directly. The evaluation rubric itself is untouched. Exported
+// (like validateProfile/validateQuestionBatch) so it's directly unit-
+// testable — see src/App.validators.test.js.
+export function validateEvaluationSignals(n) {
   n = n || {};
   return {
     evaluation: validateEvaluation(n.evaluation),
-    decision: str(n.decision, "follow_up"),
-    next_question: { text: str(n.next_question?.text, "Can you tell me more about that?"), category: mapLegacyCategory(str(n.next_question?.category, "cv_behavioural")), competency: str(n.next_question?.competency) },
-    interview_should_end: !!n.interview_should_end,
+    follow_up_worthy: !!n.follow_up_worthy,
+    challenge_worthy: !!n.challenge_worthy,
+    flagged_claim: str(n.flagged_claim),
   };
 }
+
+/* ================================================================== *
+ * PHASE 2C.3: LIVE ADAPTIVE INTERVIEW WIRING
+ * ------------------------------------------------------------------
+ * The scheduler decisions themselves (category/turn type/anchor source/
+ * competency) are made entirely by methodology.js + adaptiveEngine.js,
+ * neither of which is touched here. This section is only the glue that:
+ *   (a) turns Call 1's lightweight signals into the legacy decision
+ *       vocabulary adaptiveEngine.js's normalizeEvaluationResult already
+ *       understands (so the scheduler — not this mapping — has the final
+ *       say once probe-depth circuit-breaking / config gating run), and
+ *   (b) turns the scheduler's own final decision back into that same
+ *       vocabulary for persistence (evaluations.decision), and
+ *   (c) builds Call 2's (question-generation-only) prompt from a
+ *       scheduler decision, and
+ *   (d) recomputes a scheduler decision from already-persisted data when
+ *       recovering from a Call-2 failure, without ever re-running Call 1.
+ * All four are plain, pure functions — exported and unit-tested directly,
+ * same pattern as validateProfile/buildJdProfile above.
+ * ================================================================== */
+
+// §1/§2: priority order for turning Call 1's raw signals into a synthetic
+// legacy decision — a claim worth challenging outranks vagueness outranks
+// "worth a deeper follow-up": press on what's unsupported or unclear
+// before probing a fresh angle of it. This is only the INPUT to the
+// scheduler (runSimulatedAdaptiveTurn) — probe-depth circuit-breaking and
+// followups_enabled/challenge_enabled gating inside it can still
+// downgrade any of these to a normal turn; this function never has the
+// final say.
+export const VAGUE_ANSWER_THRESHOLD = 40;
+export function syntheticDecisionFromEvaluationSignals(evalResult) {
+  const e = evalResult || {};
+  const evaluation = e.evaluation || {};
+  if (e.challenge_worthy) return "challenge_claim";
+  if (num(evaluation.specificity) < VAGUE_ANSWER_THRESHOLD || num(evaluation.relevance) < VAGUE_ANSWER_THRESHOLD) return "clarify";
+  if (e.follow_up_worthy) return "follow_up";
+  return "new_competency";
+}
+
+// §1: the scheduler's FINAL turn type (post circuit-breaking/gating —
+// never the raw synthetic signal above), translated back into the same
+// legacy decision vocabulary for evaluations.decision, so that column and
+// the next question's own persisted turn_type are always consistent.
+const TURN_TYPE_TO_LEGACY_DECISION = { normal: "new_competency", follow_up: "follow_up", challenge_claim: "challenge_claim", clarify: "clarify" };
+export function legacyDecisionFromTurnType(turnType) {
+  return TURN_TYPE_TO_LEGACY_DECISION[turnType] || "new_competency";
+}
+
+// §5: Call 2's prompt. category/turn type are NEVER part of the requested
+// response shape at all — no field for the model to even attempt them in.
+// anchor_source IS requested, but only for a normal turn (gi.anchorSource
+// null — 2C.1's resolveTurnDirective never determines one for "normal",
+// same as the pre-2C.3 batch pipeline's own anchor_source prompt); every
+// probing turn already has a scheduler-determined anchor_source, so the
+// model isn't asked to invent a second one for it. Either way,
+// stampQuestionFromDecision (2C.2, unmodified) has the final, structural
+// say: it only ever accepts anchor_source/competency from the model when
+// the scheduler left that field undetermined — see its own docstring.
+const TURN_TYPE_DIRECTIVE = {
+  normal: "Ask a fresh interview question in the target category below. This is a new line of questioning, not a follow-up to anything just said.",
+  follow_up: "Ask a natural follow-up question that goes one level deeper on the candidate's previous answer below. Stay on the same topic.",
+  challenge_claim: "The candidate's previous answer contains a claim worth pressing on. Ask a pointed, professional question that challenges it or asks them to substantiate it — do not be rude, but do not let it go unquestioned.",
+  clarify: "The candidate's previous answer was vague, generic, or incomplete. Ask a clarifying question that asks them to be concrete and specific.",
+};
+const ANCHOR_NOTE = {
+  cv: "Ground the question in the specific CV claim below that's being challenged — quote or closely reference it.",
+  previous_answer: "Ground the question directly in the candidate's previous answer text below.",
+};
+export function buildQuestionGenerationPrompt(genInput, interview, profile) {
+  const gi = genInput || {};
+  const isNormalTurn = gi.turnType === "normal";
+  const directive = TURN_TYPE_DIRECTIVE[gi.turnType] || TURN_TYPE_DIRECTIVE.normal;
+  const anchorNote = ANCHOR_NOTE[gi.anchorSource] || "";
+  const competencyLine = gi.competency
+    ? `The "competency" this question must cover is already fixed as "${gi.competency}" — echo it back in your competency field unchanged.`
+    : `Pick a short "competency" label for what this question probes (e.g. "leadership", "stakeholder management").`;
+  // Same anchor_source vocabulary/instruction the batch pipeline's own prompt already uses
+  // (buildQuestionBatchPrompt) — kept consistent rather than inventing new wording.
+  const anchorField = isNormalTurn
+    ? `, "anchor_source": "generic|cv|jd|company"`
+    : "";
+  const anchorSourceRule = isNormalTurn
+    ? `\n"anchor_source" describes what grounds the question: "cv" when it references a specific fact from the candidate's background below, "jd" when it's built directly from a specific requirement in the job description, "company" when it's grounded in company-specific context, or "generic" when it's a standard question for the category/competency with no specific anchor.`
+    : "";
+  const system = `You are a real, professional interviewer conducting a live interview. You are NOT effusive or full of praise — you are neutral and probing. Return strict JSON only, no prose, in this exact shape:
+{ "text": "", "competency": ""${anchorField} }
+${directive} ${anchorNote}
+${competencyLine}${anchorSourceRule}
+Ask ONE natural, specific interview question — no preamble, no meta-commentary, no mention of "category" or "turn type". The category, question ordering, and overall structure of this interview are already decided elsewhere — you are only writing this one question's text (and, where asked, its competency label${isNormalTurn ? "/anchor source" : ""}).`;
+
+  const contextLines = [
+    `Interview profile: ${JSON.stringify(profile?.interview_profile || {})}`,
+    `Candidate profile: ${JSON.stringify(profile?.candidate_profile || {})}`,
+  ];
+  if (!isNormalTurn) {
+    contextLines.push(`Previous question: ${JSON.stringify(gi.previousQuestionText || "")}`);
+    contextLines.push(`Candidate's previous answer: ${JSON.stringify(gi.previousAnswer || "")}`);
+  }
+  if (gi.probeAreas && gi.probeAreas.length) contextLines.push(`Flagged CV claims worth challenging: ${JSON.stringify(gi.probeAreas)}`);
+  contextLines.push(`Target category: ${gi.category}. This is question ${gi.questionNumber} of ${interview?.maxQuestions}.`);
+  return { system, userText: contextLines.join("\n") };
+}
+
+// §5: Call 2's response validator. text/competency are always read;
+// anchor_source is read too but restricted to BATCH_ANCHOR_SOURCES (never
+// "previous_answer", which is scheduler-only — same rule
+// validateQuestionBatch already enforces for the batch pipeline) — it is
+// simply never requested/read for a probing turn's response, and even if
+// a model hallucinated one anyway, stampQuestionFromDecision (2C.2)
+// discards it there regardless, since the scheduler's own anchorSource is
+// non-null for every probing turn. category/turn_type are never part of
+// this shape at all.
+export function validateGeneratedQuestion(q) {
+  q = q || {};
+  return {
+    text: str(q.text, "Can you tell me more about that?"),
+    competency: str(q.competency),
+    anchor_source: BATCH_ANCHOR_SOURCES.includes(q.anchor_source) ? q.anchor_source : "generic",
+  };
+}
+
+// §6 recovery, step 3 (recompute fallback) — pure composition, no DB/
+// network access (reconstructSchedulerDecision below does the DB read and
+// calls this). Replays the SAME deterministic chain runSimulatedAdaptiveTurn
+// already proves, from already-persisted data:
+//   priorTranscript: interview.transcript with the just-answered entry
+//     already removed (never double-counted — see reconstructSchedulerDecision).
+//   answeredEntry: that removed entry — { question, answer, evaluation }.
+//   legacyDecision: the answered question's OWN persisted evaluations.decision
+//     (already in the existing vocabulary) — reused as the scheduler's input
+//     signal. It is itself the scheduler's prior final output, so replaying it
+//     through the same chain against the same reconstructed transcript state
+//     is a deterministic fixed point — this never re-runs Call 1, which
+//     supplied nothing here.
+// §8: whether a question IS a follow-up — a single, reusable predicate so the exact same
+// rule is used everywhere this distinction matters (submitAnswer's wasFollowUp, recovery
+// reconstruction) rather than restating "turn_type === follow_up" at each call site, where
+// one of those restatements could accidentally drift into reading a DECISION's turnType
+// (the NEXT question) instead of a QUESTION's own turn_type (the CURRENT one) — exactly the
+// off-by-one §8 warns about.
+export function isFollowUpQuestion(question) {
+  return question?.turn_type === "follow_up";
+}
+
+// §7: deterministic interview-ending rule — interview.maxQuestions only, never an
+// AI-provided boolean. A plain arithmetic comparison, but named and exported so "does the
+// interview end here" has exactly one definition instead of an inline expression repeated
+// at each call site.
+export function isInterviewComplete(transcriptLength, maxQuestions) {
+  return transcriptLength >= (Number(maxQuestions) || 0);
+}
+
+// §3/§T: the methodology distribution the scheduler actually uses for this interview — the
+// interview's own persisted methodology_distribution (Phase 2B, reused verbatim) when
+// present, otherwise the plain stage baseline via the SAME computeMethodologyDistribution()
+// every other call site already uses (never a second/ad-hoc calculation, never an empty
+// distribution). Shared by submitAnswer's live path and reconstructSchedulerDecision's
+// recovery path so the two can never compute a different distribution for the same interview.
+export function effectiveMethodologyDistribution(interview) {
+  return interview?.methodologyDistribution || computeMethodologyDistribution(interview?.config?.stage, null);
+}
+
+export function computeRecoveryDecision({ interview, profile, priorTranscript, answeredEntry, legacyDecision, methodologyDistribution }) {
+  const syntheticInterview = { ...interview, transcript: priorTranscript, currentQuestion: answeredEntry.question };
+  const { decision, genInput } = runSimulatedAdaptiveTurn({
+    interview: syntheticInterview, profile, methodologyDistribution,
+    answerText: answeredEntry.answer,
+    evaluationResult: { evaluation: answeredEntry.evaluation, decision: legacyDecision || "new_competency" },
+    generateQuestion: () => ({}),
+  });
+  return { decision, genInput };
+}
+
 function validateLesson(l) {
   l = l || {};
   return {
@@ -483,9 +670,33 @@ async function dbCreateInterview(userId, applicationId, config, methodologyDistr
 }
 async function dbInsertQuestion(interviewId, questionNumber, q) {
   const supabase = await getSupabase();
-  const { data, error } = await supabase.from("interview_questions").insert({ interview_id: interviewId, question_number: questionNumber, question_text: q.text, category: q.category || null, competency: q.competency || null }).select().single();
+  // Phase 2C.3: every adaptive-turn row (opening question or scheduler-directed) is tagged
+  // generation_mode "adaptive" — dbInsertQuestionBatch below tags its own rows "independent"
+  // separately (the check constraint only allows those two values), so the two pipelines'
+  // rows are always distinguishable and never collide. anchor_source/turn_type are optional
+  // (q.anchor_source/q.turn_type) so the opening question — which has neither — still inserts
+  // cleanly with both null, exactly like every pre-2C.3 interview's opening question already did.
+  const { data, error } = await supabase.from("interview_questions").insert({
+    interview_id: interviewId, question_number: questionNumber, question_text: q.text,
+    category: q.category || null, competency: q.competency || null,
+    generation_mode: "adaptive",
+    anchor_source: q.anchor_source ?? null,
+    metadata: { turn_type: q.turn_type ?? null, pending_next_decision: null },
+  }).select().single();
   if (error) throw new Error("Couldn't save the next question. Please try again.");
   return data;
+}
+// Phase 2C.3 §4/§6: persists (or clears, by passing pendingNextDecision=null) the scheduler's
+// decision for the NEXT turn on the question that was just ANSWERED — never on the question
+// being generated. This is the durable recovery record reconstructSchedulerDecision() reads
+// back if Call 2 (question generation) never completes. turnType is that answered question's
+// OWN turn type (unchanged by this call) — carried along so a later read never has to guess it.
+async function dbSetQuestionMetadata(questionId, turnType, pendingNextDecision) {
+  const supabase = await getSupabase();
+  const { error } = await supabase.from("interview_questions")
+    .update({ metadata: { turn_type: turnType ?? null, pending_next_decision: pendingNextDecision || null } })
+    .eq("id", questionId);
+  if (error) console.error("question metadata update failed:", error.message);
 }
 async function dbInsertAnswer(questionId, answerText, evaluation, decision) {
   const supabase = await getSupabase();
@@ -1760,10 +1971,18 @@ Rules: "basis" must honestly mark whether each competency is explicitly stated i
         id: ivRow.id, applicationId, company: cleanCompany, role: cleanRole, stage: ivConfig.stage, format: ivConfig.format, stageLabel, formatLabel, startedAt: Date.now(),
         // config is threaded through starting Phase 4B (per redesign plan §11) so the
         // adaptive engine has access to the resolved configuration for future Phase 4C
-        // tuning. It is NOT yet read anywhere in submitAnswer/finishInterview's own logic
-        // below — purely additive, current adaptive behaviour is unchanged.
+        // tuning.
         config: ivConfig,
+        // Phase 2C.3 §3: the SAME methodology_distribution already computed above and
+        // persisted on the interviews row (Phase 2B did that for every pipeline) — threaded
+        // into React state here so submitAnswer's scheduler wiring can actually read it. No
+        // second methodology calculation; this is a plain reuse of methodologyDistribution.
+        methodologyDistribution,
         maxQuestions: length, transcript: [], currentQuestion: { ...result.opening_question, dbId: q1.id, questionNumber: 1 }, status: "planned",
+        // Phase 2C.3 §11: set only when Call 2 (question generation) fails after the answer
+        // and scheduler decision are already durably persisted — see submitAnswer/
+        // regenerateNextQuestion. null on a fresh interview.
+        pendingRecovery: null,
       };
       setInterview(newInterview);
       setScreen("preview");
@@ -1778,10 +1997,16 @@ Rules: "basis" must honestly mark whether each competency is explicitly stated i
   // adaptive_turn interviews.
   function beginInterview() { setScreen(interview?.config?.pipeline === "independent_batch" ? "async_interview" : "interview"); }
 
-  /* ---------------- STEP 2: SUBMIT ANSWER ---------------- */
+  /* ---------------- STEP 2: SUBMIT ANSWER (Phase 2C.3 two-call architecture) ---------------- */
+  // State progression: SUBMITTED -> EVALUATED (Call 1) -> SCHEDULED (methodology.js +
+  // adaptiveEngine.js, untouched) -> ANSWER_PERSISTED -> DECISION_PERSISTED ->
+  // QUESTION_GENERATING (Call 2) -> QUESTION_PERSISTED. The answer and the scheduler's
+  // decision are both durably persisted BEFORE Call 2 ever runs, so a Call 2 failure
+  // (CALL2_FAILED) can always be recovered via regenerateNextQuestion() below without
+  // re-running Call 1, re-inserting the answer, or touching a question counter.
   async function submitAnswer() {
     if (!answerInput.trim() || !interview || !profile) return;
-    // Structural guard (Phase 4B §3): interview_turn must be UNREACHABLE for an
+    // Structural guard (Phase 4B §3, unchanged): interview_turn must be UNREACHABLE for an
     // independent_batch interview, not merely discouraged by a prompt. This check exists
     // so that even a future accidental wiring of a button/handler to submitAnswer() cannot
     // invoke the adaptive engine for a batch-pipeline interview.
@@ -1793,43 +2018,158 @@ Rules: "basis" must honestly mark whether each competency is explicitly stated i
     setError("");
     const cleanAnswer = sanitizeText(answerInput);
     const currentQ = interview.currentQuestion;
+    // §8: describes the question being ANSWERED — read once, right here, before anything
+    // else runs, so it can never be confused with the decision about to be generated for
+    // the NEXT question below.
+    const wasFollowUp = isFollowUpQuestion(currentQ);
     const askedSoFar = interview.transcript.length + 1;
     setScreen("evaluating");
     try {
+      // ---- CALL 1: evaluation only (EVALUATED) ----
       const system = `You are a real, professional interviewer conducting a live interview. You are NOT effusive or full of praise — you are neutral and probing. Return strict JSON only, no prose, in this exact shape:
 {
   "evaluation": { "relevance": 0, "specificity": 0, "structure": 0, "evidence": 0, "clarity": 0, "competency_demonstration": 0, "strengths": [""], "issues": [""] },
-  "decision": "follow_up|new_competency|challenge_claim|clarify|next_section",
-  "next_question": { "text": "", "category": "motivation_fit|cv_behavioural|role_specific|technical|commercial_awareness", "competency": "" },
-  "interview_should_end": false
+  "follow_up_worthy": false,
+  "challenge_worthy": false,
+  "flagged_claim": ""
 }
-Rules: honest 0-100 scores. If vague/generic/no example, note it and probe for specifics. If dodged, redirect back to it. Don't repeat a thoroughly covered competency unless the answer revealed a weakness worth re-testing. Vary categories per question_mix. Set interview_should_end true once roughly ${interview.maxQuestions} questions have been asked and core competencies are covered.`;
-      // Resolved configuration context (Phase 4B §11) — currently inert. Not referenced by
-      // any rule in the system prompt above; threaded through purely so Phase 4C can later
-      // tune technical/CV/behavioural/commercial weighting and challenge intensity for the
-      // adaptive engine without another plumbing change here.
-      const userText = `Interview profile: ${JSON.stringify(profile.interview_profile)}\nCandidate profile: ${JSON.stringify(profile.candidate_profile)}\nQuestions asked so far: ${askedSoFar} of target ${interview.maxQuestions}\nTranscript so far: ${JSON.stringify(interview.transcript)}\n\nQuestion just asked: ${JSON.stringify(currentQ)}\nCandidate's answer: ${cleanAnswer}\n\nResolved interview configuration (context only, currently unused by the rules above): ${JSON.stringify(interview.config || {})}`;
-      const result = validateNextTurn(await callClaude(system, userText, 1200, false, { requestType: "interview_turn", applicationId: interview.applicationId, interviewId: interview.id }));
+Rules: honest 0-100 scores. follow_up_worthy: true only if the answer surfaced something specific and genuinely worth probing one level deeper. challenge_worthy: true only if the answer contains a claim that sounds unsupported, vague on specifics, or worth pressing on — when true, set flagged_claim to the exact claim (a short quote or close paraphrase), otherwise leave it empty. Do NOT decide what the next question is, what category or competency it should cover, or whether the interview should end — none of that is your decision to make.`;
+      const userText = `Interview profile: ${JSON.stringify(profile.interview_profile)}\nCandidate profile: ${JSON.stringify(profile.candidate_profile)}\nQuestions asked so far: ${askedSoFar} of target ${interview.maxQuestions}\nTranscript so far: ${JSON.stringify(interview.transcript)}\n\nQuestion just asked: ${JSON.stringify(currentQ)}${wasFollowUp ? " (this question was itself a follow-up to the previous one)" : ""}\nCandidate's answer: ${cleanAnswer}`;
+      const evalResult = validateEvaluationSignals(await callClaude(system, userText, 900, false, { requestType: "interview_turn_evaluate", applicationId: interview.applicationId, interviewId: interview.id }));
 
-      await dbInsertAnswer(currentQ.dbId, cleanAnswer, result.evaluation, result.decision);
+      // ---- SCHEDULER (SCHEDULED) — methodology.js + adaptiveEngine.js, untouched ----
+      // §T: a pre-2B interview with no persisted methodology_distribution gets the plain
+      // stage baseline via the SAME computeMethodologyDistribution() every other call site
+      // already uses — never a second/ad-hoc calculation, never an empty distribution that
+      // would starve the scheduler of any real signal.
+      const effectiveDistribution = effectiveMethodologyDistribution(interview);
+      const syntheticDecision = syntheticDecisionFromEvaluationSignals(evalResult);
+      const { decision, genInput } = runSimulatedAdaptiveTurn({
+        interview, profile, methodologyDistribution: effectiveDistribution,
+        answerText: cleanAnswer,
+        evaluationResult: { evaluation: evalResult.evaluation, decision: syntheticDecision },
+        generateQuestion: () => ({}), // Call 2 happens for real, separately, below
+      });
+      const legacyDecision = legacyDecisionFromTurnType(decision.turnType);
 
-      const newEntry = { question: currentQ, answer: cleanAnswer, evaluation: result.evaluation };
-      const newTranscript = [...interview.transcript, newEntry];
-      const shouldEnd = result.interview_should_end || newTranscript.length >= interview.maxQuestions + 3;
+      // ---- PERSIST ANSWER (ANSWER_PERSISTED) — before Call 2, per §4 ----
+      await dbInsertAnswer(currentQ.dbId, cleanAnswer, evalResult.evaluation, legacyDecision);
 
-      let nextQWithId = { ...result.next_question, dbId: null, questionNumber: askedSoFar + 1 };
-      if (!shouldEnd) {
-        const qRow = await dbInsertQuestion(interview.id, askedSoFar + 1, result.next_question);
-        nextQWithId.dbId = qRow.id;
+      const newTranscript = [...interview.transcript, { question: currentQ, answer: cleanAnswer, evaluation: evalResult.evaluation }];
+      // §7: deterministic ending — interview.maxQuestions only, never an AI-provided boolean.
+      const shouldEnd = isInterviewComplete(newTranscript.length, interview.maxQuestions);
+
+      if (shouldEnd) {
+        const updated = { ...interview, transcript: newTranscript, pendingRecovery: null };
+        setInterview(updated);
+        setAnswerInput("");
+        await finishInterview(updated);
+        return;
       }
-      const updated = { ...interview, transcript: newTranscript, currentQuestion: nextQWithId };
-      setInterview(updated);
-      setAnswerInput("");
-      if (shouldEnd) { await finishInterview(updated); } else { setScreen("interview"); }
+
+      // ---- PERSIST SCHEDULER DECISION (DECISION_PERSISTED) — before Call 2, per §4 ----
+      await dbSetQuestionMetadata(currentQ.dbId, currentQ?.turn_type ?? null, { decision, genInput });
+
+      try {
+        // ---- CALL 2: question generation only (QUESTION_GENERATING -> QUESTION_PERSISTED) ----
+        const nextQuestion = await generateAndPersistNextQuestion(interview, profile, currentQ.dbId, currentQ?.turn_type ?? null, decision, genInput);
+        setInterview({ ...interview, transcript: newTranscript, currentQuestion: nextQuestion, pendingRecovery: null });
+        setAnswerInput("");
+        setScreen("interview");
+      } catch (genErr) {
+        // CALL2_FAILED. The answer and the scheduler decision are already durably persisted,
+        // so this is never retried automatically, never re-runs Call 1, and never re-inserts
+        // the answer — surfaced as a recovery affordance instead (§11, regenerateNextQuestion).
+        setInterview({
+          ...interview, transcript: newTranscript,
+          pendingRecovery: { questionId: currentQ.dbId, decision, genInput },
+        });
+        setAnswerInput("");
+        setError("We saved your answer, but hit a snag generating the next question.");
+        setScreen("interview");
+      }
     } catch (e) {
       setError(e.message || "Something went wrong evaluating that answer.");
       setScreen("interview");
     }
+  }
+
+  // §5/§6: Call 2 -> structural stamping -> persist -> clear pending decision. Shared by
+  // submitAnswer's happy path and regenerateNextQuestion's recovery path so the two can
+  // never drift out of sync with each other.
+  async function generateAndPersistNextQuestion(interviewForPrompt, profileForPrompt, answeredQuestionId, answeredTurnType, decision, genInput) {
+    const { system, userText } = buildQuestionGenerationPrompt(genInput, interviewForPrompt, profileForPrompt);
+    const raw = await callClaude(system, userText, 700, false, {
+      requestType: "interview_turn_generate", applicationId: interviewForPrompt.applicationId, interviewId: interviewForPrompt.id,
+    });
+    const generated = validateGeneratedQuestion(raw);
+    // The model's own category/anchor_source/turn-type guesses (if any) are discarded here —
+    // the scheduler decision structurally wins, per §7/§5.
+    const stamped = stampQuestionFromDecision(generated, decision);
+
+    const qRow = await dbInsertQuestion(interviewForPrompt.id, genInput.questionNumber, stamped);
+    // QUESTION_PERSISTED -> clear the pending decision on the ANSWERED question now that its
+    // next question is durably persisted. answeredTurnType is that question's OWN turn
+    // type — unchanged by this call.
+    await dbSetQuestionMetadata(answeredQuestionId, answeredTurnType, null);
+
+    return { ...stamped, dbId: qRow.id, questionNumber: genInput.questionNumber };
+  }
+
+  /* ---------------- RECOVERY: regenerate a failed/interrupted Call 2 ---------------- */
+  // §6: the single recovery path for a Call-2 failure. NEVER inserts another answer, NEVER
+  // re-runs Call 1, NEVER increments a question counter — it only replays
+  // reconstructSchedulerDecision()'s decision/genInput through Call 2 -> stampQuestionFromDecision
+  // -> persistence, exactly like submitAnswer's own Call-2 step. The existing guarded()
+  // re-entrancy lock (see the "Try again" button below) and the answers.question_id unique
+  // constraint both still protect this path exactly as they already protect submitAnswer.
+  async function regenerateNextQuestion() {
+    if (!interview || !interview.pendingRecovery || !profile) return;
+    setError("");
+    const { questionId, decision: knownDecision, genInput: knownGenInput } = interview.pendingRecovery;
+    setScreen("evaluating");
+    try {
+      const { decision, genInput } = await reconstructSchedulerDecision(interview, profile, questionId, knownDecision, knownGenInput);
+      const nextQuestion = await generateAndPersistNextQuestion(interview, profile, questionId, interview.currentQuestion?.turn_type ?? null, decision, genInput);
+      setInterview({ ...interview, currentQuestion: nextQuestion, pendingRecovery: null });
+      setScreen("interview");
+    } catch (e) {
+      setError(e.message || "Still couldn't generate the next question. Please try again.");
+      setScreen("interview");
+    }
+  }
+
+  // §6 recovery order: (1) an already-known decision/genInput — passed straight through from
+  // in-memory pendingRecovery — is used VERBATIM, no DB read at all. (2) Otherwise, read
+  // pending_next_decision back from the DB and, if present, use IT verbatim. (3) Only when
+  // neither is available does this recompute (computeRecoveryDecision, pure) from the
+  // interview's own already-persisted transcript/answer/decision — never by re-running Call 1.
+  async function reconstructSchedulerDecision(interview, profile, questionId, knownDecision, knownGenInput) {
+    if (knownDecision && knownGenInput) return { decision: knownDecision, genInput: knownGenInput };
+
+    const supabase = await getSupabase();
+    const { data: qRow, error: qErr } = await supabase.from("interview_questions").select("id, metadata").eq("id", questionId).single();
+    if (qErr) throw new Error("Couldn't read the saved interview state. Please try again.");
+    const pending = qRow?.metadata?.pending_next_decision;
+    if (pending?.decision && pending?.genInput) return pending;
+
+    // Recompute fallback. interview.transcript's last entry is the answered question itself
+    // (submitAnswer already appended it before Call 2 ever ran) — pull it back out so
+    // computeRecoveryDecision counts it toward scheduling exactly once, never twice.
+    const priorTranscript = interview.transcript.slice(0, -1);
+    const answeredEntry = interview.transcript[interview.transcript.length - 1];
+    if (!answeredEntry || answeredEntry.question?.dbId !== questionId) {
+      throw new Error("Couldn't reconstruct the interview state to recover. Please refresh and try again.");
+    }
+    const { data: answerRow, error: aErr } = await supabase.from("answers").select("id, evaluations(decision)").eq("question_id", questionId).single();
+    if (aErr) throw new Error("Couldn't read the saved answer to recover. Please try again.");
+    const evalRow = Array.isArray(answerRow?.evaluations) ? answerRow.evaluations[0] : answerRow?.evaluations;
+    const effectiveDistribution = effectiveMethodologyDistribution(interview);
+
+    return computeRecoveryDecision({
+      interview, profile, priorTranscript, answeredEntry,
+      legacyDecision: evalRow?.decision, methodologyDistribution: effectiveDistribution,
+    });
   }
 
   /* ---------------- STEP 3: FINAL REPORT + Interview Memory + Interview DNA ---------------- */
@@ -2648,6 +2988,34 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
       {/* ---------------- INTERVIEW ---------------- */}
       {screen === "interview" && interview && (() => {
         const memMatch = matchPreviousQuestion(interview.currentQuestion?.text, interview.currentQuestion?.category, interview.currentQuestion?.competency, questionHistory);
+        // Phase 2C.3 §11: minimum recovery UI. Your answer was already saved and the
+        // scheduler's decision for the next question is already durably persisted —
+        // regenerateNextQuestion() only needs to retry Call 2, never re-evaluate the
+        // answer or insert it again.
+        if (interview.pendingRecovery) {
+          return (
+            <div className="jr-fade" style={{ minHeight: "100vh" }}>
+              <div style={{ borderBottom: "1px solid var(--border)", background: "#fff" }}>
+                <div style={{ maxWidth: 680, margin: "0 auto", padding: "16px 24px" }}>
+                  <div className="flex justify-between items-center">
+                    <JobReadyLogo size={20} />
+                    <div style={{ fontSize: 12.5, color: "var(--text-dim)", fontWeight: 600 }}>{company} · {role}</div>
+                  </div>
+                </div>
+              </div>
+              <div style={{ maxWidth: 680, margin: "0 auto", padding: "48px 24px" }}>
+                <Card style={{ padding: 20 }}>
+                  <div className="flex items-center gap-2" style={{ fontSize: 15, color: "var(--navy)", marginBottom: 14 }}>
+                    <AlertCircle size={16} color="var(--bad)" />
+                    Your answer was saved, but we hit a snag generating the next question.
+                  </div>
+                  {error && <div style={{ color: "var(--bad)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
+                  <Btn variant="accent" onClick={() => guarded(regenerateNextQuestion)}>Try again <ChevronRight size={16} /></Btn>
+                </Card>
+              </div>
+            </div>
+          );
+        }
         return (
           <div className="jr-fade" style={{ minHeight: "100vh" }}>
             <div style={{ borderBottom: "1px solid var(--border)", background: "#fff" }}>
