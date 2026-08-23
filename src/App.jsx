@@ -24,6 +24,14 @@ import {
 // anchor source, or competency themselves — every one of those decisions
 // is made by these two already-built, untouched modules.
 import { runSimulatedAdaptiveTurn, stampQuestionFromDecision } from "./adaptiveEngine";
+// Phase 2D: candidate intelligence — structured, evidence-based signals about the candidate,
+// built entirely from already-persisted data (interview_memory, candidate_dna,
+// candidate_claims). Tells Phase 2C what it should know about the candidate; never decides
+// category, turn type, or anchor source itself (those stay the scheduler's, above).
+import {
+  dedupeNewClaims, classifyClaimStatus, buildCandidateSignals, isCandidateIntelligenceUsable,
+  mergeProbeAreasForInterview, matchClaimIdForProbeArea,
+} from "./candidateIntelligence";
 
 /* ================================================================== *
  * JOB.READY — DESIGN SYSTEM (unchanged from previous build)
@@ -394,9 +402,23 @@ const ANCHOR_NOTE = {
   cv: "Ground the question in the specific CV claim below that's being challenged — quote or closely reference it.",
   previous_answer: "Ground the question directly in the candidate's previous answer text below.",
 };
-export function buildQuestionGenerationPrompt(genInput, interview, profile) {
+export function buildQuestionGenerationPrompt(genInput, interview, profile, candidateSignals) {
   const gi = genInput || {};
   const isNormalTurn = gi.turnType === "normal";
+  // Phase 2D: optional, informational-only candidate-intelligence note for a normal turn —
+  // "evidence supplied to question generation" per the 2D/2C integration contract. Never
+  // structural: it can only nudge phrasing/angle, never choose category, competency, or
+  // anchor — stampQuestionFromDecision (2C.2, unmodified) enforces those regardless of what
+  // this note says, and a missing/malformed candidateSignals simply produces no note at all.
+  let candidateNote = "";
+  if (isNormalTurn && candidateSignals?.categoryCoverage?.[gi.category]) {
+    const cov = candidateSignals.categoryCoverage[gi.category];
+    if (cov.status === "demonstrated" && cov.recentlyTested) {
+      candidateNote = `\nCandidate intelligence: this category is already well-evidenced from recent answers (${cov.evidenceCount} prior data points) — favour a fresh angle or a different competency within it rather than repeating the same theme.`;
+    } else if (cov.status === "unknown") {
+      candidateNote = `\nCandidate intelligence: this category hasn't been tested for this candidate before — a good opportunity to establish a first data point.`;
+    }
+  }
   const directive = TURN_TYPE_DIRECTIVE[gi.turnType] || TURN_TYPE_DIRECTIVE.normal;
   const anchorNote = ANCHOR_NOTE[gi.anchorSource] || "";
   const competencyLine = gi.competency
@@ -413,7 +435,7 @@ export function buildQuestionGenerationPrompt(genInput, interview, profile) {
   const system = `You are a real, professional interviewer conducting a live interview. You are NOT effusive or full of praise — you are neutral and probing. Return strict JSON only, no prose, in this exact shape:
 { "text": "", "competency": ""${anchorField} }
 ${directive} ${anchorNote}
-${competencyLine}${anchorSourceRule}
+${competencyLine}${anchorSourceRule}${candidateNote}
 Ask ONE natural, specific interview question — no preamble, no meta-commentary, no mention of "category" or "turn type". The category, question ordering, and overall structure of this interview are already decided elsewhere — you are only writing this one question's text (and, where asked, its competency label${isNormalTurn ? "/anchor source" : ""}).`;
 
   const contextLines = [
@@ -586,7 +608,7 @@ async function dbSelect(table, build) {
 async function loadFullUserState(userId) {
   const supabase = await getSupabase();
 
-  const [{ data: profile }, { data: dna }, apps, interviewsRaw, competencyRows, classroomTopicsRaw, memoryRows, comparisonRows, acAttemptsRaw] = await Promise.all([
+  const [{ data: profile }, { data: dna }, apps, interviewsRaw, competencyRows, classroomTopicsRaw, memoryRows, comparisonRows, acAttemptsRaw, claimRows] = await Promise.all([
     supabase.from("profiles").select("*").eq("id", userId).maybeSingle(),
     supabase.from("candidate_dna").select("*").eq("user_id", userId).maybeSingle(),
     dbSelect("applications", (q) => q.eq("user_id", userId).order("created_at", { ascending: false })),
@@ -596,6 +618,7 @@ async function loadFullUserState(userId) {
     dbSelect("interview_memory", (q) => q.eq("user_id", userId).order("created_at", { ascending: true })),
     dbSelect("memory_comparisons", (q) => q.eq("user_id", userId).order("created_at", { ascending: false })),
     dbSelect("assessment_attempts", (q) => q.eq("user_id", userId).order("created_at", { ascending: true })),
+    dbSelect("candidate_claims", (q) => q.eq("user_id", userId).order("created_at", { ascending: true })),
   ]);
 
   // interviewList needs each completed interview's report summary (company/role live on the application)
@@ -621,10 +644,24 @@ async function loadFullUserState(userId) {
 
   const acAttempts = acAttemptsRaw.map((a) => ({ id: a.id, type: a.type, typeLabel: a.type_label, company: a.company, role: a.role, date: new Date(a.created_at).getTime(), overall_score: a.overall_score, breakdown: a.breakdown }));
 
+  // Phase 2D: candidate intelligence, built entirely from data already loaded above —
+  // memoryRows (raw interview_memory rows, category/competency/score/interview_id/created_at)
+  // and dna (candidate_dna) are reused as-is, never a duplicate/second data source. claimRows
+  // is the one genuinely new table this phase introduces. Never throws: a malformed/empty
+  // result here degrades to an empty-but-valid signals object (see the module's own docstring).
+  let candidateIntelligence;
+  try {
+    candidateIntelligence = buildCandidateSignals({ dna, memoryRows, claims: claimRows });
+  } catch (ciErr) {
+    console.error("candidate intelligence build failed:", ciErr.message);
+    candidateIntelligence = buildCandidateSignals({});
+  }
+
   return {
     profile,
     perf: { strengths: dna?.strengths || [], weaknesses: dna?.weaknesses || [], competency_history, style_notes: dna?.style_notes || [], common_issues: dna?.common_issues || [] },
     interviewList, classroom, questionHistory, memoryLog, acAttempts,
+    candidateClaims: claimRows, candidateIntelligence,
   };
 }
 
@@ -779,6 +816,25 @@ async function dbUpsertCandidateDna(userId, { strengths, weaknesses, style_notes
   const supabase = await getSupabase();
   const { error } = await supabase.from("candidate_dna").upsert({ user_id: userId, strengths, weaknesses, style_notes, common_issues, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
   if (error) console.error("candidate_dna upsert failed:", error.message);
+}
+
+// Phase 2D: candidate_claims DB helpers. Every call site wraps these defensively — a claim
+// insert/update failure never blocks or breaks the interview it happened during (Candidate
+// Intelligence is an enhancement, not a hard dependency — see the module's own docstring).
+async function dbInsertClaims(userId, applicationId, originInterviewId, newClaims) {
+  const supabase = await getSupabase();
+  const rows = newClaims.map((c) => ({
+    user_id: userId, application_id: applicationId || null, origin_interview_id: originInterviewId || null,
+    claim_text: c.claim, source: "cv",
+  }));
+  const { data, error } = await supabase.from("candidate_claims").insert(rows).select();
+  if (error) { console.error("candidate_claims insert failed:", error.message); return []; }
+  return data || [];
+}
+async function dbUpdateClaim(claimId, fields) {
+  const supabase = await getSupabase();
+  const { error } = await supabase.from("candidate_claims").update(fields).eq("id", claimId);
+  if (error) console.error("candidate_claims update failed:", error.message);
 }
 async function dbUpsertClassroomTopic(userId, applicationId, interviewIdOrNull, existingId, topic) {
   const supabase = await getSupabase();
@@ -1501,6 +1557,13 @@ function App() {
   const [questionHistory, setQuestionHistory] = useState([]); // [{question,category,competency,score,date,company,role,interviewId}]
   const [memoryLog, setMemoryLog] = useState([]); // [{question, previous_score, current_score, company, role, date}]
 
+  // Phase 2D: Candidate Intelligence. candidateClaims is the raw candidate_claims rows (used
+  // for dedup/matching); candidateIntelligence is the derived, structured signals object
+  // (candidateIntelligence.js's buildCandidateSignals output) actually consumed by the
+  // adaptive interview. Both loaded once at login alongside perf/questionHistory above.
+  const [candidateClaims, setCandidateClaims] = useState([]);
+  const [candidateIntelligence, setCandidateIntelligence] = useState(null);
+
   // Assessment Centre
   const [acCompany, setAcCompany] = useState("");
   const [acRole, setAcRole] = useState("");
@@ -1623,6 +1686,8 @@ function App() {
       setQuestionHistory(state.questionHistory);
       setMemoryLog(state.memoryLog);
       setAcAttempts(state.acAttempts);
+      setCandidateClaims(state.candidateClaims);
+      setCandidateIntelligence(state.candidateIntelligence);
       setScreen((s) => (["landing", "how", "universities", "login"].includes(s) ? "dashboard" : s));
     } catch (e) {
       setError("Signed in, but couldn't load your data. Please refresh.");
@@ -1926,7 +1991,6 @@ Rules: "basis" must honestly mark whether each competency is explicitly stated i
       const formatLabel = INTERVIEW_FORMATS[ivConfig.format].label;
       const userText = `${weaknessNote}\n\nCompany: ${cleanCompany}\nRole: ${cleanRole}\nInterview stage: ${stageLabel}\nInterview format: ${formatLabel}\n\nJob description:\n${cleanJd}\n\nCandidate CV:\n${cleanCv}`;
       const result = validateProfile(await callClaude(system, userText, 3000, false, { requestType: "interview_profile", applicationId }));
-      setProfile(result);
 
       // Phase 2B: build the structured jd_profile (evidence-quote-verified
       // subset of result.interview_profile.jd_requirements — see
@@ -1944,6 +2008,37 @@ Rules: "basis" must honestly mark whether each competency is explicitly stated i
         jd_profile: jdProfile, jd_profile_hash: hashText(cleanJd),
       });
       const ivRow = await dbCreateInterview(user.id, applicationId, ivConfig, methodologyDistribution);
+
+      // Phase 2D: seed newly-extracted CV claims into persistent candidate_claims — reuses
+      // potential_probe_areas the interview_profile call above ALREADY produced, no new AI
+      // call. Deduped against every claim this candidate already has, across every past
+      // application/interview (cross-interview persistence, not scoped to this application).
+      // Never fatal: Candidate Intelligence must never block an interview from starting.
+      try {
+        const newClaims = dedupeNewClaims(candidateClaims, result.candidate_profile.potential_probe_areas);
+        if (newClaims.length && user) {
+          const inserted = await dbInsertClaims(user.id, applicationId, ivRow.id, newClaims);
+          if (inserted.length) setCandidateClaims([...candidateClaims, ...inserted]);
+        }
+      } catch (ciErr) { console.error("candidate intelligence claim seeding failed:", ciErr.message); }
+
+      // Phase 2D: for the adaptive (live, turn-by-turn) pipeline only, widen this interview's
+      // probe-area pool with persistent, cross-interview unresolved claims — the SAME
+      // profile.candidate_profile.potential_probe_areas shape adaptiveEngine.js already
+      // consumes unmodified (adaptPotentialProbeAreas, 2C.2). category/turn_type/anchor_source
+      // remain entirely the scheduler's (methodology.js/adaptiveEngine.js, untouched); this
+      // only widens which candidate-specific claims a challenge_claim turn may anchor on.
+      // Mutated on `result` BEFORE setProfile below, never after — profile state is never
+      // mutated in place once set. The independent/batch pipeline is completely untouched.
+      if (ivConfig.pipeline !== "independent_batch") {
+        try {
+          const usableSignals = isCandidateIntelligenceUsable(candidateIntelligence) ? candidateIntelligence : null;
+          result.candidate_profile.potential_probe_areas = mergeProbeAreasForInterview(
+            result.candidate_profile.potential_probe_areas, usableSignals?.recommendedProbes
+          );
+        } catch (ciErr) { console.error("candidate intelligence probe merge failed:", ciErr.message); }
+      }
+      setProfile(result);
 
       // Phase 4B: branch on the resolved pipeline. independent_batch generates and persists
       // the COMPLETE question set now, before the candidate sees question 1, and never
@@ -2057,8 +2152,42 @@ Rules: honest 0-100 scores. follow_up_worthy: true only if the answer surfaced s
       });
       const legacyDecision = legacyDecisionFromTurnType(decision.turnType);
 
+      // Phase 2D: if this turn is a challenge_claim anchored on a persistent CV claim,
+      // identify WHICH claim from the answer that just triggered it — this determines the
+      // claim before the challenge question is even generated (its text is what Call 2 below
+      // gets anchored on), and is carried forward on the resulting question so its status can
+      // be updated once THAT question is answered (see the claim-update block below, applied
+      // on the NEXT submitAnswer call). Never fatal to the interview.
+      let targetedClaimId = null;
+      if (decision.turnType === "challenge_claim" && decision.anchorSource === "cv") {
+        try { targetedClaimId = matchClaimIdForProbeArea(candidateClaims, cleanAnswer); }
+        catch (ciErr) { console.error("candidate intelligence claim match failed:", ciErr.message); }
+      }
+
       // ---- PERSIST ANSWER (ANSWER_PERSISTED) — before Call 2, per §4 ----
       await dbInsertAnswer(currentQ.dbId, cleanAnswer, evalResult.evaluation, legacyDecision);
+
+      // Phase 2D: if the question just answered was itself targeting a persistent candidate
+      // claim (set below when that challenge_claim question was generated), update that
+      // claim's status/confidence deterministically from the SAME evaluation scores Call 1
+      // already produced above — no new AI call. Never fatal to the interview.
+      if (currentQ?.targetedClaimId) {
+        try {
+          const target = candidateClaims.find((c) => c.id === currentQ.targetedClaimId);
+          if (target) {
+            const { status, confidence } = classifyClaimStatus({ currentStatus: target.status, evaluation: evalResult.evaluation });
+            const evidence = [...(Array.isArray(target.evidence) ? target.evidence : []), {
+              source: "interview", interview_id: interview.id, question_id: currentQ.dbId, quote: cleanAnswer.slice(0, 300),
+            }];
+            const fields = {
+              status, confidence, evidence, evidence_count: evidence.length,
+              last_tested_interview_id: interview.id, last_tested_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+            };
+            await dbUpdateClaim(target.id, fields);
+            setCandidateClaims(candidateClaims.map((c) => (c.id === target.id ? { ...c, ...fields } : c)));
+          }
+        } catch (ciErr) { console.error("candidate intelligence claim update failed:", ciErr.message); }
+      }
 
       const newTranscript = [...interview.transcript, { question: currentQ, answer: cleanAnswer, evaluation: evalResult.evaluation }];
       // §7: deterministic ending — interview.maxQuestions only, never an AI-provided boolean.
@@ -2077,7 +2206,7 @@ Rules: honest 0-100 scores. follow_up_worthy: true only if the answer surfaced s
 
       try {
         // ---- CALL 2: question generation only (QUESTION_GENERATING -> QUESTION_PERSISTED) ----
-        const nextQuestion = await generateAndPersistNextQuestion(interview, profile, currentQ.dbId, currentQ?.turn_type ?? null, decision, genInput);
+        const nextQuestion = await generateAndPersistNextQuestion(interview, profile, currentQ.dbId, currentQ?.turn_type ?? null, decision, genInput, targetedClaimId);
         setInterview({ ...interview, transcript: newTranscript, currentQuestion: nextQuestion, pendingRecovery: null });
         setAnswerInput("");
         setScreen("interview");
@@ -2085,9 +2214,11 @@ Rules: honest 0-100 scores. follow_up_worthy: true only if the answer surfaced s
         // CALL2_FAILED. The answer and the scheduler decision are already durably persisted,
         // so this is never retried automatically, never re-runs Call 1, and never re-inserts
         // the answer — surfaced as a recovery affordance instead (§11, regenerateNextQuestion).
+        // targetedClaimId (Phase 2D) travels with pendingRecovery so a successful retry still
+        // tags the resulting question correctly.
         setInterview({
           ...interview, transcript: newTranscript,
-          pendingRecovery: { questionId: currentQ.dbId, decision, genInput },
+          pendingRecovery: { questionId: currentQ.dbId, decision, genInput, targetedClaimId },
         });
         setAnswerInput("");
         setError("We saved your answer, but hit a snag generating the next question.");
@@ -2101,9 +2232,11 @@ Rules: honest 0-100 scores. follow_up_worthy: true only if the answer surfaced s
 
   // §5/§6: Call 2 -> structural stamping -> persist -> clear pending decision. Shared by
   // submitAnswer's happy path and regenerateNextQuestion's recovery path so the two can
-  // never drift out of sync with each other.
-  async function generateAndPersistNextQuestion(interviewForPrompt, profileForPrompt, answeredQuestionId, answeredTurnType, decision, genInput) {
-    const { system, userText } = buildQuestionGenerationPrompt(genInput, interviewForPrompt, profileForPrompt);
+  // never drift out of sync with each other. targetedClaimId (Phase 2D, optional) is carried
+  // through onto the returned question only — it is never sent to the model and never
+  // affects generation, persistence, or the pending-decision clear above.
+  async function generateAndPersistNextQuestion(interviewForPrompt, profileForPrompt, answeredQuestionId, answeredTurnType, decision, genInput, targetedClaimId = null) {
+    const { system, userText } = buildQuestionGenerationPrompt(genInput, interviewForPrompt, profileForPrompt, candidateIntelligence);
     const raw = await callClaude(system, userText, 700, false, {
       requestType: "interview_turn_generate", applicationId: interviewForPrompt.applicationId, interviewId: interviewForPrompt.id,
     });
@@ -2130,7 +2263,7 @@ Rules: honest 0-100 scores. follow_up_worthy: true only if the answer surfaced s
       console.error("failed to clear pending_next_decision after successful question persistence:", clearErr.message);
     }
 
-    return { ...stamped, dbId: qRow.id, questionNumber: genInput.questionNumber };
+    return { ...stamped, dbId: qRow.id, questionNumber: genInput.questionNumber, targetedClaimId: targetedClaimId || null };
   }
 
   /* ---------------- RECOVERY: regenerate a failed/interrupted Call 2 ---------------- */
@@ -2143,11 +2276,11 @@ Rules: honest 0-100 scores. follow_up_worthy: true only if the answer surfaced s
   async function regenerateNextQuestion() {
     if (!interview || !interview.pendingRecovery || !profile) return;
     setError("");
-    const { questionId, decision: knownDecision, genInput: knownGenInput } = interview.pendingRecovery;
+    const { questionId, decision: knownDecision, genInput: knownGenInput, targetedClaimId } = interview.pendingRecovery;
     setScreen("evaluating");
     try {
       const { decision, genInput } = await reconstructSchedulerDecision(interview, profile, questionId, knownDecision, knownGenInput);
-      const nextQuestion = await generateAndPersistNextQuestion(interview, profile, questionId, interview.currentQuestion?.turn_type ?? null, decision, genInput);
+      const nextQuestion = await generateAndPersistNextQuestion(interview, profile, questionId, interview.currentQuestion?.turn_type ?? null, decision, genInput, targetedClaimId);
       setInterview({ ...interview, currentQuestion: nextQuestion, pendingRecovery: null });
       setScreen("interview");
     } catch (e) {
