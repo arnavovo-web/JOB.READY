@@ -691,12 +691,17 @@ async function dbInsertQuestion(interviewId, questionNumber, q) {
 // being generated. This is the durable recovery record reconstructSchedulerDecision() reads
 // back if Call 2 (question generation) never completes. turnType is that answered question's
 // OWN turn type (unchanged by this call) — carried along so a later read never has to guess it.
+// THROWS on failure (both the set and the clear use this same helper) — this write is a hard
+// durability boundary (QA review, post-2C.3 §4): a failed set must stop submitAnswer before
+// Call 2 ever starts rather than silently proceeding with no durable recovery record; a
+// failed clear must surface too, for the same consistent failure semantics, rather than
+// leaving a stale pending_next_decision behind unreported.
 async function dbSetQuestionMetadata(questionId, turnType, pendingNextDecision) {
   const supabase = await getSupabase();
   const { error } = await supabase.from("interview_questions")
     .update({ metadata: { turn_type: turnType ?? null, pending_next_decision: pendingNextDecision || null } })
     .eq("id", questionId);
-  if (error) console.error("question metadata update failed:", error.message);
+  if (error) throw new Error("Couldn't save the interview's progress. Please try again.");
 }
 async function dbInsertAnswer(questionId, answerText, evaluation, decision) {
   const supabase = await getSupabase();
@@ -2110,8 +2115,20 @@ Rules: honest 0-100 scores. follow_up_worthy: true only if the answer surfaced s
     const qRow = await dbInsertQuestion(interviewForPrompt.id, genInput.questionNumber, stamped);
     // QUESTION_PERSISTED -> clear the pending decision on the ANSWERED question now that its
     // next question is durably persisted. answeredTurnType is that question's OWN turn
-    // type — unchanged by this call.
-    await dbSetQuestionMetadata(answeredQuestionId, answeredTurnType, null);
+    // type — unchanged by this call. dbSetQuestionMetadata throws on failure (2C.3 QA fix,
+    // consistent set/clear semantics) — but by this point the new question row already
+    // exists, so a failed clear is caught and logged here rather than left to propagate: the
+    // caller's own catch (submitAnswer's Call-2 try/catch, regenerateNextQuestion's) treats
+    // any error here as "Call 2 failed, retry from genInput" — which would re-run Call 2 and
+    // re-insert a question at the same genInput.questionNumber, a duplicate row, if a clear
+    // failure after a successful insert were allowed to trigger that same retry path. A
+    // stale pending_next_decision left on an already-answered, already-resolved question is
+    // otherwise inert — nothing ever reads it again for that question.
+    try {
+      await dbSetQuestionMetadata(answeredQuestionId, answeredTurnType, null);
+    } catch (clearErr) {
+      console.error("failed to clear pending_next_decision after successful question persistence:", clearErr.message);
+    }
 
     return { ...stamped, dbId: qRow.id, questionNumber: genInput.questionNumber };
   }
