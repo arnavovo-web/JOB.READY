@@ -16,7 +16,7 @@ import {
 // imported here; it stays exported from methodology.js for that phase.
 // The methodology calculation itself (computeMethodologyDistribution) is
 // likewise not called anywhere yet — that's also Phase 2B's job.
-import { mapLegacyCategory, normalizeCategoryMix } from "./methodology";
+import { mapLegacyCategory, mapCategoryWithLegacyFallback, normalizeCategoryMix } from "./methodology";
 
 /* ================================================================== *
  * JOB.READY — DESIGN SYSTEM (unchanged from previous build)
@@ -282,18 +282,21 @@ function validateAcResult(r) {
 }
 
 // Phase 4B: independent/batch interview engine validators.
-function validateQuestionBatch(r, expectedCount) {
+// Exported (only this one) so it's directly unit-testable — see
+// src/App.validators.test.js for the unrecognized-category regression test.
+export function validateQuestionBatch(r, expectedCount) {
   r = r || {};
   const DIFFS = ["foundational", "intermediate", "advanced"];
   let questions = arr(r.questions).map((q) => ({
     text: str(q?.text),
     // Phase 2A: normalize legacy-or-canonical category into the canonical
-    // taxonomy. Note the unrecognized-category fallback changes here: the
-    // old inline CATS check defaulted an invalid category to "role_specific"
-    // (-> technical_functional); mapLegacyCategory's safe default is
-    // "behavioural_competency" instead, matching every other normalization
-    // call site in this file.
-    category: mapLegacyCategory(q?.category),
+    // taxonomy, preserving the pre-2A fallback semantics: an unrecognized/
+    // invalid category historically defaulted to the legacy string
+    // "role_specific", which canonically resolves to technical_functional
+    // (see mapCategoryWithLegacyFallback in methodology.js) — so that
+    // remains the end result here, reached through the mapping table
+    // rather than a re-hardcoded legacy enum.
+    category: mapCategoryWithLegacyFallback(q?.category, "role_specific"),
     competency: str(q?.competency),
     difficulty: DIFFS.includes(q?.difficulty) ? q.difficulty : "intermediate",
     is_technical: bool(q?.is_technical, false),

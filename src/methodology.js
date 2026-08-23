@@ -66,6 +66,30 @@ export function mapLegacyCategory(category) {
   return LEGACY_CATEGORY_MAP[category] || "behavioural_competency";
 }
 
+function isKnownCategory(category) {
+  return CATEGORIES.includes(category) || Object.prototype.hasOwnProperty.call(LEGACY_CATEGORY_MAP, category);
+}
+
+/**
+ * Same as mapLegacyCategory, but an unrecognized/invalid input resolves
+ * through a caller-specified legacy alias instead of the generic
+ * behavioural_competency default — for call sites that need to preserve a
+ * specific pre-2A fallback rather than adopt the general one.
+ *
+ * Concretely: independent/batch question generation historically defaulted
+ * an invalid/unrecognized category to the literal legacy string
+ * "role_specific" (see validateQuestionBatch in App.jsx). Under the
+ * canonical taxonomy, "role_specific" itself maps to technical_functional
+ * (2A.2) — so calling mapCategoryWithLegacyFallback(category,
+ * "role_specific") reproduces that exact pre-2A end result
+ * (unknown -> role_specific -> technical_functional) through the same
+ * mapping table every other normalization call site uses, rather than
+ * re-hardcoding a legacy category enum at the call site.
+ */
+export function mapCategoryWithLegacyFallback(category, legacyFallbackKey) {
+  return mapLegacyCategory(isKnownCategory(category) ? category : legacyFallbackKey);
+}
+
 // ---- 2A.3 Anchor source -----------------------------------------------
 // category, competency, and anchor_source are three independent fields —
 // never a compound string, never derived from one another. Bare string

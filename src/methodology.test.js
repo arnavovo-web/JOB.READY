@@ -6,6 +6,7 @@ import {
   BATCH_ANCHOR_SOURCES,
   STAGE_METHODOLOGY,
   mapLegacyCategory,
+  mapCategoryWithLegacyFallback,
   normalizeAnchorSource,
   computeMethodologyDistribution,
 } from "./methodology.js";
@@ -56,6 +57,24 @@ describe("mapLegacyCategory", () => {
   it("never collapses situational_judgement into another category (no legacy source maps to it)", () => {
     const legacyInputs = ["motivation_fit", "cv_behavioural", "role_specific", "technical", "commercial_awareness", "garbage"];
     for (const input of legacyInputs) expect(mapLegacyCategory(input)).not.toBe("situational_judgement");
+  });
+});
+
+describe("mapCategoryWithLegacyFallback", () => {
+  it("routes an unrecognized category through the given legacy alias (role_specific -> technical_functional)", () => {
+    expect(mapCategoryWithLegacyFallback("not_a_real_category", "role_specific")).toBe("technical_functional");
+    expect(mapCategoryWithLegacyFallback(undefined, "role_specific")).toBe("technical_functional");
+    expect(mapCategoryWithLegacyFallback("", "role_specific")).toBe("technical_functional");
+  });
+
+  it("leaves a recognized legacy or canonical category untouched by the fallback alias", () => {
+    expect(mapCategoryWithLegacyFallback("cv_behavioural", "role_specific")).toBe("behavioural_competency");
+    expect(mapCategoryWithLegacyFallback("motivation_fit", "role_specific")).toBe("motivation_fit");
+  });
+
+  it("differs from mapLegacyCategory's own generic default for unrecognized input", () => {
+    expect(mapLegacyCategory("not_a_real_category")).toBe("behavioural_competency");
+    expect(mapCategoryWithLegacyFallback("not_a_real_category", "role_specific")).toBe("technical_functional");
   });
 });
 
