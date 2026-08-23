@@ -371,3 +371,176 @@ export function computeMethodologyDistribution(stage, jdProfile) {
 
   return { ...rounded, case_problem_solving: 0 };
 }
+
+/* ================================================================== *
+ * PHASE 2C.1 — DETERMINISTIC ADAPTIVE INTERVIEW SCHEDULER
+ * ------------------------------------------------------------------
+ * Pure, deterministic, career/company-agnostic building blocks for
+ * deciding "what category/turn-type should the next question be" during
+ * a live (turn-by-turn) interview. This module answers that question
+ * only — it does not call the AI, does not read/write the database, and
+ * is not wired into submitAnswer/interview_turn/analyseAndPlan yet
+ * (that wiring is Phase 2C.3). Nothing here branches on company, role,
+ * or industry — the same three functions run for every interview.
+ * ================================================================== */
+
+// ---- 2C.1 Turn types ----------------------------------------------------
+// "normal" is a fresh, scheduler-selected-category question. The other
+// three are probing turns that stay anchored to the category/answer they
+// are probing rather than jumping to a new category.
+export const TURN_TYPES = ["normal", "follow_up", "challenge_claim", "clarify"];
+
+const PROBING_TURN_TYPES = ["follow_up", "challenge_claim", "clarify"];
+
+// A probing thread (follow_up/challenge_claim/clarify chained back-to-back)
+// may run at most this many turns deep before the caller must circuit-break
+// back to a "normal" (scheduler-owned category) turn. No prior design
+// fixes a different value for this repo, so this is the first approved
+// number for it.
+export const MAX_PROBE_DEPTH = 2;
+
+// The finite set of signals an upstream answer-analysis step may observe
+// about the candidate's latest answer. This is the ONLY input
+// resolveTurnDirective takes that isn't already scheduler-owned state —
+// the AI (or whatever produces observedSignal) reports what it saw in the
+// answer, it never reports or chooses a category or turn type itself.
+export const ADAPTIVE_SIGNALS = [
+  "vague_or_incomplete", // answer lacked concrete detail -> clarify
+  "unsupported_claim",   // answer asserted something without evidence -> challenge_claim
+  "strong_signal",       // answer surfaced something worth probing deeper -> follow_up
+  "sufficient",          // answer was complete -> normal, move to the next scheduled category
+];
+
+const SIGNAL_TURN_TYPE = {
+  vague_or_incomplete: "clarify",
+  unsupported_claim: "challenge_claim",
+  strong_signal: "follow_up",
+  sufficient: "normal",
+};
+
+// Float deficit/weight comparisons use this tolerance, matching the
+// residual-redistribution epsilon already used above in this file.
+const SCHEDULER_EPSILON = 1e-9;
+
+/**
+ * countTrailingProbeDepth(transcript)
+ *
+ * transcript: array of past turns, each shaped like { turn_type, ... }
+ *   (only turn_type is read here). Newest turn last.
+ *
+ * Counts only the CONSECUTIVE probing turns (follow_up | challenge_claim |
+ * clarify) at the end of the transcript. Any other value — "normal", a
+ * missing/null/undefined turn_type (the opening interview question has
+ * none), or an unrecognized string — resets the count to zero rather than
+ * counting as a probing turn, so a single normal turn always clears the
+ * probe thread.
+ */
+export function countTrailingProbeDepth(transcript) {
+  const turns = Array.isArray(transcript) ? transcript : [];
+  let depth = 0;
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const turnType = turns[i] && turns[i].turn_type;
+    if (!PROBING_TURN_TYPES.includes(turnType)) break;
+    depth++;
+  }
+  return depth;
+}
+
+/**
+ * scheduleNextCategory({ distribution, transcript, questionCount })
+ *
+ * distribution: a methodology distribution ({category: percentage},
+ *   0-100 summing to 100 — the output of computeMethodologyDistribution).
+ * transcript: array of past turns, each shaped like { category, ... }.
+ *   EVERY turn counts toward its category's coverage regardless of
+ *   turn_type (normal/follow_up/challenge_claim/clarify) — there is no
+ *   separate probing counter to drift out of sync with the real count.
+ * questionCount: the interview's planned total question count.
+ *
+ * For each active category: deficit = targetCount - askedCount, where
+ * targetCount = (distribution[category] / 100) * questionCount. Returns
+ * the category with the greatest positive deficit. Ties break, in order:
+ *   1. larger deficit (already the primary sort)
+ *   2. larger methodology weight (distribution[category])
+ *   3. canonical ACTIVE_CATEGORIES order (first-wins)
+ * If no category has a positive deficit (methodology exhausted), falls
+ * back to the category with the greatest methodology weight, using the
+ * same weight/canonical-order tie-break.
+ */
+export function scheduleNextCategory({ distribution, transcript, questionCount } = {}) {
+  const dist = distribution || {};
+  const turns = Array.isArray(transcript) ? transcript : [];
+  const total = Number(questionCount) || 0;
+
+  const askedCount = Object.fromEntries(ACTIVE_CATEGORIES.map((c) => [c, 0]));
+  for (const turn of turns) {
+    const category = mapLegacyCategory(turn && turn.category);
+    if (ACTIVE_CATEGORIES.includes(category)) askedCount[category] += 1;
+  }
+
+  const weightOf = (c) => Number(dist[c]) || 0;
+  const deficitOf = (c) => (weightOf(c) / 100) * total - askedCount[c];
+
+  // ACTIVE_CATEGORIES is already in canonical order, so iterating it in
+  // order and only replacing `best` on a STRICT improvement gives
+  // first-wins canonical-order tie-break for free at every tier.
+  let best = ACTIVE_CATEGORIES[0];
+  for (const c of ACTIVE_CATEGORIES.slice(1)) {
+    const deficitDelta = deficitOf(c) - deficitOf(best);
+    if (deficitDelta > SCHEDULER_EPSILON) {
+      best = c;
+    } else if (Math.abs(deficitDelta) <= SCHEDULER_EPSILON && weightOf(c) - weightOf(best) > SCHEDULER_EPSILON) {
+      best = c;
+    }
+  }
+
+  if (deficitOf(best) > SCHEDULER_EPSILON) return best;
+
+  // Exhaustion fallback: greatest methodology weight, same tie-break shape.
+  let heaviest = ACTIVE_CATEGORIES[0];
+  for (const c of ACTIVE_CATEGORIES.slice(1)) {
+    if (weightOf(c) - weightOf(heaviest) > SCHEDULER_EPSILON) heaviest = c;
+  }
+  return heaviest;
+}
+
+/**
+ * resolveTurnDirective({ observedSignal, priorCategory, normalCandidate, challengedClaimEvidenced })
+ *
+ * observedSignal: one of ADAPTIVE_SIGNALS (unrecognized/missing -> "normal",
+ *   the safe default, same defensive shape as mapLegacyCategory's fallback).
+ * priorCategory: the category of the turn being probed (only meaningful
+ *   for a probing turn type).
+ * normalCandidate: the category scheduleNextCategory produced for a fresh
+ *   "normal" turn.
+ * challengedClaimEvidenced: true when the claim being challenged is
+ *   directly backed by something in the candidate's CV.
+ *
+ * Deterministically returns { turnType, category, anchorSource }. The
+ * caller (an AI answer-analysis step) supplies observedSignal; it never
+ * supplies or chooses category or anchorSource — those are scheduler-owned.
+ */
+export function resolveTurnDirective({ observedSignal, priorCategory, normalCandidate, challengedClaimEvidenced }) {
+  const turnType = SIGNAL_TURN_TYPE[observedSignal] || "normal";
+
+  if (turnType === "normal") {
+    // anchorSource for a fresh normal-turn question is decided by the
+    // question-content step (JD/CV-anchored generation), not the
+    // scheduler — mirrors BATCH_ANCHOR_SOURCES already being a
+    // content-generation concern, not a scheduling one.
+    return { turnType, category: normalCandidate, anchorSource: null };
+  }
+
+  // follow_up / challenge_claim / clarify all stay anchored to the
+  // category being probed. Only defensively fall back to normalCandidate
+  // if priorCategory isn't a valid active category (e.g. missing on the
+  // very first turn, which has no prior category to inherit).
+  const category = ACTIVE_CATEGORIES.includes(priorCategory) ? priorCategory : normalCandidate;
+
+  if (turnType === "challenge_claim") {
+    return { turnType, category, anchorSource: challengedClaimEvidenced === true ? "cv" : "previous_answer" };
+  }
+
+  // follow_up / clarify: previous-answer/probing concepts, per 2C.1 scope.
+  return { turnType, category, anchorSource: "previous_answer" };
+}

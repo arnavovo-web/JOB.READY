@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   CATEGORIES,
   ACTIVE_CATEGORIES,
@@ -9,6 +10,12 @@ import {
   mapCategoryWithLegacyFallback,
   normalizeAnchorSource,
   computeMethodologyDistribution,
+  TURN_TYPES,
+  MAX_PROBE_DEPTH,
+  ADAPTIVE_SIGNALS,
+  scheduleNextCategory,
+  countTrailingProbeDepth,
+  resolveTurnDirective,
 } from "./methodology.js";
 
 const STAGES = Object.keys(STAGE_METHODOLOGY);
@@ -306,4 +313,334 @@ describe("computeMethodologyDistribution — worked examples stay in the first_r
       expect(sum(result, CATEGORIES)).toBe(100);
     });
   }
+});
+
+/* ================================================================== *
+ * PHASE 2C.1 — DETERMINISTIC ADAPTIVE INTERVIEW SCHEDULER
+ * ================================================================== */
+
+describe("2C.1 constants", () => {
+  it("TURN_TYPES has the four approved turn types, normal first", () => {
+    expect(TURN_TYPES).toEqual(["normal", "follow_up", "challenge_claim", "clarify"]);
+  });
+
+  it("MAX_PROBE_DEPTH is the approved value", () => {
+    expect(MAX_PROBE_DEPTH).toBe(2);
+  });
+
+  it("ADAPTIVE_SIGNALS is a non-empty list of distinct strings", () => {
+    expect(Array.isArray(ADAPTIVE_SIGNALS)).toBe(true);
+    expect(ADAPTIVE_SIGNALS.length).toBeGreaterThan(0);
+    expect(new Set(ADAPTIVE_SIGNALS).size).toBe(ADAPTIVE_SIGNALS.length);
+  });
+});
+
+describe("scheduleNextCategory — deficit selection", () => {
+  it("every active category can be the scheduler's choice", () => {
+    for (const target of ACTIVE_CATEGORIES) {
+      const distribution = Object.fromEntries(ACTIVE_CATEGORIES.map((c) => [c, c === target ? 100 : 0]));
+      const result = scheduleNextCategory({ distribution, transcript: [], questionCount: 5 });
+      expect(result).toBe(target);
+    }
+  });
+
+  it("selects the category with the strictly largest deficit", () => {
+    const distribution = {
+      motivation_fit: 10, behavioural_competency: 50, situational_judgement: 15,
+      technical_functional: 15, commercial_awareness: 10,
+    };
+    // questionCount 10 -> targets 1 / 5 / 1.5 / 1.5 / 1, all askedCount 0.
+    const result = scheduleNextCategory({ distribution, transcript: [], questionCount: 10 });
+    expect(result).toBe("behavioural_competency");
+  });
+
+  it("breaks an equal-deficit tie by larger methodology weight, even against canonical order", () => {
+    const distribution = {
+      motivation_fit: 10, behavioural_competency: 20, situational_judgement: 20,
+      technical_functional: 20, commercial_awareness: 30,
+    };
+    // questionCount 10 -> targets: motivation 1, behavioural/situational/technical 2, commercial 3.
+    const transcript = [
+      ...Array(2).fill({ category: "behavioural_competency" }),
+      ...Array(2).fill({ category: "situational_judgement" }),
+      ...Array(2).fill({ category: "technical_functional" }),
+      ...Array(2).fill({ category: "commercial_awareness" }),
+    ];
+    // Deficits: motivation 1, behavioural/situational/technical 0, commercial 1 -> tie between
+    // motivation_fit (weight 10) and commercial_awareness (weight 30, and LATER in canonical
+    // order) — weight must win over both order and "earlier in the list".
+    const result = scheduleNextCategory({ distribution, transcript, questionCount: 10 });
+    expect(result).toBe("commercial_awareness");
+  });
+
+  it("breaks a fully-equal tie (deficit and weight) by canonical category order", () => {
+    const distribution = Object.fromEntries(ACTIVE_CATEGORIES.map((c) => [c, 20]));
+    const result = scheduleNextCategory({ distribution, transcript: [], questionCount: 10 });
+    expect(result).toBe(ACTIVE_CATEGORIES[0]);
+  });
+
+  it("falls back to the heaviest-weighted category once every deficit is exhausted", () => {
+    const distribution = {
+      motivation_fit: 40, behavioural_competency: 25, situational_judgement: 15,
+      technical_functional: 10, commercial_awareness: 10,
+    };
+    const transcript = ACTIVE_CATEGORIES.flatMap((c) => Array(20).fill({ category: c }));
+    const result = scheduleNextCategory({ distribution, transcript, questionCount: 8 });
+    expect(result).toBe("motivation_fit");
+  });
+
+  it("fallback tie (exhausted deficits, equal top weight) breaks by canonical order", () => {
+    const distribution = {
+      motivation_fit: 30, behavioural_competency: 30, situational_judgement: 15,
+      technical_functional: 15, commercial_awareness: 10,
+    };
+    const transcript = ACTIVE_CATEGORIES.flatMap((c) => Array(10).fill({ category: c }));
+    const result = scheduleNextCategory({ distribution, transcript, questionCount: 6 });
+    expect(result).toBe("motivation_fit");
+  });
+
+  it("never selects a zero-weight category while another category still has weight", () => {
+    const distribution = {
+      motivation_fit: 25, behavioural_competency: 25, situational_judgement: 25,
+      technical_functional: 0, commercial_awareness: 25,
+    };
+    const result = scheduleNextCategory({ distribution, transcript: [], questionCount: 8 });
+    expect(result).not.toBe("technical_functional");
+    expect(result).toBe("motivation_fit");
+  });
+
+  it("still applies plain deficit scheduling on the final question of the interview (no special-casing)", () => {
+    const distribution = Object.fromEntries(ACTIVE_CATEGORIES.map((c) => [c, 20]));
+    const questionCount = 5;
+    // 4 questions already asked, one per category except commercial_awareness.
+    const transcript = [
+      { category: "motivation_fit" }, { category: "behavioural_competency" },
+      { category: "situational_judgement" }, { category: "technical_functional" },
+    ];
+    const result = scheduleNextCategory({ distribution, transcript, questionCount });
+    expect(result).toBe("commercial_awareness");
+  });
+});
+
+describe("scheduleNextCategory — self-compensation", () => {
+  it("asking a category repeatedly lowers its own future deficit without a separate counter", () => {
+    const distribution = Object.fromEntries(ACTIVE_CATEGORIES.map((c) => [c, 20]));
+    const first = scheduleNextCategory({ distribution, transcript: [], questionCount: 10 });
+    expect(first).toBe("motivation_fit");
+
+    const transcript = [
+      { category: "motivation_fit", turn_type: "normal" },
+      { category: "motivation_fit", turn_type: "follow_up" },
+      { category: "motivation_fit", turn_type: "clarify" },
+    ];
+    const second = scheduleNextCategory({ distribution, transcript, questionCount: 10 });
+    expect(second).not.toBe("motivation_fit");
+    expect(second).toBe("behavioural_competency");
+  });
+
+  it("counts repeated probing turns — with no normal turns at all — toward coverage exactly like normal turns", () => {
+    const distribution = { motivation_fit: 50, behavioural_competency: 50 };
+    const transcript = [
+      { category: "motivation_fit", turn_type: "follow_up" },
+      { category: "motivation_fit", turn_type: "challenge_claim" },
+      { category: "motivation_fit", turn_type: "clarify" },
+      { category: "motivation_fit", turn_type: "follow_up" },
+    ];
+    // questionCount 8 -> motivation target 4, asked 4 (all probing) -> deficit 0.
+    // behavioural target 4, asked 0 -> deficit 4 -> wins.
+    const result = scheduleNextCategory({ distribution, transcript, questionCount: 8 });
+    expect(result).toBe("behavioural_competency");
+  });
+});
+
+describe("countTrailingProbeDepth", () => {
+  it("depth 0: empty transcript", () => {
+    expect(countTrailingProbeDepth([])).toBe(0);
+  });
+
+  it("depth 0: transcript ending in a normal turn", () => {
+    expect(countTrailingProbeDepth([{ turn_type: "follow_up" }, { turn_type: "normal" }])).toBe(0);
+  });
+
+  it("depth 1: one trailing probing turn", () => {
+    expect(countTrailingProbeDepth([{ turn_type: "normal" }, { turn_type: "clarify" }])).toBe(1);
+  });
+
+  it("depth 2: two trailing probing turns", () => {
+    expect(
+      countTrailingProbeDepth([{ turn_type: "normal" }, { turn_type: "follow_up" }, { turn_type: "clarify" }])
+    ).toBe(2);
+  });
+
+  it("depth > 2 keeps counting past MAX_PROBE_DEPTH — the counter doesn't cap, the caller circuit-breaks", () => {
+    const transcript = [
+      { turn_type: "normal" }, { turn_type: "follow_up" }, { turn_type: "clarify" }, { turn_type: "challenge_claim" },
+    ];
+    const depth = countTrailingProbeDepth(transcript);
+    expect(depth).toBe(3);
+    expect(depth).toBeGreaterThan(MAX_PROBE_DEPTH);
+  });
+
+  it("a null turn_type (the opening interview question) resets trailing depth to zero", () => {
+    expect(countTrailingProbeDepth([{ turn_type: "follow_up" }, { turn_type: "follow_up" }, { turn_type: null }])).toBe(0);
+    expect(countTrailingProbeDepth([{ turn_type: null }])).toBe(0);
+  });
+
+  it("a missing/undefined turn_type resets trailing depth to zero", () => {
+    expect(countTrailingProbeDepth([{ turn_type: "clarify" }, { category: "motivation_fit" }])).toBe(0);
+  });
+
+  it("an invalid/unrecognized turn_type string resets trailing depth to zero", () => {
+    expect(countTrailingProbeDepth([{ turn_type: "clarify" }, { turn_type: "banana" }])).toBe(0);
+  });
+});
+
+describe("resolveTurnDirective — probing turn category inheritance", () => {
+  const cases = [
+    ["strong_signal", "follow_up"],
+    ["unsupported_claim", "challenge_claim"],
+    ["vague_or_incomplete", "clarify"],
+  ];
+
+  for (const [signal, expectedType] of cases) {
+    it(`${expectedType} inherits priorCategory, not normalCandidate`, () => {
+      const result = resolveTurnDirective({
+        observedSignal: signal,
+        priorCategory: "technical_functional",
+        normalCandidate: "motivation_fit",
+        challengedClaimEvidenced: false,
+      });
+      expect(result.turnType).toBe(expectedType);
+      expect(result.category).toBe("technical_functional");
+    });
+
+    it(`${expectedType} defensively falls back to normalCandidate when priorCategory isn't a valid active category`, () => {
+      const result = resolveTurnDirective({
+        observedSignal: signal,
+        priorCategory: "case_problem_solving", // reserved, never an active category
+        normalCandidate: "commercial_awareness",
+        challengedClaimEvidenced: false,
+      });
+      expect(result.turnType).toBe(expectedType);
+      expect(result.category).toBe("commercial_awareness");
+    });
+  }
+
+  it("a normal turn always uses normalCandidate from scheduleNextCategory", () => {
+    const result = resolveTurnDirective({
+      observedSignal: "sufficient",
+      priorCategory: "technical_functional",
+      normalCandidate: "commercial_awareness",
+    });
+    expect(result.turnType).toBe("normal");
+    expect(result.category).toBe("commercial_awareness");
+  });
+
+  it("an unrecognized/missing observedSignal defensively resolves to a normal turn", () => {
+    const result = resolveTurnDirective({
+      observedSignal: "not_a_real_signal",
+      priorCategory: "technical_functional",
+      normalCandidate: "commercial_awareness",
+    });
+    expect(result.turnType).toBe("normal");
+    expect(result.category).toBe("commercial_awareness");
+  });
+});
+
+describe("resolveTurnDirective — challenge_claim anchoring", () => {
+  it("defaults anchorSource to previous_answer", () => {
+    const result = resolveTurnDirective({
+      observedSignal: "unsupported_claim", priorCategory: "behavioural_competency", normalCandidate: "motivation_fit",
+    });
+    expect(result.anchorSource).toBe("previous_answer");
+  });
+
+  it("an evidenced challenge_claim anchors on the CV instead", () => {
+    const result = resolveTurnDirective({
+      observedSignal: "unsupported_claim", priorCategory: "behavioural_competency",
+      normalCandidate: "motivation_fit", challengedClaimEvidenced: true,
+    });
+    expect(result.anchorSource).toBe("cv");
+  });
+
+  it("never selects an anchor source other than previous_answer or cv, and only literal true triggers cv", () => {
+    for (const evidenced of [true, false, undefined, null, "yes", 0, 1]) {
+      const result = resolveTurnDirective({
+        observedSignal: "unsupported_claim", priorCategory: "motivation_fit",
+        normalCandidate: "behavioural_competency", challengedClaimEvidenced: evidenced,
+      });
+      expect(["cv", "previous_answer"]).toContain(result.anchorSource);
+      expect(result.anchorSource).toBe(evidenced === true ? "cv" : "previous_answer");
+    }
+  });
+});
+
+describe("2C.1 has no career/company-specific branching", () => {
+  it("the scheduler source contains no company/role/industry conditionals or hardcoded employer/industry names", () => {
+    const source = readFileSync(new URL("./methodology.js", import.meta.url), "utf8");
+    const marker = "PHASE 2C.1";
+    const idx = source.indexOf(marker);
+    expect(idx).toBeGreaterThan(-1);
+    const schedulerSection = source.slice(idx);
+
+    const forbidden = [
+      /company\s*===/i, /role\s*===/i, /industry\s*===/i,
+      /\bgoldman\b/i, /\bgoogle\b/i, /\bmckinsey\b/i, /\bjpmorgan\b/i, /\bmorgan stanley\b/i,
+      /\binvestment bank(ing)?\b/i, /\bconsulting\b/i, /\bsoftware engineer\b/i,
+    ];
+    for (const pattern of forbidden) {
+      expect(schedulerSection).not.toMatch(pattern);
+    }
+  });
+});
+
+describe("2C.1 determinism / fuzz", () => {
+  // Same small deterministic PRNG shape already used above in this file, kept
+  // local to this describe block since scheduleNextCategory/resolveTurnDirective
+  // fuzzing needs different fixture shapes than computeMethodologyDistribution's.
+  function mulberry32(seed) {
+    let a = seed;
+    return function () {
+      a |= 0; a = (a + 0x6d2b79f5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  it("scheduleNextCategory is a pure, deterministic function of its input across randomized fixtures", () => {
+    const rng = mulberry32(2026);
+    for (let i = 0; i < 300; i++) {
+      const distribution = Object.fromEntries(ACTIVE_CATEGORIES.map((c) => [c, Math.floor(rng() * 40)]));
+      const questionCount = Math.floor(rng() * 20);
+      const transcript = Array.from({ length: Math.floor(rng() * 15) }, () => ({
+        category: ACTIVE_CATEGORIES[Math.floor(rng() * ACTIVE_CATEGORIES.length)],
+        turn_type: TURN_TYPES[Math.floor(rng() * TURN_TYPES.length)],
+      }));
+      const first = scheduleNextCategory({ distribution, transcript, questionCount });
+      const second = scheduleNextCategory({
+        distribution: { ...distribution }, transcript: transcript.map((t) => ({ ...t })), questionCount,
+      });
+      expect(ACTIVE_CATEGORIES).toContain(first);
+      expect(second).toBe(first);
+    }
+  });
+
+  it("resolveTurnDirective is a pure, deterministic function of its input across randomized fixtures", () => {
+    const rng = mulberry32(99);
+    const observedPool = [...ADAPTIVE_SIGNALS, "unrecognized_garbage", undefined];
+    for (let i = 0; i < 300; i++) {
+      const args = {
+        observedSignal: observedPool[Math.floor(rng() * observedPool.length)],
+        priorCategory: rng() < 0.7 ? ACTIVE_CATEGORIES[Math.floor(rng() * ACTIVE_CATEGORIES.length)] : "not_a_category",
+        normalCandidate: ACTIVE_CATEGORIES[Math.floor(rng() * ACTIVE_CATEGORIES.length)],
+        challengedClaimEvidenced: rng() < 0.5,
+      };
+      const first = resolveTurnDirective(args);
+      const second = resolveTurnDirective({ ...args });
+      expect(TURN_TYPES).toContain(first.turnType);
+      expect(ACTIVE_CATEGORIES).toContain(first.category);
+      expect(second).toEqual(first);
+    }
+  });
 });
