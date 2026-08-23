@@ -6,6 +6,17 @@ import {
   GraduationCap, BookOpen, Globe, HelpCircle, XCircle,
   Users, Briefcase, Mail, FileText, History, Clock
 } from "lucide-react";
+// Phase 2A: canonical taxonomy / anchor-source / stage-methodology engine.
+// A companion layer to the Phase 4A INTERVIEW_STAGES/INTERVIEW_FORMATS
+// catalog below — it does not read, write, or duplicate that catalog.
+// Only category normalization is wired into this file for now (the three
+// call sites below). anchor_source normalization has no call site yet —
+// no schema in this file emits anchor_source until Phase 2B adds it to
+// the batch pipeline — so normalizeAnchorSource is deliberately not
+// imported here; it stays exported from methodology.js for that phase.
+// The methodology calculation itself (computeMethodologyDistribution) is
+// likewise not called anywhere yet — that's also Phase 2B's job.
+import { mapLegacyCategory, normalizeCategoryMix } from "./methodology";
 
 /* ================================================================== *
  * JOB.READY — DESIGN SYSTEM (unchanged from previous build)
@@ -213,7 +224,15 @@ function validateProfile(p) {
       competencies: arr(ip.competencies).map((c) => ({ name: str(c?.name), basis: ["explicit", "inferred", "general"].includes(c?.basis) ? c.basis : "general" })).filter((c) => c.name),
       technical_topics: arr(ip.technical_topics).map((s) => str(s)), behavioural_topics: arr(ip.behavioural_topics).map((s) => str(s)),
       commercial_topics: arr(ip.commercial_topics).map((s) => str(s)),
-      question_mix: Object.keys(scoreMap(ip.question_mix)).length ? scoreMap(ip.question_mix) : { motivation_fit: 30, cv_behavioural: 25, role_specific: 20, technical: 15, commercial_awareness: 10 },
+      // Phase 2A: normalize whatever category keys the AI returned (legacy
+      // or canonical) into the canonical taxonomy. The AI-facing prompt
+      // still asks for the legacy shape today (that's Phase 2B's prompt
+      // change) — this just means downstream consumers only ever see
+      // canonical keys, with values summed where multiple legacy keys
+      // collapse onto the same canonical category.
+      question_mix: normalizeCategoryMix(
+        Object.keys(scoreMap(ip.question_mix)).length ? scoreMap(ip.question_mix) : { motivation_fit: 30, cv_behavioural: 25, role_specific: 20, technical: 15, commercial_awareness: 10 }
+      ),
     },
     candidate_profile: {
       education: arr(cp.education).map((s) => str(s)), experience: arr(cp.experience).map((s) => str(s)),
@@ -223,7 +242,7 @@ function validateProfile(p) {
     },
     opening_question: {
       text: str(p.opening_question?.text, "Tell me about yourself and why you're interested in this role."),
-      category: str(p.opening_question?.category, "motivation_fit"), competency: str(p.opening_question?.competency),
+      category: mapLegacyCategory(str(p.opening_question?.category, "motivation_fit")), competency: str(p.opening_question?.competency),
     },
   };
 }
@@ -232,7 +251,7 @@ function validateNextTurn(n) {
   return {
     evaluation: validateEvaluation(n.evaluation),
     decision: str(n.decision, "follow_up"),
-    next_question: { text: str(n.next_question?.text, "Can you tell me more about that?"), category: str(n.next_question?.category, "cv_behavioural"), competency: str(n.next_question?.competency) },
+    next_question: { text: str(n.next_question?.text, "Can you tell me more about that?"), category: mapLegacyCategory(str(n.next_question?.category, "cv_behavioural")), competency: str(n.next_question?.competency) },
     interview_should_end: !!n.interview_should_end,
   };
 }
@@ -265,11 +284,16 @@ function validateAcResult(r) {
 // Phase 4B: independent/batch interview engine validators.
 function validateQuestionBatch(r, expectedCount) {
   r = r || {};
-  const CATS = ["motivation_fit", "cv_behavioural", "role_specific", "technical", "commercial_awareness"];
   const DIFFS = ["foundational", "intermediate", "advanced"];
   let questions = arr(r.questions).map((q) => ({
     text: str(q?.text),
-    category: CATS.includes(q?.category) ? q.category : "role_specific",
+    // Phase 2A: normalize legacy-or-canonical category into the canonical
+    // taxonomy. Note the unrecognized-category fallback changes here: the
+    // old inline CATS check defaulted an invalid category to "role_specific"
+    // (-> technical_functional); mapLegacyCategory's safe default is
+    // "behavioural_competency" instead, matching every other normalization
+    // call site in this file.
+    category: mapLegacyCategory(q?.category),
     competency: str(q?.competency),
     difficulty: DIFFS.includes(q?.difficulty) ? q.difficulty : "intermediate",
     is_technical: bool(q?.is_technical, false),
