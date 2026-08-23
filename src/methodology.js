@@ -446,8 +446,22 @@ export function countTrailingProbeDepth(transcript) {
   return depth;
 }
 
+// ---- PHASE 2E — bounded candidate-strategy nudge ------------------------
+// categoryPreference (optional, [-1, 1] per category — see
+// interviewStrategy.js's buildCategoryPreference) may nudge the deficit
+// comparison below by AT MOST this many "deficit units" (a fraction of one
+// question). This is deliberately small: a stage/JD-driven weight
+// difference of even a few percentage points over a normal-length
+// interview produces a deficit gap far larger than this cap, so
+// methodology/envelope constraints keep the final say in every case that
+// matters — candidate strategy can only tip a genuinely close call, never
+// override a real methodology-driven preference. categoryPreference
+// omitted/empty reproduces the exact pre-2E scheduling decision (every
+// existing caller that doesn't pass it is completely unaffected).
+export const STRATEGY_NUDGE_CAP = 0.15;
+
 /**
- * scheduleNextCategory({ distribution, transcript, questionCount })
+ * scheduleNextCategory({ distribution, transcript, questionCount, categoryPreference })
  *
  * distribution: a methodology distribution ({category: percentage},
  *   0-100 summing to 100 — the output of computeMethodologyDistribution).
@@ -456,21 +470,33 @@ export function countTrailingProbeDepth(transcript) {
  *   turn_type (normal/follow_up/challenge_claim/clarify) — there is no
  *   separate probing counter to drift out of sync with the real count.
  * questionCount: the interview's planned total question count.
+ * categoryPreference: OPTIONAL, Phase 2E — { [category]: number in [-1, 1] }
+ *   (interviewStrategy.js's buildCategoryPreference output). A missing/
+ *   invalid entry for any category defaults to 0 (no nudge). This is the
+ *   ONLY way Candidate Strategy ever reaches this function — it is never
+ *   given the distribution, the envelope, or any other authority.
  *
  * For each active category: deficit = targetCount - askedCount, where
- * targetCount = (distribution[category] / 100) * questionCount. Returns
- * the category with the greatest positive deficit. Ties break, in order:
- *   1. larger deficit (already the primary sort)
+ * targetCount = (distribution[category] / 100) * questionCount, nudged by
+ * at most +/-STRATEGY_NUDGE_CAP from categoryPreference. Returns the
+ * category with the greatest nudged deficit. Ties break, in order:
+ *   1. larger nudged deficit (already the primary sort)
  *   2. larger methodology weight (distribution[category])
  *   3. canonical ACTIVE_CATEGORIES order (first-wins)
- * If no category has a positive deficit (methodology exhausted), falls
- * back to the category with the greatest methodology weight, using the
- * same weight/canonical-order tie-break.
+ * The exhaustion check below (methodology genuinely has nothing left to
+ * schedule) is evaluated on the RAW, un-nudged deficit of the selected
+ * category — candidate strategy can prioritise among categories methodology
+ * still wants asked, but can never manufacture a "still due" category out
+ * of one methodology has already fully satisfied. If no category has a
+ * positive raw deficit (methodology exhausted), falls back to the category
+ * with the greatest methodology weight, using the same weight/canonical-
+ * order tie-break — also entirely unaffected by categoryPreference.
  */
-export function scheduleNextCategory({ distribution, transcript, questionCount } = {}) {
+export function scheduleNextCategory({ distribution, transcript, questionCount, categoryPreference } = {}) {
   const dist = distribution || {};
   const turns = Array.isArray(transcript) ? transcript : [];
   const total = Number(questionCount) || 0;
+  const preference = categoryPreference || {};
 
   const askedCount = Object.fromEntries(ACTIVE_CATEGORIES.map((c) => [c, 0]));
   for (const turn of turns) {
@@ -480,13 +506,18 @@ export function scheduleNextCategory({ distribution, transcript, questionCount }
 
   const weightOf = (c) => Number(dist[c]) || 0;
   const deficitOf = (c) => (weightOf(c) / 100) * total - askedCount[c];
+  const preferenceOf = (c) => {
+    const p = Number(preference[c]);
+    return Number.isFinite(p) ? clamp(p, -1, 1) : 0;
+  };
+  const nudgedDeficitOf = (c) => deficitOf(c) + preferenceOf(c) * STRATEGY_NUDGE_CAP;
 
   // ACTIVE_CATEGORIES is already in canonical order, so iterating it in
   // order and only replacing `best` on a STRICT improvement gives
   // first-wins canonical-order tie-break for free at every tier.
   let best = ACTIVE_CATEGORIES[0];
   for (const c of ACTIVE_CATEGORIES.slice(1)) {
-    const deficitDelta = deficitOf(c) - deficitOf(best);
+    const deficitDelta = nudgedDeficitOf(c) - nudgedDeficitOf(best);
     if (deficitDelta > SCHEDULER_EPSILON) {
       best = c;
     } else if (Math.abs(deficitDelta) <= SCHEDULER_EPSILON && weightOf(c) - weightOf(best) > SCHEDULER_EPSILON) {

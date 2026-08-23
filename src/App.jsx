@@ -32,6 +32,11 @@ import {
   dedupeNewClaims, classifyClaimStatus, buildCandidateSignals, isCandidateIntelligenceUsable,
   mergeProbeAreasForInterview, matchClaimIdForProbeArea,
 } from "./candidateIntelligence";
+// Phase 2E: candidate strategy — turns Candidate Intelligence (2D, above) into a compact,
+// deterministic priority signal (categoryPreference) methodology.js's scheduler may use as a
+// small, BOUNDED nudge, plus informational-only context for Call 2's prompt. Never decides
+// category, turn type, or anchor source itself — see interviewStrategy.js's own docstring.
+import { buildInterviewStrategy } from "./interviewStrategy";
 
 /* ================================================================== *
  * JOB.READY — DESIGN SYSTEM (unchanged from previous build)
@@ -402,7 +407,7 @@ const ANCHOR_NOTE = {
   cv: "Ground the question in the specific CV claim below that's being challenged — quote or closely reference it.",
   previous_answer: "Ground the question directly in the candidate's previous answer text below.",
 };
-export function buildQuestionGenerationPrompt(genInput, interview, profile, candidateSignals) {
+export function buildQuestionGenerationPrompt(genInput, interview, profile, candidateSignals, candidateStrategy) {
   const gi = genInput || {};
   const isNormalTurn = gi.turnType === "normal";
   // Phase 2D: optional, informational-only candidate-intelligence note for a normal turn —
@@ -418,6 +423,17 @@ export function buildQuestionGenerationPrompt(genInput, interview, profile, cand
     } else if (cov.status === "unknown") {
       candidateNote = `\nCandidate intelligence: this category hasn't been tested for this candidate before — a good opportunity to establish a first data point.`;
     }
+  }
+  // Phase 2E: optional, informational-only candidate-STRATEGY note — only ever supplements
+  // the Phase 2D note above (never overwrites one that already fired), and only ever for a
+  // normal turn. Strategy is context/intent for phrasing only; it never reaches category,
+  // turn_type, competency, or anchor_source, all of which remain the scheduler's structural
+  // decision (decision, above) — stampQuestionFromDecision enforces this regardless of
+  // anything written here. A missing/malformed candidateStrategy produces no note at all.
+  if (isNormalTurn && !candidateNote && candidateStrategy?.categoryPreference && typeof candidateStrategy.categoryPreference[gi.category] === "number") {
+    const pref = candidateStrategy.categoryPreference[gi.category];
+    if (pref >= 0.5) candidateNote = `\nCandidate strategy: this is a genuine coverage gap for this candidate — a good area to establish solid evidence.`;
+    else if (pref <= -0.5) candidateNote = `\nCandidate strategy: this area is already well covered for this candidate — favour a fresh angle rather than repeating ground already tested.`;
   }
   const directive = TURN_TYPE_DIRECTIVE[gi.turnType] || TURN_TYPE_DIRECTIVE.normal;
   const anchorNote = ANCHOR_NOTE[gi.anchorSource] || "";
@@ -510,13 +526,14 @@ export function effectiveMethodologyDistribution(interview) {
   return interview?.methodologyDistribution || computeMethodologyDistribution(interview?.config?.stage, null);
 }
 
-export function computeRecoveryDecision({ interview, profile, priorTranscript, answeredEntry, legacyDecision, methodologyDistribution }) {
+export function computeRecoveryDecision({ interview, profile, priorTranscript, answeredEntry, legacyDecision, methodologyDistribution, candidateStrategy }) {
   const syntheticInterview = { ...interview, transcript: priorTranscript, currentQuestion: answeredEntry.question };
   const { decision, genInput } = runSimulatedAdaptiveTurn({
     interview: syntheticInterview, profile, methodologyDistribution,
     answerText: answeredEntry.answer,
     evaluationResult: { evaluation: answeredEntry.evaluation, decision: legacyDecision || "new_competency" },
     generateQuestion: () => ({}),
+    candidateStrategy,
   });
   return { decision, genInput };
 }
@@ -2137,7 +2154,29 @@ Rules: honest 0-100 scores. follow_up_worthy: true only if the answer surfaced s
       const userText = `Interview profile: ${JSON.stringify(profile.interview_profile)}\nCandidate profile: ${JSON.stringify(profile.candidate_profile)}\nQuestions asked so far: ${askedSoFar} of target ${interview.maxQuestions}\nTranscript so far: ${JSON.stringify(interview.transcript)}\n\nQuestion just asked: ${JSON.stringify(currentQ)}${wasFollowUp ? " (this question was itself a follow-up to the previous one)" : ""}\nCandidate's answer: ${cleanAnswer}`;
       const evalResult = validateEvaluationSignals(await callClaude(system, userText, 900, false, { requestType: "interview_turn_evaluate", applicationId: interview.applicationId, interviewId: interview.id }));
 
-      // ---- SCHEDULER (SCHEDULED) — methodology.js + adaptiveEngine.js, untouched ----
+      // ---- PHASE 2E: CANDIDATE STRATEGY — derived entirely from already-hydrated state
+      // (candidateIntelligence, candidateClaims — both loaded once at session hydration, see
+      // loadFullUserState) plus this interview's own in-memory transcript, WITH the turn just
+      // answered folded in (the same turn `newTranscript` below folds in — computed separately
+      // here only because candidateStrategy must exist before the scheduler runs, earlier in
+      // this function than newTranscript's own declaration). No DB read, no AI call, never
+      // fatal: a build failure here degrades to an inert strategy (empty categoryPreference),
+      // which methodology.js's scheduler treats as "no nudge" — the interview continues
+      // exactly as it would have pre-2E. ----
+      let candidateStrategy = null;
+      try {
+        const answeredTurn = { question: currentQ, answer: cleanAnswer, evaluation: evalResult.evaluation };
+        candidateStrategy = buildInterviewStrategy({
+          candidateSignals: candidateIntelligence, claims: candidateClaims,
+          requiredCompetencies: profile?.interview_profile?.competencies,
+          transcript: [...interview.transcript, answeredTurn],
+        });
+      } catch (csErr) { console.error("candidate strategy build failed:", csErr.message); }
+
+      // ---- SCHEDULER (SCHEDULED) — methodology.js + adaptiveEngine.js. candidateStrategy
+      // (Phase 2E) only ever supplies a small, bounded categoryPreference nudge (see
+      // methodology.js's STRATEGY_NUDGE_CAP) — category/turn-type/anchor selection logic
+      // itself is untouched. ----
       // §T: a pre-2B interview with no persisted methodology_distribution gets the plain
       // stage baseline via the SAME computeMethodologyDistribution() every other call site
       // already uses — never a second/ad-hoc calculation, never an empty distribution that
@@ -2149,6 +2188,7 @@ Rules: honest 0-100 scores. follow_up_worthy: true only if the answer surfaced s
         answerText: cleanAnswer,
         evaluationResult: { evaluation: evalResult.evaluation, decision: syntheticDecision },
         generateQuestion: () => ({}), // Call 2 happens for real, separately, below
+        candidateStrategy,
       });
       const legacyDecision = legacyDecisionFromTurnType(decision.turnType);
 
@@ -2206,7 +2246,7 @@ Rules: honest 0-100 scores. follow_up_worthy: true only if the answer surfaced s
 
       try {
         // ---- CALL 2: question generation only (QUESTION_GENERATING -> QUESTION_PERSISTED) ----
-        const nextQuestion = await generateAndPersistNextQuestion(interview, profile, currentQ.dbId, currentQ?.turn_type ?? null, decision, genInput, targetedClaimId);
+        const nextQuestion = await generateAndPersistNextQuestion(interview, profile, currentQ.dbId, currentQ?.turn_type ?? null, decision, genInput, targetedClaimId, candidateStrategy);
         setInterview({ ...interview, transcript: newTranscript, currentQuestion: nextQuestion, pendingRecovery: null });
         setAnswerInput("");
         setScreen("interview");
@@ -2234,9 +2274,12 @@ Rules: honest 0-100 scores. follow_up_worthy: true only if the answer surfaced s
   // submitAnswer's happy path and regenerateNextQuestion's recovery path so the two can
   // never drift out of sync with each other. targetedClaimId (Phase 2D, optional) is carried
   // through onto the returned question only — it is never sent to the model and never
-  // affects generation, persistence, or the pending-decision clear above.
-  async function generateAndPersistNextQuestion(interviewForPrompt, profileForPrompt, answeredQuestionId, answeredTurnType, decision, genInput, targetedClaimId = null) {
-    const { system, userText } = buildQuestionGenerationPrompt(genInput, interviewForPrompt, profileForPrompt, candidateIntelligence);
+  // affects generation, persistence, or the pending-decision clear above. candidateStrategy
+  // (Phase 2E, optional) is informational-only context for the prompt — see
+  // buildQuestionGenerationPrompt's own docstring; it never affects decision/genInput, which
+  // the scheduler has already finalised by the time this function runs.
+  async function generateAndPersistNextQuestion(interviewForPrompt, profileForPrompt, answeredQuestionId, answeredTurnType, decision, genInput, targetedClaimId = null, candidateStrategy = null) {
+    const { system, userText } = buildQuestionGenerationPrompt(genInput, interviewForPrompt, profileForPrompt, candidateIntelligence, candidateStrategy);
     const raw = await callClaude(system, userText, 700, false, {
       requestType: "interview_turn_generate", applicationId: interviewForPrompt.applicationId, interviewId: interviewForPrompt.id,
     });
@@ -2278,9 +2321,20 @@ Rules: honest 0-100 scores. follow_up_worthy: true only if the answer surfaced s
     setError("");
     const { questionId, decision: knownDecision, genInput: knownGenInput, targetedClaimId } = interview.pendingRecovery;
     setScreen("evaluating");
+    // Phase 2E: recomputed here (not carried on pendingRecovery) from the SAME already-
+    // hydrated state submitAnswer itself uses — interview.transcript, at this point, already
+    // includes the just-answered turn (set before entering CALL2_FAILED — see submitAnswer).
+    // Never fatal: a build failure degrades to no strategy context for the retried prompt.
+    let candidateStrategy = null;
     try {
-      const { decision, genInput } = await reconstructSchedulerDecision(interview, profile, questionId, knownDecision, knownGenInput);
-      const nextQuestion = await generateAndPersistNextQuestion(interview, profile, questionId, interview.currentQuestion?.turn_type ?? null, decision, genInput, targetedClaimId);
+      candidateStrategy = buildInterviewStrategy({
+        candidateSignals: candidateIntelligence, claims: candidateClaims,
+        requiredCompetencies: profile?.interview_profile?.competencies, transcript: interview.transcript,
+      });
+    } catch (csErr) { console.error("candidate strategy build failed:", csErr.message); }
+    try {
+      const { decision, genInput } = await reconstructSchedulerDecision(interview, profile, questionId, knownDecision, knownGenInput, candidateStrategy);
+      const nextQuestion = await generateAndPersistNextQuestion(interview, profile, questionId, interview.currentQuestion?.turn_type ?? null, decision, genInput, targetedClaimId, candidateStrategy);
       setInterview({ ...interview, currentQuestion: nextQuestion, pendingRecovery: null });
       setScreen("interview");
     } catch (e) {
@@ -2294,7 +2348,10 @@ Rules: honest 0-100 scores. follow_up_worthy: true only if the answer surfaced s
   // pending_next_decision back from the DB and, if present, use IT verbatim. (3) Only when
   // neither is available does this recompute (computeRecoveryDecision, pure) from the
   // interview's own already-persisted transcript/answer/decision — never by re-running Call 1.
-  async function reconstructSchedulerDecision(interview, profile, questionId, knownDecision, knownGenInput) {
+  // candidateStrategy (Phase 2E, optional) is only ever consulted in case (3): a known/persisted
+  // decision (cases 1-2) is the scheduler's own prior, already-strategy-informed output and is
+  // always reused verbatim, never recomputed against a possibly-since-changed strategy.
+  async function reconstructSchedulerDecision(interview, profile, questionId, knownDecision, knownGenInput, candidateStrategy) {
     if (knownDecision && knownGenInput) return { decision: knownDecision, genInput: knownGenInput };
 
     const supabase = await getSupabase();
@@ -2319,6 +2376,7 @@ Rules: honest 0-100 scores. follow_up_worthy: true only if the answer surfaced s
     return computeRecoveryDecision({
       interview, profile, priorTranscript, answeredEntry,
       legacyDecision: evalRow?.decision, methodologyDistribution: effectiveDistribution,
+      candidateStrategy,
     });
   }
 

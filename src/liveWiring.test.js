@@ -440,7 +440,13 @@ describe("P. question counters remain correct after regeneration (EXECUTABLE)", 
   });
 
   it("STRUCTURAL: regenerateNextQuestion never mutates transcript length itself — it only sets currentQuestion/pendingRecovery", () => {
-    expect(REGENERATE_SRC).not.toMatch(/transcript:/);
+    // Phase 2E: regenerateNextQuestion now READS interview.transcript (unmutated) to build a
+    // candidateStrategy for the retried prompt — the precise invariant this test guards is
+    // that its own setInterview(...) call never assigns a `transcript:` field, not that the
+    // word never appears anywhere in the function's source.
+    const setInterviewCall = REGENERATE_SRC.slice(REGENERATE_SRC.indexOf("setInterview({"), REGENERATE_SRC.indexOf("setScreen(\"interview\")"));
+    expect(setInterviewCall).toContain("setInterview({ ...interview, currentQuestion: nextQuestion, pendingRecovery: null })");
+    expect(setInterviewCall).not.toMatch(/transcript:/);
   });
 });
 
@@ -639,5 +645,113 @@ describe("buildQuestionGenerationPrompt — anchor_source requested only for a n
   it("a probing turn's prompt does NOT ask the model for anchor_source (the scheduler already has one)", () => {
     const { system } = buildQuestionGenerationPrompt({ category: "motivation_fit", turnType: "follow_up", anchorSource: "previous_answer", questionNumber: 2 }, makeInterview(), makeProfile());
     expect(system).not.toMatch(/"anchor_source"/);
+  });
+});
+
+/* ============================== PHASE 2E ============================== */
+describe("PHASE 2E — buildQuestionGenerationPrompt's optional candidateStrategy context (EXECUTABLE)", () => {
+  it("omitting candidateStrategy entirely produces the exact pre-2E prompt (full backward compatibility)", () => {
+    const genInput = { category: "motivation_fit", turnType: "normal", anchorSource: null, questionNumber: 1 };
+    const withoutArg = buildQuestionGenerationPrompt(genInput, makeInterview(), makeProfile());
+    const withUndefined = buildQuestionGenerationPrompt(genInput, makeInterview(), makeProfile(), undefined, undefined);
+    expect(withoutArg).toEqual(withUndefined);
+  });
+
+  it("a strong positive category preference adds a 'genuine coverage gap' note on a normal turn", () => {
+    const genInput = { category: "motivation_fit", turnType: "normal", anchorSource: null, questionNumber: 1 };
+    const { system } = buildQuestionGenerationPrompt(genInput, makeInterview(), makeProfile(), undefined, { categoryPreference: { motivation_fit: 0.8 } });
+    expect(system).toMatch(/genuine coverage gap/);
+  });
+
+  it("a strong negative category preference adds a 'well covered' note on a normal turn", () => {
+    const genInput = { category: "motivation_fit", turnType: "normal", anchorSource: null, questionNumber: 1 };
+    const { system } = buildQuestionGenerationPrompt(genInput, makeInterview(), makeProfile(), undefined, { categoryPreference: { motivation_fit: -0.8 } });
+    expect(system).toMatch(/already well covered/);
+  });
+
+  it("never adds a strategy note on a probing turn (informational-only, normal-turn-only, matching the Phase 2D note's own scope)", () => {
+    const genInput = { category: "motivation_fit", turnType: "follow_up", anchorSource: "previous_answer", questionNumber: 2 };
+    const { system } = buildQuestionGenerationPrompt(genInput, makeInterview(), makeProfile(), undefined, { categoryPreference: { motivation_fit: 0.9 } });
+    expect(system).not.toMatch(/Candidate strategy:/);
+  });
+
+  it("never overwrites an existing Phase 2D categoryCoverage note — additive only, first note wins", () => {
+    const genInput = { category: "motivation_fit", turnType: "normal", anchorSource: null, questionNumber: 1 };
+    const candidateSignals = { categoryCoverage: { motivation_fit: { status: "unknown" } } };
+    const { system } = buildQuestionGenerationPrompt(genInput, makeInterview(), makeProfile(), candidateSignals, { categoryPreference: { motivation_fit: -0.9 } });
+    expect(system).toMatch(/hasn't been tested for this candidate before/); // Phase 2D note
+    expect(system).not.toMatch(/Candidate strategy:/); // Phase 2E note suppressed
+  });
+
+  it("malformed candidateStrategy never throws and produces no note", () => {
+    const genInput = { category: "motivation_fit", turnType: "normal", anchorSource: null, questionNumber: 1 };
+    for (const bad of [null, "nonsense", 42, {}]) {
+      expect(() => buildQuestionGenerationPrompt(genInput, makeInterview(), makeProfile(), undefined, bad)).not.toThrow();
+    }
+  });
+});
+
+describe("PHASE 2E — submitAnswer computes and threads candidateStrategy (STRUCTURAL)", () => {
+  it("candidateStrategy is computed after Call 1 and before the scheduler runs", () => {
+    const buildIdx = SUBMIT_ANSWER_SRC.indexOf("buildInterviewStrategy(");
+    const call1Idx = SUBMIT_ANSWER_SRC.indexOf('requestType: "interview_turn_evaluate"');
+    const schedulerIdx = SUBMIT_ANSWER_SRC.indexOf("runSimulatedAdaptiveTurn(");
+    expect(buildIdx).toBeGreaterThan(call1Idx);
+    expect(schedulerIdx).toBeGreaterThan(buildIdx);
+  });
+
+  it("the candidate strategy build is wrapped in a non-fatal try/catch, same defensive pattern as every other Candidate Intelligence call site", () => {
+    const block = SUBMIT_ANSWER_SRC.slice(SUBMIT_ANSWER_SRC.indexOf("PHASE 2E: CANDIDATE STRATEGY"), SUBMIT_ANSWER_SRC.indexOf("SCHEDULER (SCHEDULED)"));
+    expect(block).toMatch(/try\s*\{/);
+    expect(block).toMatch(/catch \(csErr\)/);
+    expect(block).not.toMatch(/setError\(/);
+    expect(block).not.toMatch(/setScreen\(/);
+  });
+
+  it("candidateStrategy is passed into both runSimulatedAdaptiveTurn and generateAndPersistNextQuestion", () => {
+    expect(SUBMIT_ANSWER_SRC).toMatch(/runSimulatedAdaptiveTurn\(\{[\s\S]*candidateStrategy,?\s*\}\)/);
+    expect(SUBMIT_ANSWER_SRC).toMatch(/generateAndPersistNextQuestion\([^)]*candidateStrategy\)/);
+  });
+
+  it("generateAndPersistNextQuestion passes candidateStrategy into buildQuestionGenerationPrompt, never into the scheduler decision itself", () => {
+    expect(GENERATE_AND_PERSIST_SRC).toMatch(/buildQuestionGenerationPrompt\(genInput, interviewForPrompt, profileForPrompt, candidateIntelligence, candidateStrategy\)/);
+  });
+});
+
+describe("PHASE 2E — no second scheduler, no new AI call (STRUCTURAL)", () => {
+  it("interviewStrategy.js never imports or invokes the scheduler itself, never imports React/Supabase/AI", () => {
+    const src = readFileSync(new URL("./interviewStrategy.js", import.meta.url), "utf8");
+    // Referencing the scheduler's NAME in a doc comment (documenting where its output is
+    // consumed downstream) is fine; importing or calling it is not.
+    expect(src).not.toMatch(/scheduleNextCategory\(|resolveTurnDirective\(|runSimulatedAdaptiveTurn\(/);
+    expect(src).not.toMatch(/from ["']\.\/adaptiveEngine/);
+    expect(src).not.toMatch(/callClaude|supabase/i);
+    expect(src).not.toMatch(/from ["']react["']/i);
+  });
+
+  it("methodology.js's scheduleNextCategory is still the ONLY place a category is chosen — interviewStrategy.js never assigns one", () => {
+    const src = readFileSync(new URL("./interviewStrategy.js", import.meta.url), "utf8");
+    expect(src).not.toMatch(/decision\.category\s*=|genInput\.category\s*=/);
+  });
+
+  it("submitAnswer still makes exactly two callClaude requests per turn — Call 1 (evaluate) and Call 2 (generate) — Phase 2E adds no AI call", () => {
+    const occurrences = SUBMIT_ANSWER_SRC.split("callClaude(").length - 1;
+    expect(occurrences).toBe(1); // Call 2 itself happens inside generateAndPersistNextQuestion, not submitAnswer's own body
+    expect(GENERATE_AND_PERSIST_SRC.split("callClaude(").length - 1).toBe(1);
+  });
+});
+
+describe("PHASE 2E — batch/independent pipeline and Assessment Centre remain isolated (STRUCTURAL)", () => {
+  it("candidate strategy has no coupling to the independent/batch pipeline", () => {
+    const batchHelperSrc = SOURCE.slice(SOURCE.indexOf("async function dbInsertQuestionBatch("), SOURCE.indexOf("async function dbInsertAnswerOnly("));
+    expect(batchHelperSrc).not.toMatch(/buildInterviewStrategy|candidateStrategy|interviewStrategy/i);
+  });
+
+  it("Assessment Centre functions contain no candidate-strategy wiring", () => {
+    const acFunctionsBlock = extractFunctionSource(
+      "/* ---------------- ASSESSMENT CENTRE ---------------- */",
+      "/* ---------------- DERIVED VALUES ---------------- */"
+    );
+    expect(acFunctionsBlock).not.toMatch(/buildInterviewStrategy|candidateStrategy|interviewStrategy/i);
   });
 });

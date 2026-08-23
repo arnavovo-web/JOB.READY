@@ -571,3 +571,80 @@ describe("adaptiveEngine.js isolation from the batch/independent interview flow"
     expect(source).not.toMatch(/supabase/i);
   });
 });
+
+describe("PHASE 2E — buildSchedulerState/runSimulatedAdaptiveTurn accept an optional candidateStrategy", () => {
+  it("buildSchedulerState defaults categoryPreference to {} when candidateStrategy is omitted or malformed", () => {
+    const base = { interview: makeInterview(), profile: makeProfile(), methodologyDistribution: DISTRIBUTION_EQUAL };
+    expect(buildSchedulerState(base).categoryPreference).toEqual({});
+    for (const bad of [null, {}, "nonsense", { categoryPreference: "nonsense" }]) {
+      expect(buildSchedulerState({ ...base, candidateStrategy: bad }).categoryPreference).toEqual({});
+    }
+  });
+
+  it("buildSchedulerState passes a well-formed categoryPreference through unchanged", () => {
+    const pref = { motivation_fit: 0.8, technical_functional: -0.4 };
+    const state = buildSchedulerState({
+      interview: makeInterview(), profile: makeProfile(), methodologyDistribution: DISTRIBUTION_EQUAL,
+      candidateStrategy: { categoryPreference: pref },
+    });
+    expect(state.categoryPreference).toEqual(pref);
+  });
+
+  it("runSimulatedAdaptiveTurn omitting candidateStrategy produces the EXACT same decision as before Phase 2E", () => {
+    const interview = makeInterview();
+    const run = () => runSimulatedAdaptiveTurn({
+      interview, profile: makeProfile(), methodologyDistribution: DISTRIBUTION_EQUAL,
+      answerText: "answer", evaluationResult: makeEvalResult("new_competency"), generateQuestion: () => ({}),
+    });
+    const a = run();
+    const b = run();
+    expect(a.decision).toEqual(b.decision);
+  });
+
+  it("runSimulatedAdaptiveTurn's candidateStrategy can tip a near-tied normal-turn category choice", () => {
+    const interview = makeInterview({ transcript: [] });
+    const withoutStrategy = runSimulatedAdaptiveTurn({
+      interview, profile: makeProfile(), methodologyDistribution: DISTRIBUTION_EQUAL,
+      answerText: "answer", evaluationResult: makeEvalResult("new_competency"), generateQuestion: () => ({}),
+    });
+    expect(withoutStrategy.decision.category).toBe(ACTIVE_CATEGORIES[0]); // canonical-order tie-break
+
+    const tipped = runSimulatedAdaptiveTurn({
+      interview, profile: makeProfile(), methodologyDistribution: DISTRIBUTION_EQUAL,
+      answerText: "answer", evaluationResult: makeEvalResult("new_competency"), generateQuestion: () => ({}),
+      candidateStrategy: { categoryPreference: { [ACTIVE_CATEGORIES[2]]: 1 } },
+    });
+    expect(tipped.decision.category).toBe(ACTIVE_CATEGORIES[2]);
+  });
+
+  it("candidateStrategy never influences turn_type/anchor_source/probe-depth circuit-breaking — only the scheduler's category choice", () => {
+    const interview = makeInterview({
+      transcript: [{ question: { category: "motivation_fit", turn_type: "follow_up" }, answer: "a" }],
+      currentQuestion: { text: "q", category: "motivation_fit", competency: "drive", turn_type: "clarify" },
+    });
+    // MAX_PROBE_DEPTH is 2 — with the just-answered question itself probing (turn_type
+    // "clarify"), this is the third consecutive probing turn once folded into the transcript,
+    // and must circuit-break to "normal" regardless of any candidateStrategy preference.
+    const result = runSimulatedAdaptiveTurn({
+      interview, profile: makeProfile(), methodologyDistribution: DISTRIBUTION_EQUAL,
+      answerText: "answer", evaluationResult: makeEvalResult("follow_up"), generateQuestion: () => ({}),
+      candidateStrategy: { categoryPreference: { motivation_fit: 1 } },
+    });
+    expect(result.decision.turnType).toBe("normal");
+  });
+
+  it("the model still cannot override category/turn_type/anchor_source even with a candidateStrategy present (structural enforcement intact)", () => {
+    const interview = makeInterview();
+    const { decision, question } = runSimulatedAdaptiveTurn({
+      interview, profile: makeProfile([{ claim: "led a rewrite", why: "unverified" }]),
+      methodologyDistribution: DISTRIBUTION_EQUAL,
+      answerText: "I led a rewrite of the payments system.", evaluationResult: makeEvalResult("challenge_claim"),
+      generateQuestion: spoofingGenerator,
+      candidateStrategy: { categoryPreference: { commercial_awareness: 1 } },
+    });
+    expect(question.category).toBe(decision.category);
+    expect(question.category).not.toBe("commercial_awareness");
+    expect(question.turn_type).toBe(decision.turnType);
+    expect(question.anchor_source).toBe(decision.anchorSource);
+  });
+});

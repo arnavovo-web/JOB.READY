@@ -171,18 +171,26 @@ export function adaptInterviewConfig(config) {
 }
 
 /**
- * buildSchedulerState({ interview, profile, methodologyDistribution })
+ * buildSchedulerState({ interview, profile, methodologyDistribution, candidateStrategy })
  *
  * Assembles the full scheduler-facing snapshot of a live interview:
- * { distribution, transcript, questionCount, config, probeAreas }.
+ * { distribution, transcript, questionCount, config, probeAreas, categoryPreference }.
  *
  * questionCount is interview.maxQuestions (Short/Standard/Long = 8/12/18,
  * set once at interview-start time — see App.jsx) — deliberately NOT
  * interview.config.question_count, which is a per-format default
  * maxQuestions already supersedes and which would silently reintroduce a
  * second, conflicting target count if read here instead.
+ *
+ * candidateStrategy: OPTIONAL, Phase 2E — interviewStrategy.js's
+ * buildInterviewStrategy() output (App.jsx computes it once per turn from
+ * already-hydrated state, no extra DB read — see interviewStrategy.js's
+ * own §17 performance note). Only categoryPreference is ever read from
+ * it; a missing/malformed candidateStrategy defaults to `{}`, which
+ * methodology.js's scheduleNextCategory treats as "no nudge" — identical
+ * to pre-2E behaviour.
  */
-export function buildSchedulerState({ interview, profile, methodologyDistribution } = {}) {
+export function buildSchedulerState({ interview, profile, methodologyDistribution, candidateStrategy } = {}) {
   const iv = interview || {};
   return {
     distribution: methodologyDistribution && typeof methodologyDistribution === "object" ? methodologyDistribution : {},
@@ -190,6 +198,7 @@ export function buildSchedulerState({ interview, profile, methodologyDistributio
     questionCount: Number(iv.maxQuestions) || 0,
     config: adaptInterviewConfig(iv.config),
     probeAreas: adaptPotentialProbeAreas(profile?.candidate_profile?.potential_probe_areas),
+    categoryPreference: candidateStrategy?.categoryPreference && typeof candidateStrategy.categoryPreference === "object" ? candidateStrategy.categoryPreference : {},
   };
 }
 
@@ -299,7 +308,7 @@ export function stampQuestionFromDecision(generatedQuestion, decision) {
 
 /**
  * runSimulatedAdaptiveTurn({ interview, profile, methodologyDistribution,
- *   answerText, evaluationResult, generateQuestion })
+ *   answerText, evaluationResult, generateQuestion, candidateStrategy })
  *
  * Demonstrates the complete deterministic chain end to end, in memory,
  * with an injected/mock question generator (a plain function
@@ -317,12 +326,14 @@ export function stampQuestionFromDecision(generatedQuestion, decision) {
  * normalizeEvaluationResult above) for the question just answered
  * (interview.currentQuestion).
  * generateQuestion: (genInput) => generatedQuestion — the injected mock.
+ * candidateStrategy: OPTIONAL, Phase 2E — see buildSchedulerState. Omitted
+ * entirely, this function's output is byte-identical to pre-2E behaviour.
  *
  * Returns { evaluation, shouldEnd, probeDepth, decision, genInput, question }.
  */
-export function runSimulatedAdaptiveTurn({ interview, profile, methodologyDistribution, answerText, evaluationResult, generateQuestion } = {}) {
+export function runSimulatedAdaptiveTurn({ interview, profile, methodologyDistribution, answerText, evaluationResult, generateQuestion, candidateStrategy } = {}) {
   const normalized = normalizeEvaluationResult(evaluationResult);
-  const schedulerState = buildSchedulerState({ interview, profile, methodologyDistribution });
+  const schedulerState = buildSchedulerState({ interview, profile, methodologyDistribution, candidateStrategy });
 
   // Fold the just-answered turn into the transcript BEFORE scheduling the
   // next one — mirrors submitAnswer's real order (newTranscript =
@@ -353,6 +364,7 @@ export function runSimulatedAdaptiveTurn({ interview, profile, methodologyDistri
 
   const normalCandidate = scheduleNextCategory({
     distribution: state.distribution, transcript: state.transcript, questionCount: state.questionCount,
+    categoryPreference: state.categoryPreference,
   });
   const priorCategory = state.transcript.length ? state.transcript[state.transcript.length - 1].category : null;
   const challengedClaimEvidenced = observedSignal === "unsupported_claim"

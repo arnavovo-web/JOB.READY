@@ -453,6 +453,87 @@ describe("scheduleNextCategory — self-compensation", () => {
   });
 });
 
+describe("PHASE 2E — scheduleNextCategory's optional categoryPreference nudge", () => {
+  it("omitted categoryPreference reproduces the exact pre-2E decision — full backward compatibility", () => {
+    const distribution = Object.fromEntries(ACTIVE_CATEGORIES.map((c) => [c, 20]));
+    const withoutPref = scheduleNextCategory({ distribution, transcript: [], questionCount: 10 });
+    const withEmptyPref = scheduleNextCategory({ distribution, transcript: [], questionCount: 10, categoryPreference: {} });
+    expect(withEmptyPref).toBe(withoutPref);
+  });
+
+  it("candidate strategy CAN tip a genuinely close call between two near-tied categories", () => {
+    // motivation_fit and behavioural_competency have the SAME weight, therefore the same
+    // deficit at 0 asked — a real tie. A strong candidate-strategy preference for
+    // behavioural_competency should tip the scheduler's choice toward it.
+    const distribution = { motivation_fit: 20, behavioural_competency: 20, situational_judgement: 20, technical_functional: 20, commercial_awareness: 20 };
+    const withoutPref = scheduleNextCategory({ distribution, transcript: [], questionCount: 10 });
+    expect(withoutPref).toBe("motivation_fit"); // canonical-order tie-break, pre-2E
+
+    const tipped = scheduleNextCategory({
+      distribution, transcript: [], questionCount: 10,
+      categoryPreference: { behavioural_competency: 1 },
+    });
+    expect(tipped).toBe("behavioural_competency");
+  });
+
+  it("methodology remains authoritative — a strong candidate preference CANNOT override a category with a materially larger deficit", () => {
+    const distribution = { motivation_fit: 10, behavioural_competency: 70, situational_judgement: 10, technical_functional: 5, commercial_awareness: 5 };
+    // questionCount 10 -> behavioural_competency target 7, deficit 7 vs motivation_fit deficit 1.
+    // Even a maximal +1 preference for motivation_fit (nudge = +STRATEGY_NUDGE_CAP, well under
+    // the real deficit gap) cannot flip the outcome.
+    const result = scheduleNextCategory({
+      distribution, transcript: [], questionCount: 10,
+      categoryPreference: { motivation_fit: 1, behavioural_competency: -1 },
+    });
+    expect(result).toBe("behavioural_competency");
+  });
+
+  it("the nudge is bounded by STRATEGY_NUDGE_CAP regardless of how extreme the preference value is", () => {
+    const distribution = Object.fromEntries(ACTIVE_CATEGORIES.map((c) => [c, 20]));
+    const extreme = scheduleNextCategory({ distribution, transcript: [], questionCount: 10, categoryPreference: { behavioural_competency: 9999 } });
+    const capped = scheduleNextCategory({ distribution, transcript: [], questionCount: 10, categoryPreference: { behavioural_competency: 1 } });
+    expect(extreme).toBe(capped); // clamped to [-1, 1] before the cap is applied — same result either way
+  });
+
+  it("candidate strategy can never manufacture a category out of one methodology has already fully satisfied (exhaustion fallback is preference-blind)", () => {
+    const distribution = {
+      motivation_fit: 40, behavioural_competency: 25, situational_judgement: 15,
+      technical_functional: 10, commercial_awareness: 10,
+    };
+    const transcript = ACTIVE_CATEGORIES.flatMap((c) => Array(20).fill({ category: c })); // methodology fully exhausted
+    const withoutPref = scheduleNextCategory({ distribution, transcript, questionCount: 8 });
+    const withPref = scheduleNextCategory({
+      distribution, transcript, questionCount: 8,
+      categoryPreference: { commercial_awareness: 1, motivation_fit: -1 },
+    });
+    expect(withPref).toBe(withoutPref); // still the heaviest-weight fallback, unaffected by preference
+  });
+
+  it("an invalid/out-of-range/non-numeric preference value defaults to no nudge for that category, never throws", () => {
+    const distribution = Object.fromEntries(ACTIVE_CATEGORIES.map((c) => [c, 20]));
+    for (const bad of [NaN, "not-a-number", null, undefined, {}, []]) {
+      expect(() => scheduleNextCategory({ distribution, transcript: [], questionCount: 10, categoryPreference: { motivation_fit: bad } })).not.toThrow();
+    }
+  });
+
+  it("is deterministic — identical inputs (including categoryPreference) always produce the same result", () => {
+    const distribution = { motivation_fit: 20, behavioural_competency: 20, situational_judgement: 20, technical_functional: 20, commercial_awareness: 20 };
+    const args = { distribution, transcript: [], questionCount: 10, categoryPreference: { behavioural_competency: 0.7 } };
+    const results = Array.from({ length: 10 }, () => scheduleNextCategory(args));
+    expect(new Set(results).size).toBe(1);
+  });
+
+  it("adversarial: a maximal preference for a zero-weight, fully-exhausted category can never get it selected over the heaviest-weight exhaustion fallback", () => {
+    const distribution = { motivation_fit: 100, behavioural_competency: 0, situational_judgement: 0, technical_functional: 0, commercial_awareness: 0 };
+    const transcript = Array(8).fill({ category: "motivation_fit" }); // motivation_fit's own deficit now 0 too — fully exhausted
+    const result = scheduleNextCategory({
+      distribution, transcript, questionCount: 8,
+      categoryPreference: { behavioural_competency: 1 }, // maximal preference for a category methodology gives 0 weight
+    });
+    expect(result).toBe("motivation_fit"); // heaviest-weight fallback, never the preferred zero-weight category
+  });
+});
+
 describe("countTrailingProbeDepth", () => {
   it("depth 0: empty transcript", () => {
     expect(countTrailingProbeDepth([])).toBe(0);
