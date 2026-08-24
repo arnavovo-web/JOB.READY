@@ -1407,6 +1407,20 @@ function RingScore({ value, size = 148, label }) {
   );
 }
 
+// Phase 2G: candidate-facing labels for candidate_claims.status — reused by both the
+// post-interview report ("claims explored this interview") and the Progress screen
+// ("career claims" overview). Deliberately plain, non-technical language — never exposes
+// the underlying evidence-engine vocabulary (strong/moderate/weak/contradictory/
+// insufficient) or confidence internals, just the candidate-facing claim status.
+// Exported (like validateProfile/buildJdProfile above) so it's directly unit-testable.
+export const CLAIM_STATUS_META = {
+  supported: { label: "Supported", color: "var(--good)", bg: "#E7F8F1" },
+  partially_supported: { label: "Partially supported", color: "var(--blue)", bg: "var(--highlight)" },
+  unverified: { label: "Not yet tested", color: "var(--text-dim)", bg: "#F1F5F9" },
+  contradicted: { label: "Worth revisiting", color: "var(--warn)", bg: "#FEF3E2" },
+};
+export function claimStatusMeta(status) { return CLAIM_STATUS_META[status] || CLAIM_STATUS_META.unverified; }
+
 function TagBasis({ basis }) {
   const map = {
     explicit: { label: "From JD", color: "var(--good)", bg: "#E7F8F1" },
@@ -1722,6 +1736,14 @@ function App() {
   function clearAllUserState() {
     setUser(null); setSession(null); setPerf(null); setInterviewList([]); setClassroom([]);
     setQuestionHistory([]); setMemoryLog([]); setAcAttempts([]); setApplicationId(null);
+    // Phase 2G (security/consistency hardening): candidateClaims/candidateIntelligence were
+    // missing from this reset — onAuthed() always overwrites both on the NEXT sign-in, so
+    // this was never a cross-user data leak in practice, but a signed-out session sitting on
+    // a stale previous user's Candidate Claims in memory (e.g. a shared/kiosk browser) was a
+    // real, if narrow, ownership-hygiene gap. Reset explicitly, same as every other
+    // per-user field above.
+    setCandidateClaims([]); setCandidateIntelligence(null);
+    setInterview(null); setProfile(null); setReport(null);
     setScreen("landing");
   }
 
@@ -2660,6 +2682,33 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
   const dnaPriority = dnaWeaknesses[0];
   const inputStyle = { width: "100%", padding: "11px 13px", border: "1.5px solid var(--border)", borderRadius: "var(--radius-sm)", fontSize: 14 };
 
+  // Phase 2G: deterministic, UI-facing summaries of Candidate Claims (Phase 2D/2F) — reuse
+  // the SAME candidate_claims rows already hydrated once at login (candidateClaims), plus,
+  // for the just-finished interview's report, that interview's own transcript (an answered
+  // question already carries targetedClaimId when it was generated to test a persistent
+  // claim — see generateAndPersistNextQuestion). No new AI call, no new query: purely a
+  // client-side read of data the app already has in memory. Never surfaced for the
+  // independent_batch pipeline, which never targets a persistent claim in the first place
+  // (interview?.transcript is simply absent/empty there — see finishAsyncInterview), so this
+  // naturally renders nothing rather than something misleading.
+  const claimsTestedThisInterview = (() => {
+    const seen = new Set();
+    const out = [];
+    (interview?.transcript || []).forEach((t) => {
+      const claimId = t.question?.targetedClaimId;
+      if (!claimId || seen.has(claimId)) return;
+      const claim = candidateClaims.find((c) => c.id === claimId);
+      if (!claim) return;
+      seen.add(claimId);
+      out.push(claim);
+    });
+    return out;
+  })();
+  // Candidate Claims overview for the Progress screen — every claim JOB.READY has ever
+  // extracted for this candidate (across every application/interview, per Phase 2D's
+  // cross-interview persistence), most-recently-updated first.
+  const claimsOverview = [...candidateClaims].sort((a, b) => new Date(b.updated_at || b.created_at) - new Date(a.updated_at || a.created_at));
+
   if (!authChecked) {
     return (
       <div style={{ fontFamily: "var(--font)", background: "var(--bg)", minHeight: "100vh" }}>
@@ -3445,6 +3494,24 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
             </Card>
           )}
 
+          {claimsTestedThisInterview.length > 0 && (
+            <Card style={{ padding: 20, marginBottom: 20, borderLeft: "4px solid var(--violet)" }}>
+              <div className="flex items-center gap-2 mb-3"><Target size={16} color="var(--violet)" /><div style={{ fontSize: 14.5, fontWeight: 700, color: "var(--navy)" }}>Claims explored this interview</div></div>
+              <div style={{ fontSize: 12.5, color: "var(--text-dim)", marginBottom: 12 }}>Specific claims from your CV or a past interview that this interview tested directly.</div>
+              {claimsTestedThisInterview.map((c, i) => {
+                const meta = claimStatusMeta(c.status);
+                return (
+                  <div key={c.id} style={{ padding: "10px 0", borderBottom: i < claimsTestedThisInterview.length - 1 ? "1px solid var(--border)" : "none" }}>
+                    <div className="flex justify-between items-start gap-3">
+                      <div style={{ fontSize: 13.5, color: "var(--navy)", fontStyle: "italic", flex: 1 }}>"{c.claim_text}"</div>
+                      <Pill color={meta.color} bg={meta.bg}>{meta.label}</Pill>
+                    </div>
+                  </div>
+                );
+              })}
+            </Card>
+          )}
+
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-6">
             {Object.entries(report.breakdown || {}).map(([k, v]) => (
               <Card key={k} style={{ padding: 16 }}>
@@ -3613,6 +3680,25 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                 return <ScoreBar key={t.key} label={t.label} value={avg} />;
               })}
               <Btn variant="secondary" onClick={() => setScreen("ac_home")} style={{ marginTop: 8 }}>Open Assessment Centre <ArrowRight size={15} /></Btn>
+            </Card>
+          )}
+
+          {claimsOverview.length > 0 && (
+            <Card style={{ padding: 22, marginBottom: 20 }}>
+              <div className="flex items-center gap-2 mb-1"><Target size={15} color="var(--violet)" /><div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase" }}>Career claims JOB.READY is tracking</div></div>
+              <div style={{ fontSize: 12.5, color: "var(--text-dim)", marginBottom: 14 }}>Specific things you've said in a CV or interview — how well each one holds up gets re-tested and updated as you do more interviews, across every application.</div>
+              {claimsOverview.slice(0, 8).map((c, i) => {
+                const meta = claimStatusMeta(c.status);
+                return (
+                  <div key={c.id} style={{ padding: "9px 0", borderBottom: i < Math.min(8, claimsOverview.length) - 1 ? "1px solid var(--border)" : "none" }}>
+                    <div className="flex justify-between items-start gap-3">
+                      <div style={{ fontSize: 13.5, color: "var(--navy)", fontStyle: "italic", flex: 1 }}>"{c.claim_text}"</div>
+                      <Pill color={meta.color} bg={meta.bg}>{meta.label}</Pill>
+                    </div>
+                  </div>
+                );
+              })}
+              {claimsOverview.length > 8 && <div style={{ fontSize: 12, color: "var(--text-faint)", marginTop: 10 }}>+{claimsOverview.length - 8} more</div>}
             </Card>
           )}
 
