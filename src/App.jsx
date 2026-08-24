@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef } from "react";
-import mammoth from "mammoth";
 import {
   ChevronRight, Loader2, TrendingDown, CheckCircle2, ArrowLeft, ArrowRight, Sparkles,
   Target, BarChart3, AlertCircle, Upload, Mic, Menu, X,
@@ -70,6 +69,49 @@ const TOKENS = `
   .jr-bar{ transition: width 0.7s cubic-bezier(.4,0,.2,1); }
   input:focus, textarea:focus, select:focus{ outline:none; border-color: var(--blue) !important; box-shadow: 0 0 0 3px var(--highlight); }
   button:focus-visible, a:focus-visible{ outline: 2px solid var(--blue); outline-offset: 2px; }
+
+  /* ---------------------------------------------------------------- *
+   * Phase 2H: layout utility classes.
+   * ROOT-CAUSE FIX — every screen in this app is built with Tailwind-style
+   * utility classNames (flex, grid, grid-cols-*, items-*, justify-*, gap-*,
+   * the margin utilities, the md: responsive variants, animate-spin), but this project
+   * has never depended on Tailwind (no tailwind.config, no postcss config,
+   * no CDN <link>, not in package.json — verified: "npm run build" emits
+   * ZERO css output, only JS). Every one of those classNames was
+   * previously undefined, so every element that relied on className alone
+   * for its layout (rather than an inline style with its own "display")
+   * silently rendered as a plain block box: icon-beside-text headers
+   * stacked icon-above-text, card grids collapsed to one column with no
+   * gap on every viewport (the md: 2/3-column variants never had anywhere
+   * to apply), and the Loader2 "spinner" on the auth-loading screen never
+   * actually spun. This defines the exact, closed set of utility classes
+   * the app already uses (see every literal className string in this file) as real
+   * CSS, matching Tailwind's own spacing scale (1=4px) so no existing
+   * className needs to change. Not a general-purpose utility framework —
+   * intentionally only the classes this codebase actually references.
+   * ---------------------------------------------------------------- */
+  .flex{ display:flex; }
+  .flex-col{ flex-direction:column; }
+  .flex-wrap{ flex-wrap:wrap; }
+  .grid{ display:grid; }
+  .grid-cols-1{ grid-template-columns:repeat(1,minmax(0,1fr)); }
+  .items-center{ align-items:center; }
+  .items-start{ align-items:flex-start; }
+  .items-end{ align-items:flex-end; }
+  .items-baseline{ align-items:baseline; }
+  .justify-between{ justify-content:space-between; }
+  .justify-center{ justify-content:center; }
+  .justify-end{ justify-content:flex-end; }
+  .gap-2{ gap:8px; } .gap-3{ gap:12px; } .gap-4{ gap:16px; } .gap-6{ gap:24px; } .gap-8{ gap:32px; } .gap-12{ gap:48px; }
+  .mb-1{ margin-bottom:4px; } .mb-2{ margin-bottom:8px; } .mb-3{ margin-bottom:12px; } .mb-4{ margin-bottom:16px; }
+  .mb-5{ margin-bottom:20px; } .mb-6{ margin-bottom:24px; } .mb-8{ margin-bottom:32px; }
+  .mt-2{ margin-top:8px; } .mt-4{ margin-top:16px; } .mt-5{ margin-top:20px; } .mt-6{ margin-top:24px; }
+  @media (min-width:768px){
+    .md\\:grid-cols-2{ grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .md\\:grid-cols-3{ grid-template-columns:repeat(3,minmax(0,1fr)); }
+  }
+  @keyframes jrSpin{ to{ transform: rotate(360deg); } }
+  .animate-spin{ animation: jrSpin 1s linear infinite; }
 `;
 
 const MODEL = "claude-sonnet-4-6";
@@ -1362,7 +1404,28 @@ function Btn({ children, onClick, disabled, variant = "primary", style, full }) 
 }
 
 function Card({ children, style, hover = true, onClick }) {
-  return <div className={hover ? "jr-card" : ""} onClick={onClick} style={{ background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--radius)", boxShadow: "var(--shadow-sm)", ...style }}>{children}</div>;
+  const interactive = typeof onClick === "function";
+  return (
+    <div className={hover ? "jr-card" : ""} onClick={onClick}
+      role={interactive ? "button" : undefined} tabIndex={interactive ? 0 : undefined}
+      onKeyDown={interactive ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onClick(e); } } : undefined}
+      style={{ background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--radius)", boxShadow: "var(--shadow-sm)", ...style }}>
+      {children}
+    </div>
+  );
+}
+
+// A text-styled control that IS a real <button> — keyboard-focusable and announced correctly
+// by screen readers, unlike a plain <span onClick>. Visual style is passed in via `style` so
+// this is a drop-in replacement wherever the app previously used a clickable span for
+// navigation-style actions (nav links, "Log in", "Sign out", etc.).
+function LinkBtn({ children, onClick, style, ariaCurrent }) {
+  return (
+    <button type="button" className="jr-linkbtn" onClick={onClick} aria-current={ariaCurrent ? "page" : undefined}
+      style={{ fontFamily: "var(--font)", background: "none", border: "none", padding: 0, textAlign: "inherit", ...style }}>
+      {children}
+    </button>
+  );
 }
 
 function Pill({ children, color = "var(--blue)", bg = "var(--highlight)" }) {
@@ -1461,30 +1524,32 @@ function NavBar({ screen, setScreen, user, classroomNeedsWorkCount, onSignOut })
   return (
     <div style={{ position: "sticky", top: 0, zIndex: 40, background: "rgba(248,250,252,0.95)", backdropFilter: "blur(8px)", borderBottom: "1px solid var(--border)" }}>
       <div style={{ maxWidth: 1080, margin: "0 auto", padding: "14px 24px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div style={{ cursor: "pointer" }} onClick={() => setScreen(user ? "dashboard" : "landing")}>
-          <JobReadyLogo size={26} />
-        </div>
+        <LinkBtn onClick={() => setScreen(user ? "dashboard" : "landing")} style={{ cursor: "pointer" }} ariaCurrent={false}>
+          <span aria-hidden="true"><JobReadyLogo size={26} /></span>
+          <span style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0,0,0,0)" }}>JOB.READY home</span>
+        </LinkBtn>
 
         {!isMobile && (
-          <div style={{ display: "flex", alignItems: "center", gap: 22 }}>
+          <nav aria-label="Main" style={{ display: "flex", alignItems: "center", gap: 22 }}>
             {links.map((l) => (
-              <span key={l.to} onClick={() => setScreen(l.to)} style={{ fontSize: 13.5, fontWeight: 500, cursor: "pointer", display: "flex", alignItems: "center", gap: 6, color: screen === l.to ? "var(--navy)" : "var(--text-dim)" }}>
+              <LinkBtn key={l.to} onClick={() => setScreen(l.to)} ariaCurrent={screen === l.to}
+                style={{ fontSize: 13.5, fontWeight: 500, cursor: "pointer", display: "flex", alignItems: "center", gap: 6, color: screen === l.to ? "var(--navy)" : "var(--text-dim)" }}>
                 {l.label}
                 {l.to === "classroom" && classroomNeedsWorkCount > 0 && (
                   <span style={{ fontSize: 11, fontWeight: 700, color: "#fff", background: "var(--blue)", borderRadius: 999, padding: "1px 7px" }}>{classroomNeedsWorkCount}</span>
                 )}
-              </span>
+              </LinkBtn>
             ))}
             {!user && (
               <>
-                <span onClick={() => setScreen("login")} style={{ fontSize: 14, fontWeight: 500, color: "var(--text-dim)", cursor: "pointer" }}>Log in</span>
+                <LinkBtn onClick={() => setScreen("login")} style={{ fontSize: 14, fontWeight: 500, color: "var(--text-dim)", cursor: "pointer" }}>Log in</LinkBtn>
                 <Btn variant="accent" onClick={() => setScreen("login")}>Start practising</Btn>
               </>
             )}
             {user && (
-              <span onClick={onSignOut} style={{ fontSize: 13.5, fontWeight: 500, color: "var(--text-dim)", cursor: "pointer" }}>Sign out</span>
+              <LinkBtn onClick={onSignOut} style={{ fontSize: 13.5, fontWeight: 500, color: "var(--text-dim)", cursor: "pointer" }}>Sign out</LinkBtn>
             )}
-          </div>
+          </nav>
         )}
 
         {isMobile && (
@@ -1495,23 +1560,24 @@ function NavBar({ screen, setScreen, user, classroomNeedsWorkCount, onSignOut })
       </div>
 
       {isMobile && menuOpen && (
-        <div style={{ borderTop: "1px solid var(--border)", background: "#fff", padding: "4px 24px 16px" }}>
+        <nav aria-label="Main" style={{ borderTop: "1px solid var(--border)", background: "#fff", padding: "4px 24px 16px" }}>
           {links.map((l) => (
-            <div key={l.to} onClick={() => setScreen(l.to)} style={{ padding: "14px 0", fontSize: 15, fontWeight: 500, color: screen === l.to ? "var(--navy)" : "var(--text-dim)", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer" }}>
+            <LinkBtn key={l.to} onClick={() => setScreen(l.to)} ariaCurrent={screen === l.to}
+              style={{ width: "100%", padding: "14px 0", fontSize: 15, fontWeight: 500, color: screen === l.to ? "var(--navy)" : "var(--text-dim)", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer" }}>
               {l.label}
               {l.to === "classroom" && classroomNeedsWorkCount > 0 && (
                 <span style={{ fontSize: 11, fontWeight: 700, color: "#fff", background: "var(--blue)", borderRadius: 999, padding: "1px 7px" }}>{classroomNeedsWorkCount}</span>
               )}
-            </div>
+            </LinkBtn>
           ))}
           {!user ? (
             <div style={{ paddingTop: 14 }}>
               <Btn variant="accent" full onClick={() => setScreen("login")}>Start practising</Btn>
             </div>
           ) : (
-            <div onClick={onSignOut} style={{ padding: "14px 0", fontSize: 15, fontWeight: 500, color: "var(--text-dim)", cursor: "pointer" }}>Sign out</div>
+            <LinkBtn onClick={onSignOut} style={{ width: "100%", padding: "14px 0", fontSize: 15, fontWeight: 500, color: "var(--text-dim)", cursor: "pointer" }}>Sign out</LinkBtn>
           )}
-        </div>
+        </nav>
       )}
     </div>
   );
@@ -1583,6 +1649,14 @@ function App() {
     if (busyRef.current) return;
     busyRef.current = true;
     try { await fn(); } finally { busyRef.current = false; }
+  }
+  // Single-line text/email/password inputs across the app have no surrounding <form>, so
+  // Enter did nothing by default — a classic "why didn't that submit?" papercut. Attach this
+  // to every field in a short form so Enter behaves the way users expect. Never used on
+  // multi-line textareas (the interview answer box, JD/CV paste boxes), where Enter must stay
+  // a newline.
+  function onEnterKey(fn) {
+    return (e) => { if (e.key === "Enter") { e.preventDefault(); guarded(fn); } };
   }
 
   // Classroom
@@ -1845,6 +1919,12 @@ function App() {
         text = await file.text();
       } else if (ext === "docx") {
         const buf = await file.arrayBuffer();
+        // Dynamically imported (Phase 2H, perf): mammoth is only ever needed for a .docx
+        // upload, but was previously bundled into the main chunk for every visitor including
+        // the ones who never touch file upload at all. Code-splitting it out shrinks the
+        // initial bundle with no behaviour change — the interview and everything else load
+        // exactly as before.
+        const mammoth = (await import("mammoth")).default;
         const result = await mammoth.extractRawText({ arrayBuffer: buf });
         text = result.value || "";
       } else if (ext === "pdf") {
@@ -2947,27 +3027,27 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
               <Card style={{ padding: 24 }}>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3" style={{ marginBottom: 16 }}>
                   <div>
-                    <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>First name</label>
-                    <input value={firstNameInput} onChange={(e) => setFirstNameInput(e.target.value)} placeholder="Alex" style={{ ...inputStyle, marginTop: 6 }} />
+                    <label htmlFor="signup-first-name" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>First name</label>
+                    <input id="signup-first-name" value={firstNameInput} onChange={(e) => setFirstNameInput(e.target.value)} placeholder="Alex" style={{ ...inputStyle, marginTop: 6 }} />
                   </div>
                   <div>
-                    <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Last name</label>
-                    <input value={lastNameInput} onChange={(e) => setLastNameInput(e.target.value)} placeholder="Chen" style={{ ...inputStyle, marginTop: 6 }} />
+                    <label htmlFor="signup-last-name" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Last name</label>
+                    <input id="signup-last-name" value={lastNameInput} onChange={(e) => setLastNameInput(e.target.value)} placeholder="Chen" style={{ ...inputStyle, marginTop: 6 }} />
                   </div>
                 </div>
-                <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Email</label>
-                <input type="email" value={emailInput} onChange={(e) => setEmailInput(e.target.value)} placeholder="alex@university.ac.uk" style={{ ...inputStyle, marginTop: 6, marginBottom: 16 }} />
-                <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Password</label>
-                <input type="password" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} placeholder="At least 8 characters" style={{ ...inputStyle, marginTop: 6, marginBottom: 16 }} />
-                <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Confirm password</label>
-                <input type="password" value={confirmPasswordInput} onChange={(e) => setConfirmPasswordInput(e.target.value)} style={{ ...inputStyle, marginTop: 6, marginBottom: 8 }} />
-                {error && <div style={{ color: "var(--bad)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
-                {authNotice && <div style={{ color: "var(--good)", fontSize: 13, marginBottom: 10 }}>{authNotice}</div>}
+                <label htmlFor="signup-email" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Email</label>
+                <input id="signup-email" type="email" autoComplete="email" value={emailInput} onChange={(e) => setEmailInput(e.target.value)} placeholder="alex@university.ac.uk" style={{ ...inputStyle, marginTop: 6, marginBottom: 16 }} />
+                <label htmlFor="signup-password" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Password</label>
+                <input id="signup-password" type="password" autoComplete="new-password" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} placeholder="At least 8 characters" style={{ ...inputStyle, marginTop: 6, marginBottom: 16 }} />
+                <label htmlFor="signup-confirm-password" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Confirm password</label>
+                <input id="signup-confirm-password" type="password" autoComplete="new-password" value={confirmPasswordInput} onChange={(e) => setConfirmPasswordInput(e.target.value)} onKeyDown={onEnterKey(handleSignUp)} style={{ ...inputStyle, marginTop: 6, marginBottom: 8 }} />
+                {error && <div role="alert" style={{ color: "var(--bad)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
+                {authNotice && <div role="status" style={{ color: "var(--good)", fontSize: 13, marginBottom: 10 }}>{authNotice}</div>}
                 <Btn variant="accent" full onClick={() => guarded(handleSignUp)} style={{ marginTop: 8 }}>Create account <ChevronRight size={16} /></Btn>
               </Card>
               <div style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 16, textAlign: "center" }}>
                 Already have an account?{" "}
-                <span onClick={() => { setError(""); setAuthNotice(""); setAuthView("signin"); }} style={{ color: "var(--blue)", fontWeight: 600, cursor: "pointer" }}>Sign in</span>
+                <LinkBtn onClick={() => { setError(""); setAuthNotice(""); setAuthView("signin"); }} style={{ display: "inline", color: "var(--blue)", fontWeight: 600, cursor: "pointer" }}>Sign in</LinkBtn>
               </div>
             </>
           )}
@@ -2976,20 +3056,20 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
             <>
               <h2 style={{ fontSize: 24, fontWeight: 800, color: "var(--navy)", marginBottom: 20 }}>Sign in</h2>
               <Card style={{ padding: 24 }}>
-                <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Email</label>
-                <input type="email" value={emailInput} onChange={(e) => setEmailInput(e.target.value)} placeholder="alex@university.ac.uk" style={{ ...inputStyle, marginTop: 6, marginBottom: 16 }} />
-                <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Password</label>
-                <input type="password" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} style={{ ...inputStyle, marginTop: 6, marginBottom: 8 }} />
+                <label htmlFor="signin-email" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Email</label>
+                <input id="signin-email" type="email" autoComplete="email" value={emailInput} onChange={(e) => setEmailInput(e.target.value)} placeholder="alex@university.ac.uk" style={{ ...inputStyle, marginTop: 6, marginBottom: 16 }} />
+                <label htmlFor="signin-password" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Password</label>
+                <input id="signin-password" type="password" autoComplete="current-password" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} onKeyDown={onEnterKey(handleSignIn)} style={{ ...inputStyle, marginTop: 6, marginBottom: 8 }} />
                 <div className="flex justify-end" style={{ marginBottom: 8 }}>
-                  <span onClick={() => { setError(""); setAuthNotice(""); setAuthView("forgot"); }} style={{ fontSize: 12.5, color: "var(--blue)", cursor: "pointer", fontWeight: 600 }}>Forgot password?</span>
+                  <LinkBtn onClick={() => { setError(""); setAuthNotice(""); setAuthView("forgot"); }} style={{ fontSize: 12.5, color: "var(--blue)", cursor: "pointer", fontWeight: 600 }}>Forgot password?</LinkBtn>
                 </div>
-                {error && <div style={{ color: "var(--bad)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
-                {authNotice && <div style={{ color: "var(--good)", fontSize: 13, marginBottom: 10 }}>{authNotice}</div>}
+                {error && <div role="alert" style={{ color: "var(--bad)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
+                {authNotice && <div role="status" style={{ color: "var(--good)", fontSize: 13, marginBottom: 10 }}>{authNotice}</div>}
                 <Btn variant="accent" full onClick={() => guarded(handleSignIn)} style={{ marginTop: 8 }}>Sign in <ChevronRight size={16} /></Btn>
               </Card>
               <div style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 16, textAlign: "center" }}>
                 New to JOB.READY?{" "}
-                <span onClick={() => { setError(""); setAuthNotice(""); setAuthView("signup"); }} style={{ color: "var(--blue)", fontWeight: 600, cursor: "pointer" }}>Create account</span>
+                <LinkBtn onClick={() => { setError(""); setAuthNotice(""); setAuthView("signup"); }} style={{ display: "inline", color: "var(--blue)", fontWeight: 600, cursor: "pointer" }}>Create account</LinkBtn>
               </div>
             </>
           )}
@@ -2998,14 +3078,14 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
             <>
               <h2 style={{ fontSize: 24, fontWeight: 800, color: "var(--navy)", marginBottom: 20 }}>Reset your password</h2>
               <Card style={{ padding: 24 }}>
-                <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Email</label>
-                <input type="email" value={emailInput} onChange={(e) => setEmailInput(e.target.value)} placeholder="alex@university.ac.uk" style={{ ...inputStyle, marginTop: 6, marginBottom: 8 }} />
-                {error && <div style={{ color: "var(--bad)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
-                {authNotice && <div style={{ color: "var(--good)", fontSize: 13, marginBottom: 10 }}>{authNotice}</div>}
+                <label htmlFor="forgot-email" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Email</label>
+                <input id="forgot-email" type="email" autoComplete="email" value={emailInput} onChange={(e) => setEmailInput(e.target.value)} onKeyDown={onEnterKey(handleForgotPassword)} placeholder="alex@university.ac.uk" style={{ ...inputStyle, marginTop: 6, marginBottom: 8 }} />
+                {error && <div role="alert" style={{ color: "var(--bad)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
+                {authNotice && <div role="status" style={{ color: "var(--good)", fontSize: 13, marginBottom: 10 }}>{authNotice}</div>}
                 <Btn variant="accent" full onClick={() => guarded(handleForgotPassword)} style={{ marginTop: 8 }}>Send reset link <ChevronRight size={16} /></Btn>
               </Card>
               <div style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 16, textAlign: "center" }}>
-                <span onClick={() => { setError(""); setAuthNotice(""); setAuthView("signin"); }} style={{ color: "var(--blue)", fontWeight: 600, cursor: "pointer" }}>Back to sign in</span>
+                <LinkBtn onClick={() => { setError(""); setAuthNotice(""); setAuthView("signin"); }} style={{ color: "var(--blue)", fontWeight: 600, cursor: "pointer" }}>Back to sign in</LinkBtn>
               </div>
             </>
           )}
@@ -3014,16 +3094,16 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
             <>
               <h2 style={{ fontSize: 24, fontWeight: 800, color: "var(--navy)", marginBottom: 20 }}>Set a new password</h2>
               <Card style={{ padding: 24 }}>
-                <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>New password</label>
-                <input type="password" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} placeholder="At least 8 characters" style={{ ...inputStyle, marginTop: 6, marginBottom: 16 }} />
-                <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Confirm new password</label>
-                <input type="password" value={confirmPasswordInput} onChange={(e) => setConfirmPasswordInput(e.target.value)} style={{ ...inputStyle, marginTop: 6, marginBottom: 8 }} />
-                {error && <div style={{ color: "var(--bad)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
-                {authNotice && <div style={{ color: "var(--good)", fontSize: 13, marginBottom: 10 }}>{authNotice}</div>}
+                <label htmlFor="reset-password" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>New password</label>
+                <input id="reset-password" type="password" autoComplete="new-password" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} placeholder="At least 8 characters" style={{ ...inputStyle, marginTop: 6, marginBottom: 16 }} />
+                <label htmlFor="reset-confirm-password" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Confirm new password</label>
+                <input id="reset-confirm-password" type="password" autoComplete="new-password" value={confirmPasswordInput} onChange={(e) => setConfirmPasswordInput(e.target.value)} onKeyDown={onEnterKey(handleResetPassword)} style={{ ...inputStyle, marginTop: 6, marginBottom: 8 }} />
+                {error && <div role="alert" style={{ color: "var(--bad)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
+                {authNotice && <div role="status" style={{ color: "var(--good)", fontSize: 13, marginBottom: 10 }}>{authNotice}</div>}
                 <Btn variant="accent" full onClick={() => guarded(handleResetPassword)} style={{ marginTop: 8 }}>Update password <ChevronRight size={16} /></Btn>
               </Card>
               <div style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 16, textAlign: "center" }}>
-                <span onClick={() => { setError(""); setAuthNotice(""); guarded(handleSignOut); setAuthView("signin"); }} style={{ color: "var(--blue)", fontWeight: 600, cursor: "pointer" }}>Cancel</span>
+                <LinkBtn onClick={() => { setError(""); setAuthNotice(""); guarded(handleSignOut); setAuthView("signin"); }} style={{ color: "var(--blue)", fontWeight: 600, cursor: "pointer" }}>Cancel</LinkBtn>
               </div>
             </>
           )}
@@ -3145,10 +3225,10 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
               <p style={{ fontSize: 14, color: "var(--text-dim)", marginBottom: 20 }}>Enter the company and role.</p>
               <button onClick={loadDemo} style={{ fontSize: 12.5, color: "var(--blue)", background: "none", border: "none", cursor: "pointer", marginBottom: 16, fontWeight: 600 }}>Fill with example (JPMorgan · Global Markets Summer Analyst)</button>
               <Card style={{ padding: 22 }}>
-                <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Company</label>
-                <input value={company} onChange={(e) => setCompany(e.target.value)} placeholder="e.g. JPMorgan" style={{ ...inputStyle, marginTop: 6, marginBottom: 16 }} />
-                <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Role</label>
-                <input value={role} onChange={(e) => setRole(e.target.value)} placeholder="e.g. Global Markets Summer Analyst" style={{ ...inputStyle, marginTop: 6 }} />
+                <label htmlFor="wizard-company" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Company</label>
+                <input id="wizard-company" value={company} onChange={(e) => setCompany(e.target.value)} placeholder="e.g. JPMorgan" style={{ ...inputStyle, marginTop: 6, marginBottom: 16 }} />
+                <label htmlFor="wizard-role" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Role</label>
+                <input id="wizard-role" value={role} onChange={(e) => setRole(e.target.value)} onKeyDown={onEnterKey(() => { if (company && role) confirmCompanyRole(); })} placeholder="e.g. Global Markets Summer Analyst" style={{ ...inputStyle, marginTop: 6 }} />
               </Card>
               <Btn variant="accent" full onClick={() => guarded(confirmCompanyRole)} disabled={!company || !role} style={{ marginTop: 18 }}>Continue <ChevronRight size={16} /></Btn>
             </div>
@@ -3166,7 +3246,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                     <input disabled={fileBusy === "jd"} type="file" accept=".txt,.docx,.pdf,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" style={{ display: "none" }} onChange={(e) => handleFileUpload(e, "jd")} />
                   </label>
                 </div>
-                <textarea value={jdText} onChange={(e) => setJdText(e.target.value)} placeholder="Paste the job description here"
+                <textarea aria-label="Job description" value={jdText} onChange={(e) => setJdText(e.target.value)} placeholder="Paste the job description here"
                   style={{ width: "100%", height: 220, padding: 13, border: "1.5px solid var(--border)", borderRadius: "var(--radius-sm)", fontSize: 13.5, lineHeight: 1.5, fontFamily: "var(--font)" }} />
               </Card>
               {error && <div style={{ color: "var(--bad)", fontSize: 13, marginTop: 12 }}>{error}</div>}
@@ -3189,7 +3269,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                     <input disabled={fileBusy === "cv"} type="file" accept=".txt,.docx,.pdf,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" style={{ display: "none" }} onChange={(e) => handleFileUpload(e, "cv")} />
                   </label>
                 </div>
-                <textarea value={cvText} onChange={(e) => setCvText(e.target.value)} placeholder="Paste your CV text here"
+                <textarea aria-label="Your CV" value={cvText} onChange={(e) => setCvText(e.target.value)} placeholder="Paste your CV text here"
                   style={{ width: "100%", height: 220, padding: 13, border: "1.5px solid var(--border)", borderRadius: "var(--radius-sm)", fontSize: 13.5, lineHeight: 1.5, fontFamily: "var(--font)" }} />
               </Card>
               {error && <div style={{ color: "var(--bad)", fontSize: 13, marginTop: 12 }}>{error}</div>}
@@ -3211,7 +3291,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                 <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Interview stage</label>
                 <div className="flex flex-col gap-2 mt-2 mb-4">
                   {INTERVIEW_STAGES.map((s) => (
-                    <button key={s.key} onClick={() => { setInterviewStage(s.key); setInterviewFormat(null); }} style={{
+                    <button key={s.key} aria-pressed={interviewStage === s.key} onClick={() => { setInterviewStage(s.key); setInterviewFormat(null); }} style={{
                       textAlign: "left", padding: "12px 14px", borderRadius: "var(--radius-sm)", cursor: "pointer",
                       border: interviewStage === s.key ? "1.5px solid var(--blue)" : "1.5px solid var(--border)",
                       background: interviewStage === s.key ? "var(--highlight)" : "#fff",
@@ -3229,7 +3309,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                       {currentStage.allowedFormats.map((fKey) => {
                         const active = (interviewFormat || currentStage.defaultFormat) === fKey;
                         return (
-                          <button key={fKey} onClick={() => setInterviewFormat(fKey)} style={{
+                          <button key={fKey} aria-pressed={active} onClick={() => setInterviewFormat(fKey)} style={{
                             flex: 1, padding: "10px 12px", borderRadius: "var(--radius-sm)", fontSize: 13, fontWeight: 600, cursor: "pointer", textAlign: "left",
                             border: active ? "1.5px solid var(--blue)" : "1.5px solid var(--border)",
                             background: active ? "var(--highlight)" : "#fff", color: active ? "var(--blue)" : "var(--text-dim)",
@@ -3243,7 +3323,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                 <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Length</label>
                 <div className="flex gap-2 mt-2">
                   {[["Short", 8], ["Standard", 12], ["Long", 18]].map(([l, v]) => (
-                    <button key={l} onClick={() => setLength(v)} style={{
+                    <button key={l} aria-pressed={length === v} onClick={() => setLength(v)} style={{
                       flex: 1, padding: "10px 0", borderRadius: "var(--radius-sm)", fontSize: 13.5, fontWeight: 600, cursor: "pointer",
                       border: length === v ? "1.5px solid var(--blue)" : "1.5px solid var(--border)",
                       background: length === v ? "var(--highlight)" : "#fff", color: length === v ? "var(--blue)" : "var(--text-dim)"
@@ -3253,7 +3333,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
               </Card>
               <div style={{ fontSize: 12.5, color: "var(--text-faint)", marginTop: 14 }}>
                 Looking for a group exercise, case study, or written test instead?{" "}
-                <span onClick={() => setScreen("ac_home")} style={{ color: "var(--blue)", fontWeight: 600, cursor: "pointer" }}>Try Assessment Centre</span>.
+                <LinkBtn onClick={() => setScreen("ac_home")} style={{ color: "var(--blue)", fontWeight: 600, cursor: "pointer" }}>Try Assessment Centre</LinkBtn>.
               </div>
               {error && <div style={{ color: "var(--bad)", fontSize: 13, marginTop: 14 }}>{error}</div>}
               <div className="flex flex-wrap gap-3 mt-5">
@@ -3367,7 +3447,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
               )}
               <Pill color="var(--violet)" bg="#F1E9FE">{(interview.currentQuestion?.category || "").replace(/_/g, " ")}</Pill>
               <div style={{ fontSize: 25, fontWeight: 700, lineHeight: 1.4, color: "var(--navy)", margin: "18px 0 28px" }}>{interview.currentQuestion?.text}</div>
-              <textarea value={answerInput} onChange={(e) => setAnswerInput(e.target.value)} placeholder="Type your answer..."
+              <textarea aria-label="Your answer" value={answerInput} onChange={(e) => setAnswerInput(e.target.value)} placeholder="Type your answer..."
                 style={{ width: "100%", height: 200, padding: 16, border: "1.5px solid var(--border)", borderRadius: "var(--radius)", fontSize: 15, lineHeight: 1.55, fontFamily: "var(--font)" }} />
               {error && <div style={{ color: "var(--bad)", fontSize: 13, marginTop: 10 }}>{error}</div>}
               <div className="flex justify-between items-center mt-4">
@@ -3438,7 +3518,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                 </Card>
               ) : (
                 <>
-                  <textarea value={answerInput} onChange={(e) => setAnswerInput(e.target.value)} placeholder="Type your answer..."
+                  <textarea aria-label="Your answer" value={answerInput} onChange={(e) => setAnswerInput(e.target.value)} placeholder="Type your answer..."
                     style={{ width: "100%", height: 220, padding: 16, border: "1.5px solid rgba(255,255,255,0.22)", borderRadius: "var(--radius)", fontSize: 15, lineHeight: 1.55, fontFamily: "var(--font)", background: "rgba(255,255,255,0.07)", color: "#fff" }} />
                   {error && <div style={{ color: "#FF9B9B", fontSize: 13, marginTop: 10 }}>{error}</div>}
                   <div className="flex justify-between items-center mt-4">
@@ -3893,8 +3973,8 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
           <Card style={{ padding: 22, marginBottom: 22 }}>
             <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)", marginBottom: 10 }}>Company & role for this exercise</div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <input value={acCompany} onChange={(e) => setAcCompany(e.target.value)} placeholder="Company" style={inputStyle} />
-              <input value={acRole} onChange={(e) => setAcRole(e.target.value)} placeholder="Role" style={inputStyle} />
+              <input aria-label="Company" value={acCompany} onChange={(e) => setAcCompany(e.target.value)} placeholder="Company" style={inputStyle} />
+              <input aria-label="Role" value={acRole} onChange={(e) => setAcRole(e.target.value)} placeholder="Role" style={inputStyle} />
             </div>
             {interviewList.length > 0 && (
               <button onClick={() => { const last = interviewList[interviewList.length - 1]; setAcCompany(last.company); setAcRole(last.role); }}
@@ -3958,7 +4038,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
           <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)", marginBottom: 8 }}>
             {acType === "inbox" ? "Write your priority order and your reasoning for it." : acType === "group" ? "Write your key contributions, as if speaking in the group, in the order you'd raise them." : "Your response"}
           </div>
-          <textarea value={acSubmission} onChange={(e) => setAcSubmission(e.target.value)} placeholder="Type your response..."
+          <textarea aria-label="Your response" value={acSubmission} onChange={(e) => setAcSubmission(e.target.value)} placeholder="Type your response..."
             style={{ width: "100%", height: 220, padding: 16, border: "1.5px solid var(--border)", borderRadius: "var(--radius)", fontSize: 15, lineHeight: 1.55, fontFamily: "var(--font)" }} />
           {error && <div style={{ color: "var(--bad)", fontSize: 13, marginTop: 10 }}>{error}</div>}
           <div className="flex justify-between items-center mt-4">
