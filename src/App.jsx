@@ -697,7 +697,15 @@ async function loadFullUserState(userId) {
   }
   const interviewList = interviewsRaw.map((iv) => {
     const app = appById.get(iv.application_id) || {};
-    return { id: iv.id, applicationId: iv.application_id, company: app.company || "", role: app.role || "", date: new Date(iv.completed_at || iv.created_at).getTime(), overall_score: iv.overall_score, readiness: iv.readiness, breakdown: reportsByInterview.get(iv.id)?.breakdown || {} };
+    // Phase 3 (interview history): the full interview_reports row was already being
+    // bulk-fetched above (reportsByInterview) but only .breakdown ever survived into
+    // interviewList — strongest_areas/weakest_areas/per_question_feedback/
+    // next_practice_focus/interview_style_notes/classroom_topics were read from the DB
+    // then silently discarded, so a candidate could never revisit a past interview's
+    // report after leaving it once. `report` here is that SAME already-fetched row
+    // (null only if the report insert itself failed post-completion — see
+    // dbCompleteInterview) — no new query, no new AI call.
+    return { id: iv.id, applicationId: iv.application_id, company: app.company || "", role: app.role || "", date: new Date(iv.completed_at || iv.created_at).getTime(), overall_score: iv.overall_score, readiness: iv.readiness, breakdown: reportsByInterview.get(iv.id)?.breakdown || {}, report: reportsByInterview.get(iv.id) || null };
   });
 
   const competency_history = {};
@@ -707,9 +715,16 @@ async function loadFullUserState(userId) {
 
   const questionHistory = memoryRows.map((m) => ({ id: m.id, question: m.question_text, category: m.category, competency: m.competency, score: m.score, date: new Date(m.created_at).getTime(), company: m.company, role: m.role }));
 
-  const memoryLog = comparisonRows.map((c) => ({ question: c.question_text, previous_score: c.previous_score, current_score: c.current_score, date: new Date(c.created_at).getTime() /* company/role not denormalised on this table; harmless if blank in the UI list */ }));
+  // interviewId added (Phase 3, interview history) so a past interview's report view can
+  // filter this same already-loaded list down to its own comparisons, rather than issuing a
+  // second query — the column was always on the row, just never projected before.
+  const memoryLog = comparisonRows.map((c) => ({ question: c.question_text, previous_score: c.previous_score, current_score: c.current_score, date: new Date(c.created_at).getTime(), interviewId: c.interview_id || null /* company/role not denormalised on this table; harmless if blank in the UI list */ }));
 
-  const acAttempts = acAttemptsRaw.map((a) => ({ id: a.id, type: a.type, typeLabel: a.type_label, company: a.company, role: a.role, date: new Date(a.created_at).getTime(), overall_score: a.overall_score, breakdown: a.breakdown }));
+  // scenario/submission/result added (Phase 3, interview history) — same "already fetched,
+  // previously discarded" fix as interviewList.report above: dbInsertAssessmentAttempt already
+  // persists all three, but only the scored summary ever survived into acAttempts, so a past
+  // Assessment Centre attempt's actual scenario/submission/scorecard could never be revisited.
+  const acAttempts = acAttemptsRaw.map((a) => ({ id: a.id, type: a.type, typeLabel: a.type_label, company: a.company, role: a.role, date: new Date(a.created_at).getTime(), overall_score: a.overall_score, breakdown: a.breakdown, scenario: a.scenario || null, submission: a.submission || "", result: a.result || null }));
 
   // Phase 2D: candidate intelligence, built entirely from data already loaded above —
   // memoryRows (raw interview_memory rows, category/competency/score/interview_id/created_at)
@@ -1494,6 +1509,167 @@ function TagBasis({ basis }) {
   return <span style={{ fontSize: 11, fontWeight: 600, color: m.color, background: m.bg, padding: "2px 8px", borderRadius: 999, marginLeft: 8 }}>{m.label}</span>;
 }
 
+// Phase 3 (interview history): the report screen's own content, extracted so a just-finished
+// interview (screen "report", live `report` state) and a past interview reopened later
+// (screen "report_view", `viewedReport` state) render IDENTICAL markup from whichever report
+// object they're given — one place to keep them from drifting apart, not a second report
+// layout. claimsTested/comparisons default to empty: a historical report has no persisted
+// targetedClaimId to reconstruct "claims tested this interview" from (that linkage was never
+// written to the DB, only held in memory for the live interview — see submitAnswer), so it
+// simply renders nothing there rather than a guess. onOpenClassroom is optional so a caller
+// with nowhere sensible to send "Open Classroom" (there isn't one here) can omit it.
+function ReportBody({ report, company, role, badge, claimsTested = [], comparisons = [], onOpenClassroom }) {
+  const r = report || {};
+  return (
+    <>
+      <div style={{ fontSize: 13, fontWeight: 700, color: "var(--blue)", textTransform: "uppercase", marginBottom: 6 }}>{badge}</div>
+      <h2 style={{ fontSize: 26, fontWeight: 800, color: "var(--navy)", marginBottom: 24 }}>{role} <span style={{ color: "var(--text-faint)", fontWeight: 600 }}>· {company}</span></h2>
+
+      <Card style={{ padding: 26, marginBottom: 20 }}>
+        <div className="flex items-center gap-8">
+          <RingScore value={r.overall_score} size={128} label="/ 100" />
+          <div>
+            <Pill color={r.readiness === "strong" || r.readiness === "interview_ready" ? "var(--good)" : "var(--warn)"} bg={r.readiness === "strong" || r.readiness === "interview_ready" ? "#E7F8F1" : "#FEF3E2"}>
+              {(r.readiness || "").replace(/_/g, " ")}
+            </Pill>
+            <div style={{ fontSize: 13.5, color: "var(--text-dim)", marginTop: 12, lineHeight: 1.5, maxWidth: 340 }}>{r.next_practice_focus}</div>
+          </div>
+        </div>
+      </Card>
+
+      {comparisons.length > 0 && (
+        <Card style={{ padding: 20, marginBottom: 20, borderLeft: "4px solid var(--teal)" }}>
+          <div className="flex items-center gap-2 mb-3"><History size={16} color="var(--teal)" /><div style={{ fontSize: 14.5, fontWeight: 700, color: "var(--navy)" }}>Interview Memory</div></div>
+          {comparisons.map((c, i) => {
+            const delta = (c.current_score ?? 0) - (c.previous_score ?? 0);
+            return (
+              <div key={i} style={{ padding: "10px 0", borderBottom: i < comparisons.length - 1 ? "1px solid var(--border)" : "none" }}>
+                <div style={{ fontSize: 13, color: "var(--text-dim)", fontStyle: "italic", marginBottom: 4 }}>"{c.question}"</div>
+                <div className="flex items-center gap-2" style={{ fontSize: 13.5 }}>
+                  <span style={{ color: "var(--text-faint)" }}>Previous: {c.previous_score}</span>
+                  <ArrowRight size={12} color="var(--text-faint)" />
+                  <span style={{ fontWeight: 700, color: "var(--navy)" }}>Current: {c.current_score}</span>
+                  <span style={{ fontWeight: 700, color: delta >= 0 ? "var(--good)" : "var(--bad)" }}>{delta >= 0 ? "+" : ""}{delta} {delta >= 15 ? "— significant improvement" : ""}</span>
+                </div>
+              </div>
+            );
+          })}
+        </Card>
+      )}
+
+      {claimsTested.length > 0 && (
+        <Card style={{ padding: 20, marginBottom: 20, borderLeft: "4px solid var(--violet)" }}>
+          <div className="flex items-center gap-2 mb-3"><Target size={16} color="var(--violet)" /><div style={{ fontSize: 14.5, fontWeight: 700, color: "var(--navy)" }}>Claims explored this interview</div></div>
+          <div style={{ fontSize: 12.5, color: "var(--text-dim)", marginBottom: 12 }}>Specific claims from your CV or a past interview that this interview tested directly.</div>
+          {claimsTested.map((c, i) => {
+            const meta = claimStatusMeta(c.status);
+            return (
+              <div key={c.id} style={{ padding: "10px 0", borderBottom: i < claimsTested.length - 1 ? "1px solid var(--border)" : "none" }}>
+                <div className="flex justify-between items-start gap-3">
+                  <div style={{ fontSize: 13.5, color: "var(--navy)", fontStyle: "italic", flex: 1 }}>"{c.claim_text}"</div>
+                  <Pill color={meta.color} bg={meta.bg}>{meta.label}</Pill>
+                </div>
+              </div>
+            );
+          })}
+        </Card>
+      )}
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-6">
+        {Object.entries(r.breakdown || {}).map(([k, v]) => (
+          <Card key={k} style={{ padding: 16 }}>
+            <div style={{ fontSize: 11, color: "var(--text-faint)", textTransform: "capitalize", marginBottom: 6 }}>{k.replace(/_/g, " ")}</div>
+            <div style={{ fontSize: 22, fontWeight: 800, color: "var(--navy)" }}>{v}</div>
+          </Card>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+        <Card style={{ padding: 18 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: "var(--good)", marginBottom: 10, textTransform: "uppercase" }}>What you did well</div>
+          {(r.strongest_areas || []).map((s, i) => <div key={i} className="flex gap-2 mb-2" style={{ fontSize: 13.5 }}><CheckCircle2 size={14} color="var(--good)" style={{ flexShrink: 0, marginTop: 2 }} />{s}</div>)}
+        </Card>
+        <Card style={{ padding: 18 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: "var(--bad)", marginBottom: 10, textTransform: "uppercase" }}>What held you back</div>
+          {(r.weakest_areas || []).map((s, i) => <div key={i} className="flex gap-2 mb-2" style={{ fontSize: 13.5 }}><TrendingDown size={14} color="var(--bad)" style={{ flexShrink: 0, marginTop: 2 }} />{s}</div>)}
+        </Card>
+      </div>
+
+      <div style={{ fontSize: 17, fontWeight: 700, color: "var(--navy)", margin: "8px 0 12px" }}>Question-by-question feedback</div>
+      {(r.per_question_feedback || []).map((f, i) => (
+        <Card key={i} style={{ padding: 20, marginBottom: 12 }}>
+          <div style={{ fontSize: 14, color: "var(--navy)", marginBottom: 10, fontStyle: "italic" }}>"{f.question}"</div>
+          {f.did_well?.length > 0 && (
+            <div style={{ marginBottom: 8 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "var(--good)", textTransform: "uppercase" }}>What you did well</div>
+              {f.did_well.map((d, j) => <div key={j} style={{ fontSize: 13, marginTop: 2, color: "var(--text-dim)" }}>· {d}</div>)}
+            </div>
+          )}
+          {f.weakened_it?.length > 0 && (
+            <div style={{ marginBottom: 8 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "var(--bad)", textTransform: "uppercase" }}>What weakened it</div>
+              {f.weakened_it.map((d, j) => <div key={j} style={{ fontSize: 13, marginTop: 2, color: "var(--text-dim)" }}>· {d}</div>)}
+            </div>
+          )}
+          {f.how_to_improve && (
+            <div style={{ marginBottom: 6 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "var(--blue)", textTransform: "uppercase" }}>How to improve</div>
+              <div style={{ fontSize: 13, marginTop: 2, color: "var(--text-dim)" }}>{f.how_to_improve}</div>
+            </div>
+          )}
+          {f.note_on_missing_data && <div style={{ fontSize: 11.5, color: "var(--text-faint)", fontStyle: "italic", marginTop: 6 }}>{f.note_on_missing_data}</div>}
+        </Card>
+      ))}
+
+      {r.classroom_topics?.length > 0 && (
+        <Card style={{ padding: 20, marginBottom: 20, borderLeft: "4px solid var(--violet)" }}>
+          <div className="flex items-center gap-3 mb-2"><GraduationCap size={17} color="var(--violet)" /><div style={{ fontSize: 14.5, fontWeight: 700, color: "var(--navy)" }}>Added to your Classroom</div></div>
+          <div style={{ fontSize: 13.5, color: "var(--text-dim)", marginBottom: 12 }}>{r.classroom_topics.map((t) => t.topic).join(", ")}</div>
+          {onOpenClassroom && <Btn variant="secondary" onClick={onOpenClassroom}>Open Classroom <ArrowRight size={15} /></Btn>}
+        </Card>
+      )}
+    </>
+  );
+}
+
+// Phase 3 (interview history): same extraction rationale as ReportBody above, for the
+// Assessment Centre scorecard — shared by the just-finished screen ("ac_scorecard", live
+// `acResult` state) and a past attempt reopened later ("ac_attempt_view", `viewedAcAttempt`
+// state's own `.result`).
+function AcScorecardBody({ result, onOpenClassroom }) {
+  const r = result || {};
+  return (
+    <>
+      <Card style={{ padding: 26, marginBottom: 20 }}>
+        <div className="flex items-center gap-8">
+          <RingScore value={r.overall_score} size={110} label="/ 100" />
+          <div style={{ fontSize: 13.5, color: "var(--text-dim)", maxWidth: 340 }}>{r.held_back?.[0] || ""}</div>
+        </div>
+      </Card>
+      <Card style={{ padding: 20, marginBottom: 20 }}>
+        {Object.entries(r.breakdown || {}).map(([k, v]) => <ScoreBar key={k} label={k.replace(/_/g, " ")} value={v} />)}
+      </Card>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+        <Card style={{ padding: 18 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: "var(--good)", marginBottom: 10, textTransform: "uppercase" }}>What you did well</div>
+          {(r.did_well || []).map((s, i) => <div key={i} className="flex gap-2 mb-2" style={{ fontSize: 13.5 }}><CheckCircle2 size={14} color="var(--good)" style={{ flexShrink: 0, marginTop: 2 }} />{s}</div>)}
+        </Card>
+        <Card style={{ padding: 18 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: "var(--bad)", marginBottom: 10, textTransform: "uppercase" }}>What held you back</div>
+          {(r.held_back || []).map((s, i) => <div key={i} className="flex gap-2 mb-2" style={{ fontSize: 13.5 }}><TrendingDown size={14} color="var(--bad)" style={{ flexShrink: 0, marginTop: 2 }} />{s}</div>)}
+        </Card>
+      </div>
+      {r.classroom_topics?.length > 0 && (
+        <Card style={{ padding: 20, marginBottom: 20, borderLeft: "4px solid var(--violet)" }}>
+          <div className="flex items-center gap-3 mb-2"><GraduationCap size={17} color="var(--violet)" /><div style={{ fontSize: 14.5, fontWeight: 700, color: "var(--navy)" }}>Recommended Classroom lesson</div></div>
+          <div style={{ fontSize: 13.5, color: "var(--text-dim)", marginBottom: 12 }}>{r.classroom_topics.map((t) => t.topic).join(", ")}</div>
+          {onOpenClassroom && <Btn variant="secondary" onClick={onOpenClassroom}>Learn this in Classroom <ArrowRight size={15} /></Btn>}
+        </Card>
+      )}
+    </>
+  );
+}
+
 function LoadingScreen({ messages }) {
   const [idx, setIdx] = useState(0);
   useEffect(() => { const t = setInterval(() => setIdx((i) => (i + 1) % messages.length), 1300); return () => clearInterval(t); }, [messages]);
@@ -1693,6 +1869,18 @@ function App() {
   const [asyncPhase, setAsyncPhase] = useState("prep");
   const [asyncSecondsLeft, setAsyncSecondsLeft] = useState(null);
 
+  // Phase 3: interview/Assessment-Centre HISTORY. viewedReport/viewedAcAttempt hold a PAST
+  // interview_reports row / assessment_attempts row reopened from the Dashboard, Progress, or
+  // Assessment Centre screens (see openInterviewReport/openAcAttempt below) — entirely
+  // separate from the live `report`/`acResult` state a just-finished interview/exercise uses,
+  // so reopening history can never clobber (or be clobbered by) an interview/exercise still in
+  // progress. historyBackScreen remembers which screen opened the history view, so "Back"
+  // returns there rather than somewhere fixed.
+  const [viewedReport, setViewedReport] = useState(null);
+  const [viewedReportComparisons, setViewedReportComparisons] = useState([]);
+  const [viewedAcAttempt, setViewedAcAttempt] = useState(null);
+  const [historyBackScreen, setHistoryBackScreen] = useState("dashboard");
+
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [interview?.transcript?.length]);
   useEffect(() => { window.scrollTo(0, 0); }, [screen]);
 
@@ -1818,6 +2006,10 @@ function App() {
     // per-user field above.
     setCandidateClaims([]); setCandidateIntelligence(null);
     setInterview(null); setProfile(null); setReport(null);
+    // Phase 3 (interview history): same ownership-hygiene reasoning as candidateClaims/
+    // candidateIntelligence above — a signed-out session must never leave a previous user's
+    // past report/attempt sitting in memory (e.g. a shared/kiosk browser).
+    setViewedReport(null); setViewedReportComparisons([]); setViewedAcAttempt(null);
     setScreen("landing");
   }
 
@@ -2579,7 +2771,11 @@ Rules: scores computed honestly from the transcript's evaluations. Never fabrica
         .map((t) => {
           const match = matchPreviousQuestion(t.question?.text, t.question?.category, t.question?.competency, questionHistory);
           if (!match) return null;
-          return { question: t.question?.text, previous_score: match.score, current_score: t.evaluation?.competency_demonstration ?? null, company: finalInterview.company, role: finalInterview.role, date: Date.now(), previousMemoryId: match.id };
+          // interviewId (Phase 3, interview history): mirrors the interview_id column
+          // dbInsertMemoryComparison below already persists — added here too so
+          // openInterviewReport can find this interview's own comparisons straight out of
+          // memoryLog in the SAME session, without waiting for a reload from the DB.
+          return { question: t.question?.text, previous_score: match.score, current_score: t.evaluation?.competency_demonstration ?? null, company: finalInterview.company, role: finalInterview.role, date: Date.now(), previousMemoryId: match.id, interviewId: finalInterview.id };
         })
         .filter(Boolean);
 
@@ -2603,7 +2799,13 @@ Rules: scores computed honestly from the transcript's evaluations. Never fabrica
       await pushClassroomTopics(result.classroom_topics, { company: finalInterview.company, role: finalInterview.role, id: finalInterview.id, applicationId: finalInterview.applicationId, isInterview: true });
 
       await dbCompleteInterview(finalInterview.id, result);
-      const summary = { id: finalInterview.id, company: finalInterview.company, role: finalInterview.role, date: Date.now(), overall_score: result.overall_score, readiness: result.readiness, breakdown: result.breakdown };
+      // report: result (Phase 3, interview history) — same shape dbCompleteInterview just
+      // persisted to interview_reports (overall_score/readiness/breakdown/strongest_areas/
+      // weakest_areas/per_question_feedback/next_practice_focus/interview_style_notes/
+      // classroom_topics). Without it, this entry would appear on the Dashboard/Progress
+      // screens immediately but silently fail to open (openInterviewReport no-ops with no
+      // .report) until the next full reload re-fetched it from the DB.
+      const summary = { id: finalInterview.id, company: finalInterview.company, role: finalInterview.role, date: Date.now(), overall_score: result.overall_score, readiness: result.readiness, breakdown: result.breakdown, report: result };
       setInterviewList([...interviewList, summary]);
 
       await applyPerformanceUpdate({
@@ -2680,10 +2882,36 @@ Rules: scores computed honestly from the transcript's evaluations. Never fabrica
     setScreen("create");
   }
 
+  // Phase 3: reopen a PAST interview's report (Dashboard's "Recent interviews" cards,
+  // Progress's "Score over time" bars) — iv is an interviewList entry, whose .report is the
+  // already-loaded interview_reports row (see loadFullUserState; null only if that insert
+  // itself failed after the interview completed, which callers guard against before calling
+  // this). Purely a client-side read of state already in memory — no DB read, no AI call.
+  function openInterviewReport(iv, backScreen) {
+    if (!iv?.report) return;
+    setViewedReport({ ...iv.report, company: iv.company, role: iv.role, date: iv.date });
+    setViewedReportComparisons(memoryLog.filter((m) => m.interviewId === iv.id));
+    setHistoryBackScreen(backScreen);
+    setScreen("report_view");
+    setError("");
+  }
+
   /* ---------------- ASSESSMENT CENTRE ---------------- */
   function startAssessmentCentre(type) {
     setAcType(type); setAcSubmission(""); setAcResult(null); setError("");
     generateAcScenario(type);
+  }
+
+  // Phase 3: reopen a PAST Assessment Centre attempt's scorecard — attempt is an acAttempts
+  // entry, whose .result/.scenario/.submission are the already-loaded assessment_attempts
+  // columns (see loadFullUserState). Same no-DB-read, no-AI-call contract as
+  // openInterviewReport above.
+  function openAcAttempt(attempt, backScreen) {
+    if (!attempt?.result) return;
+    setViewedAcAttempt(attempt);
+    setHistoryBackScreen(backScreen);
+    setScreen("ac_attempt_view");
+    setError("");
   }
 
   async function generateAcScenario(type) {
@@ -2729,7 +2957,11 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
       const cfgLabel = cfg.label;
       const acAppMatches = applicationId && company === acCompany && role === acRole;
       const savedAttempt = await dbInsertAssessmentAttempt(user.id, acAppMatches ? applicationId : null, { type: acType, typeLabel: cfgLabel, company: acCompany, role: acRole, overall_score: result.overall_score, breakdown: result.breakdown, scenario: acScenario, submission: clean, result });
-      const attempt = { id: savedAttempt?.id || ("local_" + Date.now()), type: acType, typeLabel: cfgLabel, company: acCompany, role: acRole, date: Date.now(), overall_score: result.overall_score, breakdown: result.breakdown };
+      // scenario/submission/result carried on this in-memory entry too (Phase 3, interview
+      // history) — without them, this attempt would appear in the Recent-attempts list
+      // immediately but silently fail to open (openAcAttempt no-ops with no .result) until
+      // the next full reload re-fetched it from the DB.
+      const attempt = { id: savedAttempt?.id || ("local_" + Date.now()), type: acType, typeLabel: cfgLabel, company: acCompany, role: acRole, date: Date.now(), overall_score: result.overall_score, breakdown: result.breakdown, scenario: acScenario, submission: clean, result };
       setAcAttempts([...acAttempts, attempt]);
 
       await pushClassroomTopics(result.classroom_topics, { company: acCompany, role: acRole, id: savedAttempt?.id, applicationId: acAppMatches ? applicationId : null, isInterview: false });
@@ -2743,7 +2975,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
   }
 
   /* ---------------- DERIVED VALUES ---------------- */
-  const showNav = ["landing", "how", "universities", "login", "dashboard", "create", "preview", "progress", "report", "classroom", "lesson", "ac_home", "ac_exercise", "ac_scorecard"].includes(screen);
+  const showNav = ["landing", "how", "universities", "login", "dashboard", "create", "preview", "progress", "report", "report_view", "classroom", "lesson", "ac_home", "ac_exercise", "ac_scorecard", "ac_attempt_view"].includes(screen);
   const classroomNeedsWorkCount = classroom.filter((t) => statusFor(t.scores).label !== "Mastered").length;
   const acReadiness = (() => {
     if (!acAttempts.length) return 0;
@@ -3194,7 +3426,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {[...interviewList].reverse().map((iv) => (
-                <Card key={iv.id} style={{ padding: 18 }}>
+                <Card key={iv.id} style={{ padding: 18, cursor: iv.report ? "pointer" : "default" }} onClick={iv.report ? () => openInterviewReport(iv, "dashboard") : undefined}>
                   <div className="flex justify-between items-start">
                     <div>
                       <div style={{ fontSize: 15, fontWeight: 700, color: "var(--navy)" }}>{iv.company}</div>
@@ -3203,6 +3435,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                     </div>
                     <div style={{ fontSize: 22, fontWeight: 800, color: "var(--navy)" }}>{iv.overall_score}<span style={{ fontSize: 12, color: "var(--text-faint)" }}>/100</span></div>
                   </div>
+                  {iv.report && <div style={{ fontSize: 11.5, color: "var(--blue)", fontWeight: 600, marginTop: 10 }}>View full report <ArrowRight size={11} style={{ verticalAlign: "middle" }} /></div>}
                 </Card>
               ))}
             </div>
@@ -3539,117 +3772,31 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
       {/* ---------------- REPORT ---------------- */}
       {screen === "report" && report && (
         <div className="jr-fade" style={{ maxWidth: 720, margin: "0 auto", padding: "44px 24px" }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: "var(--blue)", textTransform: "uppercase", marginBottom: 6 }}>Interview complete</div>
-          <h2 style={{ fontSize: 26, fontWeight: 800, color: "var(--navy)", marginBottom: 24 }}>{role} <span style={{ color: "var(--text-faint)", fontWeight: 600 }}>· {company}</span></h2>
-
-          <Card style={{ padding: 26, marginBottom: 20 }}>
-            <div className="flex items-center gap-8">
-              <RingScore value={report.overall_score} size={128} label="/ 100" />
-              <div>
-                <Pill color={report.readiness === "strong" || report.readiness === "interview_ready" ? "var(--good)" : "var(--warn)"} bg={report.readiness === "strong" || report.readiness === "interview_ready" ? "#E7F8F1" : "#FEF3E2"}>
-                  {(report.readiness || "").replace(/_/g, " ")}
-                </Pill>
-                <div style={{ fontSize: 13.5, color: "var(--text-dim)", marginTop: 12, lineHeight: 1.5, maxWidth: 340 }}>{report.next_practice_focus}</div>
-              </div>
-            </div>
-          </Card>
-
-          {report.memory_comparisons?.length > 0 && (
-            <Card style={{ padding: 20, marginBottom: 20, borderLeft: "4px solid var(--teal)" }}>
-              <div className="flex items-center gap-2 mb-3"><History size={16} color="var(--teal)" /><div style={{ fontSize: 14.5, fontWeight: 700, color: "var(--navy)" }}>Interview Memory</div></div>
-              {report.memory_comparisons.map((c, i) => {
-                const delta = (c.current_score ?? 0) - (c.previous_score ?? 0);
-                return (
-                  <div key={i} style={{ padding: "10px 0", borderBottom: i < report.memory_comparisons.length - 1 ? "1px solid var(--border)" : "none" }}>
-                    <div style={{ fontSize: 13, color: "var(--text-dim)", fontStyle: "italic", marginBottom: 4 }}>"{c.question}"</div>
-                    <div className="flex items-center gap-2" style={{ fontSize: 13.5 }}>
-                      <span style={{ color: "var(--text-faint)" }}>Previous: {c.previous_score}</span>
-                      <ArrowRight size={12} color="var(--text-faint)" />
-                      <span style={{ fontWeight: 700, color: "var(--navy)" }}>Current: {c.current_score}</span>
-                      <span style={{ fontWeight: 700, color: delta >= 0 ? "var(--good)" : "var(--bad)" }}>{delta >= 0 ? "+" : ""}{delta} {delta >= 15 ? "— significant improvement" : ""}</span>
-                    </div>
-                  </div>
-                );
-              })}
-            </Card>
-          )}
-
-          {claimsTestedThisInterview.length > 0 && (
-            <Card style={{ padding: 20, marginBottom: 20, borderLeft: "4px solid var(--violet)" }}>
-              <div className="flex items-center gap-2 mb-3"><Target size={16} color="var(--violet)" /><div style={{ fontSize: 14.5, fontWeight: 700, color: "var(--navy)" }}>Claims explored this interview</div></div>
-              <div style={{ fontSize: 12.5, color: "var(--text-dim)", marginBottom: 12 }}>Specific claims from your CV or a past interview that this interview tested directly.</div>
-              {claimsTestedThisInterview.map((c, i) => {
-                const meta = claimStatusMeta(c.status);
-                return (
-                  <div key={c.id} style={{ padding: "10px 0", borderBottom: i < claimsTestedThisInterview.length - 1 ? "1px solid var(--border)" : "none" }}>
-                    <div className="flex justify-between items-start gap-3">
-                      <div style={{ fontSize: 13.5, color: "var(--navy)", fontStyle: "italic", flex: 1 }}>"{c.claim_text}"</div>
-                      <Pill color={meta.color} bg={meta.bg}>{meta.label}</Pill>
-                    </div>
-                  </div>
-                );
-              })}
-            </Card>
-          )}
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-6">
-            {Object.entries(report.breakdown || {}).map(([k, v]) => (
-              <Card key={k} style={{ padding: 16 }}>
-                <div style={{ fontSize: 11, color: "var(--text-faint)", textTransform: "capitalize", marginBottom: 6 }}>{k.replace(/_/g, " ")}</div>
-                <div style={{ fontSize: 22, fontWeight: 800, color: "var(--navy)" }}>{v}</div>
-              </Card>
-            ))}
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-            <Card style={{ padding: 18 }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: "var(--good)", marginBottom: 10, textTransform: "uppercase" }}>What you did well</div>
-              {(report.strongest_areas || []).map((s, i) => <div key={i} className="flex gap-2 mb-2" style={{ fontSize: 13.5 }}><CheckCircle2 size={14} color="var(--good)" style={{ flexShrink: 0, marginTop: 2 }} />{s}</div>)}
-            </Card>
-            <Card style={{ padding: 18 }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: "var(--bad)", marginBottom: 10, textTransform: "uppercase" }}>What held you back</div>
-              {(report.weakest_areas || []).map((s, i) => <div key={i} className="flex gap-2 mb-2" style={{ fontSize: 13.5 }}><TrendingDown size={14} color="var(--bad)" style={{ flexShrink: 0, marginTop: 2 }} />{s}</div>)}
-            </Card>
-          </div>
-
-          <div style={{ fontSize: 17, fontWeight: 700, color: "var(--navy)", margin: "8px 0 12px" }}>Question-by-question feedback</div>
-          {(report.per_question_feedback || []).map((f, i) => (
-            <Card key={i} style={{ padding: 20, marginBottom: 12 }}>
-              <div style={{ fontSize: 14, color: "var(--navy)", marginBottom: 10, fontStyle: "italic" }}>"{f.question}"</div>
-              {f.did_well?.length > 0 && (
-                <div style={{ marginBottom: 8 }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: "var(--good)", textTransform: "uppercase" }}>What you did well</div>
-                  {f.did_well.map((d, j) => <div key={j} style={{ fontSize: 13, marginTop: 2, color: "var(--text-dim)" }}>· {d}</div>)}
-                </div>
-              )}
-              {f.weakened_it?.length > 0 && (
-                <div style={{ marginBottom: 8 }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: "var(--bad)", textTransform: "uppercase" }}>What weakened it</div>
-                  {f.weakened_it.map((d, j) => <div key={j} style={{ fontSize: 13, marginTop: 2, color: "var(--text-dim)" }}>· {d}</div>)}
-                </div>
-              )}
-              {f.how_to_improve && (
-                <div style={{ marginBottom: 6 }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: "var(--blue)", textTransform: "uppercase" }}>How to improve</div>
-                  <div style={{ fontSize: 13, marginTop: 2, color: "var(--text-dim)" }}>{f.how_to_improve}</div>
-                </div>
-              )}
-              {f.note_on_missing_data && <div style={{ fontSize: 11.5, color: "var(--text-faint)", fontStyle: "italic", marginTop: 6 }}>{f.note_on_missing_data}</div>}
-            </Card>
-          ))}
-
-          {report.classroom_topics?.length > 0 && (
-            <Card style={{ padding: 20, marginBottom: 20, borderLeft: "4px solid var(--violet)" }}>
-              <div className="flex items-center gap-3 mb-2"><GraduationCap size={17} color="var(--violet)" /><div style={{ fontSize: 14.5, fontWeight: 700, color: "var(--navy)" }}>Added to your Classroom</div></div>
-              <div style={{ fontSize: 13.5, color: "var(--text-dim)", marginBottom: 12 }}>{report.classroom_topics.map((t) => t.topic).join(", ")}</div>
-              <Btn variant="secondary" onClick={() => setScreen("classroom")}>Open Classroom <ArrowRight size={15} /></Btn>
-            </Card>
-          )}
-
+          <ReportBody
+            report={report} company={company} role={role} badge="Interview complete"
+            claimsTested={claimsTestedThisInterview} comparisons={report.memory_comparisons || []}
+            onOpenClassroom={() => setScreen("classroom")}
+          />
           <div className="flex flex-wrap gap-3 mt-6">
             <Btn variant="accent" onClick={() => setScreen("classroom")}><GraduationCap size={16} /> Study in Classroom</Btn>
             <Btn variant="secondary" onClick={resetForNewInterview}>New interview</Btn>
             <Btn variant="ghost" onClick={() => setScreen("progress")}><BarChart3 size={14} /> Progress</Btn>
+          </div>
+        </div>
+      )}
+
+      {/* ---------------- PAST INTERVIEW REPORT (Phase 3: interview history) ---------------- */}
+      {screen === "report_view" && viewedReport && (
+        <div className="jr-fade" style={{ maxWidth: 720, margin: "0 auto", padding: "44px 24px" }}>
+          <Btn variant="ghost" onClick={() => setScreen(historyBackScreen)} style={{ marginBottom: 16, padding: "6px 4px" }}><ArrowLeft size={14} /> Back</Btn>
+          <ReportBody
+            report={viewedReport} company={viewedReport.company} role={viewedReport.role}
+            badge={"Completed " + new Date(viewedReport.date).toLocaleDateString()}
+            comparisons={viewedReportComparisons}
+            onOpenClassroom={() => setScreen("classroom")}
+          />
+          <div className="flex flex-wrap gap-3 mt-6">
+            <Btn variant="secondary" onClick={() => setScreen(historyBackScreen)}>Back</Btn>
           </div>
         </div>
       )}
@@ -3720,7 +3867,11 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
             ) : (
               <div className="flex items-end gap-3" style={{ height: 150 }}>
                 {interviewList.map((iv, i) => (
-                  <div key={iv.id} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end", height: "100%" }}>
+                  <div key={iv.id} role={iv.report ? "button" : undefined} tabIndex={iv.report ? 0 : undefined}
+                    onClick={() => openInterviewReport(iv, "progress")}
+                    onKeyDown={iv.report ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openInterviewReport(iv, "progress"); } } : undefined}
+                    title={iv.report ? `${iv.company} — view full report` : iv.company}
+                    style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end", height: "100%", cursor: iv.report ? "pointer" : "default" }}>
                     <div style={{ fontSize: 12, fontWeight: 700, color: "var(--navy)", marginBottom: 6 }}>{iv.overall_score}</div>
                     <div className="jr-bar" style={{ width: "65%", height: (iv.overall_score / 100) * 110, background: i === interviewList.length - 1 ? "var(--blue)" : "var(--highlight)", borderRadius: "6px 6px 0 0" }} />
                     <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 6 }}>#{i + 1}</div>
@@ -3970,6 +4121,28 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
             </Card>
           )}
 
+          {/* Phase 3 (interview history): individual past attempts were previously invisible —
+              only the aggregated per-type average above ever rendered, even though each
+              attempt's own scenario/submission/scorecard is already durably persisted (see
+              loadFullUserState). Most recent first. */}
+          {acAttempts.length > 0 && (
+            <Card style={{ padding: 20, marginBottom: 22 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", marginBottom: 12 }}>Recent attempts</div>
+              {[...acAttempts].reverse().slice(0, 6).map((a) => (
+                <div key={a.id} className="flex justify-between items-center" role={a.result ? "button" : undefined} tabIndex={a.result ? 0 : undefined}
+                  onClick={() => openAcAttempt(a, "ac_home")}
+                  onKeyDown={a.result ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openAcAttempt(a, "ac_home"); } } : undefined}
+                  style={{ padding: "9px 0", borderBottom: "1px solid var(--border)", cursor: a.result ? "pointer" : "default" }}>
+                  <div>
+                    <div style={{ fontSize: 13.5, fontWeight: 600, color: "var(--navy)" }}>{a.typeLabel}</div>
+                    <div style={{ fontSize: 12, color: "var(--text-faint)" }}>{a.company} — {a.role} · {new Date(a.date).toLocaleDateString()}</div>
+                  </div>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: "var(--navy)" }}>{a.overall_score}<span style={{ fontSize: 11, color: "var(--text-faint)" }}>/100</span></div>
+                </div>
+              ))}
+            </Card>
+          )}
+
           <Card style={{ padding: 22, marginBottom: 22 }}>
             <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)", marginBottom: 10 }}>Company & role for this exercise</div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -4054,35 +4227,24 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
         <div className="jr-fade" style={{ maxWidth: 700, margin: "0 auto", padding: "44px 24px" }}>
           <Pill color="var(--teal)" bg="#E6FBF6">{EXERCISE_TYPES.find((t) => t.key === acType)?.label}</Pill>
           <h2 style={{ fontSize: 24, fontWeight: 800, color: "var(--navy)", margin: "14px 0 20px" }}>{acCompany} — {acRole}</h2>
-          <Card style={{ padding: 26, marginBottom: 20 }}>
-            <div className="flex items-center gap-8">
-              <RingScore value={acResult.overall_score} size={110} label="/ 100" />
-              <div style={{ fontSize: 13.5, color: "var(--text-dim)", maxWidth: 340 }}>{acResult.held_back?.[0] || ""}</div>
-            </div>
-          </Card>
-          <Card style={{ padding: 20, marginBottom: 20 }}>
-            {Object.entries(acResult.breakdown || {}).map(([k, v]) => <ScoreBar key={k} label={k.replace(/_/g, " ")} value={v} />)}
-          </Card>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-            <Card style={{ padding: 18 }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: "var(--good)", marginBottom: 10, textTransform: "uppercase" }}>What you did well</div>
-              {(acResult.did_well || []).map((s, i) => <div key={i} className="flex gap-2 mb-2" style={{ fontSize: 13.5 }}><CheckCircle2 size={14} color="var(--good)" style={{ flexShrink: 0, marginTop: 2 }} />{s}</div>)}
-            </Card>
-            <Card style={{ padding: 18 }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: "var(--bad)", marginBottom: 10, textTransform: "uppercase" }}>What held you back</div>
-              {(acResult.held_back || []).map((s, i) => <div key={i} className="flex gap-2 mb-2" style={{ fontSize: 13.5 }}><TrendingDown size={14} color="var(--bad)" style={{ flexShrink: 0, marginTop: 2 }} />{s}</div>)}
-            </Card>
-          </div>
-          {acResult.classroom_topics?.length > 0 && (
-            <Card style={{ padding: 20, marginBottom: 20, borderLeft: "4px solid var(--violet)" }}>
-              <div className="flex items-center gap-3 mb-2"><GraduationCap size={17} color="var(--violet)" /><div style={{ fontSize: 14.5, fontWeight: 700, color: "var(--navy)" }}>Recommended Classroom lesson</div></div>
-              <div style={{ fontSize: 13.5, color: "var(--text-dim)", marginBottom: 12 }}>{acResult.classroom_topics.map((t) => t.topic).join(", ")}</div>
-              <Btn variant="secondary" onClick={() => setScreen("classroom")}>Learn this in Classroom <ArrowRight size={15} /></Btn>
-            </Card>
-          )}
+          <AcScorecardBody result={acResult} onOpenClassroom={() => setScreen("classroom")} />
           <div className="flex flex-wrap gap-3">
             <Btn variant="accent" onClick={() => guarded(() => startAssessmentCentre(acType))}>Practise again <ArrowRight size={15} /></Btn>
             <Btn variant="secondary" onClick={() => setScreen("ac_home")}>Back to Assessment Centre</Btn>
+          </div>
+        </div>
+      )}
+
+      {/* ---------------- PAST ASSESSMENT CENTRE ATTEMPT (Phase 3: interview history) ---------------- */}
+      {screen === "ac_attempt_view" && viewedAcAttempt && (
+        <div className="jr-fade" style={{ maxWidth: 700, margin: "0 auto", padding: "44px 24px" }}>
+          <Btn variant="ghost" onClick={() => setScreen(historyBackScreen)} style={{ marginBottom: 16, padding: "6px 4px" }}><ArrowLeft size={14} /> Back</Btn>
+          <Pill color="var(--teal)" bg="#E6FBF6">{viewedAcAttempt.typeLabel}</Pill>
+          <h2 style={{ fontSize: 24, fontWeight: 800, color: "var(--navy)", margin: "14px 0 4px" }}>{viewedAcAttempt.company} — {viewedAcAttempt.role}</h2>
+          <div style={{ fontSize: 12.5, color: "var(--text-faint)", marginBottom: 20 }}>Completed {new Date(viewedAcAttempt.date).toLocaleDateString()}</div>
+          <AcScorecardBody result={viewedAcAttempt.result} onOpenClassroom={() => setScreen("classroom")} />
+          <div className="flex flex-wrap gap-3">
+            <Btn variant="secondary" onClick={() => setScreen(historyBackScreen)}>Back</Btn>
           </div>
         </div>
       )}

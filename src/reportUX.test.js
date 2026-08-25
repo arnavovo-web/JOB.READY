@@ -59,26 +59,41 @@ describe("claimStatusMeta", () => {
 });
 
 /* ============================== Report screen wiring (STRUCTURAL) ============================== */
+// Phase 3 (interview history): the claims-explored markup itself was extracted into the
+// shared ReportBody component (so a reopened past report renders identical markup to the
+// just-finished one) — these checks now target ReportBody's own definition rather than the
+// "report" screen's JSX directly. The guarantee this suite protects is unchanged: the report
+// screen still passes claimsTestedThisInterview in, and that section still only ever reads
+// already-in-memory data.
 describe("Report screen surfaces Candidate Claims (STRUCTURAL)", () => {
-  const REPORT_SCREEN_SRC = extractFunctionSource('screen === "report" && report && (', 'screen === "progress" && (');
+  const REPORT_SCREEN_SRC = extractFunctionSource('screen === "report" && report && (', 'screen === "report_view" && viewedReport && (');
+  const REPORT_BODY_SRC = extractFunctionSource("function ReportBody(", "function AcScorecardBody(");
 
-  it("renders a claims-explored section for the just-completed interview", () => {
-    expect(REPORT_SCREEN_SRC).toMatch(/claimsTestedThisInterview/);
-    expect(REPORT_SCREEN_SRC).toMatch(/claimStatusMeta/);
+  it("the just-completed interview screen feeds claimsTestedThisInterview into the shared report body", () => {
+    expect(REPORT_SCREEN_SRC).toMatch(/<ReportBody/);
+    expect(REPORT_SCREEN_SRC).toMatch(/claimsTested=\{claimsTestedThisInterview\}/);
   });
 
-  it("never issues a new AI call or a new DB read to build that section — it's a plain array read closed over candidateClaims/interview.transcript, both already in memory", () => {
-    // The claimsTestedThisInterview derivation lives entirely in the module-level
-    // DERIVED VALUES block, not inside this JSX slice — this asserts the render itself
-    // contains no callClaude/supabase call anywhere near the claims section.
-    const claimsSectionIdx = REPORT_SCREEN_SRC.indexOf("claimsTestedThisInterview.length > 0");
+  it("renders a claims-explored section using candidate-facing claim status labels", () => {
+    expect(REPORT_BODY_SRC).toMatch(/claimsTested/);
+    expect(REPORT_BODY_SRC).toMatch(/claimStatusMeta/);
+  });
+
+  it("never issues a new AI call or a new DB read to build that section — it's a plain array read of whatever claimsTested it's given", () => {
+    const claimsSectionIdx = REPORT_BODY_SRC.indexOf("claimsTested.length > 0");
     expect(claimsSectionIdx).toBeGreaterThan(-1);
-    const claimsSection = REPORT_SCREEN_SRC.slice(claimsSectionIdx, REPORT_SCREEN_SRC.indexOf("</Card>", claimsSectionIdx));
+    const claimsSection = REPORT_BODY_SRC.slice(claimsSectionIdx, REPORT_BODY_SRC.indexOf("</Card>", claimsSectionIdx));
     expect(claimsSection).not.toMatch(/callClaude|getSupabase|\.from\(/);
   });
 
-  it("only renders when there's something to show — no empty/placeholder card when no claim was targeted this interview", () => {
-    expect(REPORT_SCREEN_SRC).toMatch(/\{claimsTestedThisInterview\.length > 0 && \(/);
+  it("only renders when there's something to show — no empty/placeholder card when no claim was targeted", () => {
+    expect(REPORT_BODY_SRC).toMatch(/\{claimsTested\.length > 0 && \(/);
+  });
+
+  it("a reopened past report never claims to show claims tested — that linkage was never persisted, so it defaults to none rather than a guess", () => {
+    const HISTORY_SCREEN_SRC = extractFunctionSource('screen === "report_view" && viewedReport && (', '{/* ---------------- PROGRESS');
+    expect(HISTORY_SCREEN_SRC).toMatch(/<ReportBody/);
+    expect(HISTORY_SCREEN_SRC).not.toMatch(/claimsTested=/);
   });
 });
 
