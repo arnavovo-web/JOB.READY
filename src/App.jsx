@@ -514,6 +514,20 @@ Ask ONE natural, specific interview question — no preamble, no meta-commentary
   }
   if (gi.probeAreas && gi.probeAreas.length) contextLines.push(`Flagged CV claims worth challenging: ${JSON.stringify(gi.probeAreas)}`);
   contextLines.push(`Target category: ${gi.category}. This is question ${gi.questionNumber} of ${interview?.maxQuestions}.`);
+  // Phase 5 (interview quality — avoid unnecessary repetition, keep the interview coherent):
+  // Call 2 previously had ZERO visibility into what had already been asked this interview
+  // beyond the single immediately-preceding turn (previousQuestionText/previousAnswer above,
+  // only ever set for a probing turn) — nothing stopped it from picking the same competency
+  // label repeatedly for a "normal" turn (competency is content-generation's own call, never
+  // the scheduler's, for a normal turn — see competencyLine above) or drifting into a
+  // near-duplicate of an earlier question. This is purely additional context for the ONE thing
+  // Call 2 already owns (the question's own text/competency/anchor); category/turn_type/anchor
+  // for a probing turn remain entirely the scheduler's, unaffected by anything here.
+  const askedSoFar = (interview?.transcript || [])
+    .map((t) => `${t.question?.category || "?"} / ${t.question?.competency || "general"}: "${(t.question?.text || "").slice(0, 140)}"`);
+  if (askedSoFar.length) {
+    contextLines.push(`Questions already asked this interview (category / competency: text) — do not reuse a competency already covered unless the target category genuinely has no fresh angle left, and never restate or closely rephrase an earlier question:\n${askedSoFar.join("\n")}`);
+  }
   return { system, userText: contextLines.join("\n") };
 }
 
@@ -747,7 +761,10 @@ async function loadFullUserState(userId) {
   // previously discarded" fix as interviewList.report above: dbInsertAssessmentAttempt already
   // persists all three, but only the scored summary ever survived into acAttempts, so a past
   // Assessment Centre attempt's actual scenario/submission/scorecard could never be revisited.
-  const acAttempts = acAttemptsRaw.map((a) => ({ id: a.id, type: a.type, typeLabel: a.type_label, company: a.company, role: a.role, date: new Date(a.created_at).getTime(), overall_score: a.overall_score, breakdown: a.breakdown, scenario: a.scenario || null, submission: a.submission || "", result: a.result || null }));
+  // applicationId added (Phase 5, Assessment Centre integration): same fix again — the column
+  // was always written (see submitAcResponse's acAppMatches heuristic) but never read back, so
+  // an AC attempt genuinely tied to a real application had no way to show up there.
+  const acAttempts = acAttemptsRaw.map((a) => ({ id: a.id, applicationId: a.application_id || null, type: a.type, typeLabel: a.type_label, company: a.company, role: a.role, date: new Date(a.created_at).getTime(), overall_score: a.overall_score, breakdown: a.breakdown, scenario: a.scenario || null, submission: a.submission || "", result: a.result || null }));
 
   // Phase 2D: candidate intelligence, built entirely from data already loaded above —
   // memoryRows (raw interview_memory rows, category/competency/score/interview_id/created_at)
@@ -2709,7 +2726,11 @@ Rules: honest 0-100 scores. follow_up_worthy: true only if the answer surfaced s
 
       try {
         // ---- CALL 2: question generation only (QUESTION_GENERATING -> QUESTION_PERSISTED) ----
-        const nextQuestion = await generateAndPersistNextQuestion(interview, profile, currentQ.dbId, currentQ?.turn_type ?? null, decision, genInput, targetedClaimId, candidateStrategy);
+        // Phase 5: passes newTranscript (includes the just-answered turn), not the stale
+        // pre-answer `interview` — buildQuestionGenerationPrompt's own repetition-avoidance
+        // context (askedSoFar, above) would otherwise be missing the very turn that just
+        // happened. .id/.applicationId/.maxQuestions are unchanged; only .transcript differs.
+        const nextQuestion = await generateAndPersistNextQuestion({ ...interview, transcript: newTranscript }, profile, currentQ.dbId, currentQ?.turn_type ?? null, decision, genInput, targetedClaimId, candidateStrategy);
         setInterview({ ...interview, transcript: newTranscript, currentQuestion: nextQuestion, pendingRecovery: null });
         setAnswerInput("");
         setScreen("interview");
@@ -2870,7 +2891,7 @@ Rules: honest 0-100 scores. follow_up_worthy: true only if the answer surfaced s
   "interview_style_notes": [""],
   "classroom_topics": [{"topic": "", "category": "company_knowledge|technical|commercial_awareness|behavioural|technique|role_specific", "description": "", "related_question": "", "initial_score": 0}]
 }
-Rules: scores computed honestly from the transcript's evaluations. Never fabricate achievements the candidate never claimed. classroom_topics: only genuine, specific, teachable weaknesses (usually 1-3), with a short reusable "topic" title so progress on it can be tracked over time. interview_style_notes: 1-3 short, concrete observations about HOW this candidate interviews across the transcript as a whole (e.g. "Answers tend to run long", "Strong examples but rarely quantifies results", "Good technical grounding but motivation answers stay generic") — behavioural/stylistic patterns, not one-off scores.${formatNote}`;
+Rules: scores computed honestly from the transcript's evaluations. Never fabricate achievements the candidate never claimed. classroom_topics: only genuine, specific, teachable weaknesses (usually 1-3), with a short reusable "topic" title so progress on it can be tracked over time. interview_style_notes: 1-3 short, concrete observations about HOW this candidate interviews across the transcript as a whole (e.g. "Answers tend to run long", "Strong examples but rarely quantifies results", "Good technical grounding but motivation answers stay generic") — behavioural/stylistic patterns, not one-off scores. Where a weakness, strength, or how_to_improve genuinely traces back to something specific in the interview profile below (a named responsibility, required/preferred skill, or jd_requirement) — not a generic best practice — say so explicitly (e.g. "the role's emphasis on X means..."), so the candidate can see how the feedback relates to THIS job, not interviewing in general; never force a connection that isn't really there.${formatNote}`;
       const userText = `Company: ${finalInterview.company}\nRole: ${finalInterview.role}\nInterview profile: ${JSON.stringify(profile.interview_profile)}\nPre-existing candidate performance profile: ${JSON.stringify(perf)}\nFull transcript: ${JSON.stringify(finalInterview.transcript)}`;
       const result = validateReport(await callClaude(system, userText, 4500, false, { requestType: "interview_report", applicationId: finalInterview.applicationId, interviewId: finalInterview.id }));
 
@@ -3073,8 +3094,9 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
       // scenario/submission/result carried on this in-memory entry too (Phase 3, interview
       // history) — without them, this attempt would appear in the Recent-attempts list
       // immediately but silently fail to open (openAcAttempt no-ops with no .result) until
-      // the next full reload re-fetched it from the DB.
-      const attempt = { id: savedAttempt?.id || ("local_" + Date.now()), type: acType, typeLabel: cfgLabel, company: acCompany, role: acRole, date: Date.now(), overall_score: result.overall_score, breakdown: result.breakdown, scenario: acScenario, submission: clean, result };
+      // the next full reload re-fetched it from the DB. applicationId (Phase 5) mirrors the
+      // SAME acAppMatches value the DB insert above already used, for the same reason.
+      const attempt = { id: savedAttempt?.id || ("local_" + Date.now()), applicationId: acAppMatches ? applicationId : null, type: acType, typeLabel: cfgLabel, company: acCompany, role: acRole, date: Date.now(), overall_score: result.overall_score, breakdown: result.breakdown, scenario: acScenario, submission: clean, result };
       setAcAttempts([...acAttempts, attempt]);
 
       await pushClassroomTopics(result.classroom_topics, { company: acCompany, role: acRole, id: savedAttempt?.id, applicationId: acAppMatches ? applicationId : null, isInterview: false });
@@ -3142,11 +3164,18 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
   // invent a fallback group" contract as the rest of this file. Sorted by most recent activity
   // (an old application with a brand-new "practise again" attempt should surface before an
   // otherwise-untouched one), not merely by when the application was first created.
+  // acAttempts included (Phase 5, Assessment Centre integration): AC was the one part of the
+  // product that felt entirely disconnected from "which job am I preparing for" — an attempt
+  // genuinely tied to a real application (acAppMatches, see submitAcResponse) now counts toward
+  // that application's activity/summary instead of only ever showing up in isolation on the AC
+  // screens. An AC attempt with no applicationId (the common case — AC is usable independently
+  // of any application) simply doesn't match any group, exactly as before.
   const applicationsWithInterviews = applications
     .map((app) => {
       const interviews = interviewList.filter((iv) => iv.applicationId === app.id).sort((a, b) => b.date - a.date);
-      const lastActivity = Math.max(app.date, ...interviews.map((iv) => iv.date));
-      return { ...app, interviews, lastActivity };
+      const acAttemptsForApp = acAttempts.filter((a) => a.applicationId === app.id);
+      const lastActivity = Math.max(app.date, ...interviews.map((iv) => iv.date), ...acAttemptsForApp.map((a) => a.date));
+      return { ...app, interviews, acAttempts: acAttemptsForApp, lastActivity };
     })
     .sort((a, b) => b.lastActivity - a.lastActivity);
 
@@ -3617,10 +3646,11 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                         <Pill color="var(--text-dim)" bg="#F1F5F9">Draft</Pill>
                       )}
                     </div>
-                    {(latest?.stageLabel || app.interviews.length > 1) && (
+                    {(latest?.stageLabel || app.interviews.length > 1 || app.acAttempts.length > 0) && (
                       <div className="flex flex-wrap gap-2 mb-3">
                         {latest?.stageLabel && <Pill color="var(--blue)" bg="var(--highlight)">{latest.stageLabel}</Pill>}
                         {app.interviews.length > 1 && <Pill color="var(--text-dim)" bg="#F1F5F9">{app.interviews.length} attempts</Pill>}
+                        {app.acAttempts.length > 0 && <Pill color="var(--teal)" bg="#E6FBF6">{app.acAttempts.length} Assessment Centre {app.acAttempts.length === 1 ? "exercise" : "exercises"}</Pill>}
                       </div>
                     )}
                     <div className="flex flex-wrap gap-2 items-center">
@@ -4106,6 +4136,44 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
             </Card>
           )}
 
+          {/* Competency trends — candidateState.js's own volatility-aware trend classification
+              (computeTrend: compares the first half of a competency's evidence history to the
+              second half, and separately flags a genuinely volatile one as "inconsistent"
+              rather than averaging it away) — a materially different, more robust signal than
+              the raw single-latest-vs-first-score "Biggest improvement" already shown in
+              Interview DNA above, and likewise already computed, never surfaced until now.
+              Competencies with fewer than 3 real data points report "insufficient_data" and are
+              simply omitted here, same completeness contract candidateState.js itself uses —
+              never a guessed trend from too little evidence. */}
+          {interviewList.length > 0 && (() => {
+            const TREND_META = {
+              declining: { text: "Declining", color: "var(--bad)" },
+              inconsistent: { text: "Inconsistent", color: "var(--warn)" },
+              stable: { text: "Stable", color: "var(--text-dim)" },
+              improving: { text: "Improving", color: "var(--good)" },
+            };
+            const TREND_ORDER = { declining: 0, inconsistent: 1, stable: 2, improving: 3 };
+            const competencyTrends = Object.entries(globalCandidateState?.competencies || {})
+              .filter(([, info]) => TREND_META[info.trend])
+              .sort((a, b) => (TREND_ORDER[a[1].trend] ?? 9) - (TREND_ORDER[b[1].trend] ?? 9))
+              .slice(0, 8);
+            if (!competencyTrends.length) return null;
+            return (
+              <Card style={{ padding: 22, marginBottom: 20 }}>
+                <div className="flex items-center gap-2 mb-3"><Clock size={15} color="var(--blue)" /><div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase" }}>Competency trends</div></div>
+                {competencyTrends.map(([comp, info]) => {
+                  const meta = TREND_META[info.trend];
+                  return (
+                    <div key={comp} className="flex justify-between items-center mb-2" style={{ fontSize: 13.5 }}>
+                      <span style={{ color: "var(--navy)", textTransform: "capitalize" }}>{comp}</span>
+                      <span style={{ color: meta.color, fontWeight: 600 }}>{meta.text} · {info.tests} tested</span>
+                    </div>
+                  );
+                })}
+              </Card>
+            );
+          })()}
+
           <Card style={{ padding: 22, marginBottom: 20 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-faint)", marginBottom: 14, textTransform: "uppercase" }}>Score over time</div>
             {interviewList.length === 0 ? (
@@ -4172,6 +4240,10 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                       <div style={{ fontSize: 13.5, color: "var(--navy)", fontStyle: "italic", flex: 1 }}>"{c.claim_text}"</div>
                       <Pill color={meta.color} bg={meta.bg}>{meta.label}</Pill>
                     </div>
+                    {/* confidence (Phase 5): candidateState.js's own bounded-influence read on
+                        HOW MUCH to trust the status above — never shown for a claim with zero
+                        evidence, where "low confidence" would just restate "not yet tested". */}
+                    {c.evidence_count > 0 && <div style={{ fontSize: 11.5, color: "var(--text-faint)", marginTop: 4, textTransform: "capitalize" }}>{c.confidence} confidence · {c.evidence_count} test{c.evidence_count === 1 ? "" : "s"}</div>}
                   </div>
                 );
               })}

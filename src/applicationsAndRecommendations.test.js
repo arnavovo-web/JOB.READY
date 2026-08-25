@@ -196,8 +196,12 @@ describe("applicationsWithInterviews derivation (STRUCTURAL)", () => {
     expect(DERIVED_SRC).toMatch(/interviewList\.filter\(\(iv\) => iv\.applicationId === app\.id\)/);
   });
 
-  it("sorts by most recent activity across the application and every one of its interviews, not merely by creation date", () => {
-    expect(DERIVED_SRC).toMatch(/Math\.max\(app\.date, \.\.\.interviews\.map\(\(iv\) => iv\.date\)\)/);
+  it("sorts by most recent activity across the application and every one of its interviews/AC attempts, not merely by creation date", () => {
+    expect(DERIVED_SRC).toMatch(/Math\.max\(app\.date, \.\.\.interviews\.map\(\(iv\) => iv\.date\), \.\.\.acAttemptsForApp\.map\(\(a\) => a\.date\)\)/);
+  });
+
+  it("also groups Assessment Centre attempts genuinely tied to this application (Phase 5)", () => {
+    expect(DERIVED_SRC).toMatch(/acAttempts\.filter\(\(a\) => a\.applicationId === app\.id\)/);
   });
 });
 
