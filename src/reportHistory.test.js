@@ -146,9 +146,13 @@ describe("live and historical screens render from the SAME body component — ne
 
 /* ============================== navigation wiring (STRUCTURAL) ============================== */
 describe("dashboard/progress/ac_home wire clicks to the history views (STRUCTURAL)", () => {
-  it("dashboard's Recent interviews cards open the report view — only marked interactive when there's a report to show", () => {
+  it("dashboard's per-application cards open the latest interview's report view — only rendered when there's a report to show", () => {
+    // Phase 4: the flat "Recent interviews" list was replaced by a per-application grouping
+    // (applicationsWithInterviews) — the report-opening click now lives on that card's "View
+    // latest report" button, gated on latest?.report existing at all (an application with no
+    // completed interview, or one whose report insert itself failed, renders no such button).
     const dashboardSrc = extractFunctionSource('screen === "dashboard" && user && (', '{/* ---------------- CREATE');
-    expect(dashboardSrc).toMatch(/onClick=\{iv\.report \? \(\) => openInterviewReport\(iv, "dashboard"\) : undefined\}/);
+    expect(dashboardSrc).toMatch(/\{latest\?\.report && <Btn variant="ghost" onClick=\{\(\) => openInterviewReport\(latest, "dashboard"\)\}/);
   });
 
   it("progress's Score-over-time bars open the report view", () => {

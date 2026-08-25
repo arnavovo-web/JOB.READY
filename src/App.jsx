@@ -690,6 +690,20 @@ async function loadFullUserState(userId) {
 
   // interviewList needs each completed interview's report summary (company/role live on the application)
   const appById = new Map(apps.map((a) => [a.id, a]));
+
+  // Phase 4 (returning-user continuity): the "applications" concept — one row per company/role
+  // the candidate is preparing for, independent of how many interviews (if any) have been run
+  // against it — was fetched here only to build appById above and then discarded entirely.
+  // Surfaced properly so the Dashboard/Progress can show what the candidate has in flight,
+  // including a draft that never became an interview, not just completed attempts. No new
+  // query: `apps` is the same already-fetched applications rows. jobDescription is carried
+  // through so "practise again" can prefill the JD text without a second read of `documents`.
+  const applications = apps.map((a) => ({
+    id: a.id, company: a.company || "", role: a.role || "", status: a.status || "draft",
+    date: new Date(a.created_at).getTime(),
+    jobDescription: a.job_description || "",
+    stageLabel: a.interview_stage || null, formatLabel: a.interview_type || null,
+  }));
   let reportsByInterview = new Map();
   if (interviewsRaw.length) {
     const { data: reports } = await supabase.from("interview_reports").select("*").in("interview_id", interviewsRaw.map((i) => i.id));
@@ -705,7 +719,16 @@ async function loadFullUserState(userId) {
     // report after leaving it once. `report` here is that SAME already-fetched row
     // (null only if the report insert itself failed post-completion — see
     // dbCompleteInterview) — no new query, no new AI call.
-    return { id: iv.id, applicationId: iv.application_id, company: app.company || "", role: app.role || "", date: new Date(iv.completed_at || iv.created_at).getTime(), overall_score: iv.overall_score, readiness: iv.readiness, breakdown: reportsByInterview.get(iv.id)?.breakdown || {}, report: reportsByInterview.get(iv.id) || null };
+    // stageLabel/formatLabel added (Phase 4, application/job context): interviews.stage/
+    // format were already persisted (Phase 4A) but never reached the UI — a candidate doing
+    // a recruiter screen AND a technical round for the same application had no way to tell
+    // which report was which. Guarded on iv.stage/iv.format actually being set (never true
+    // for a pre-Phase-4A interview) so a legacy row never displays a stage it was never
+    // configured with.
+    return {
+      id: iv.id, applicationId: iv.application_id, company: app.company || "", role: app.role || "", date: new Date(iv.completed_at || iv.created_at).getTime(), overall_score: iv.overall_score, readiness: iv.readiness, breakdown: reportsByInterview.get(iv.id)?.breakdown || {}, report: reportsByInterview.get(iv.id) || null,
+      stageLabel: iv.stage ? stageByKey(iv.stage).label : null, formatLabel: iv.format ? (INTERVIEW_FORMATS[iv.format]?.label || null) : null,
+    };
   });
 
   const competency_history = {};
@@ -742,7 +765,7 @@ async function loadFullUserState(userId) {
   return {
     profile,
     perf: { strengths: dna?.strengths || [], weaknesses: dna?.weaknesses || [], competency_history, style_notes: dna?.style_notes || [], common_issues: dna?.common_issues || [] },
-    interviewList, classroom, questionHistory, memoryLog, acAttempts,
+    interviewList, classroom, questionHistory, memoryLog, acAttempts, applications,
     candidateClaims: claimRows, candidateIntelligence,
   };
 }
@@ -769,6 +792,21 @@ async function dbUploadDocumentFile(userId, applicationId, file) {
   const { error } = await supabase.storage.from("documents").upload(path, file, { contentType: file.type || undefined, upsert: false });
   if (error) { console.error("storage upload failed:", error.message); return null; }
   return path;
+}
+// Phase 4 (returning-user continuity): best-effort JD/CV text restore for "Continue setup" /
+// "Practise again" on an existing application — dbInsertDocument already persists
+// extracted_text per upload, it was simply never read back anywhere. RLS-scoped by
+// application_id the same as every other query here; returns [] (never throws) on failure so
+// a restore miss just leaves the candidate to re-paste/upload, same as starting fresh.
+async function dbGetApplicationDocuments(userId, applicationId) {
+  const supabase = await getSupabase();
+  // Filtered by user_id AND application_id — RLS already enforces ownership on its own, but
+  // every other query in this file also filters explicitly rather than relying on RLS alone;
+  // matched here for the same defense-in-depth reason, even though applicationId in practice
+  // only ever comes from this user's own already-loaded `applications` state.
+  const { data, error } = await supabase.from("documents").select("document_type, extracted_text, created_at").eq("user_id", userId).eq("application_id", applicationId).order("created_at", { ascending: false });
+  if (error) { console.error("documents select failed:", error.message); return []; }
+  return data || [];
 }
 
 async function dbCreateInterview(userId, applicationId, config, methodologyDistribution) {
@@ -1518,12 +1556,17 @@ function TagBasis({ basis }) {
 // written to the DB, only held in memory for the live interview — see submitAnswer), so it
 // simply renders nothing there rather than a guess. onOpenClassroom is optional so a caller
 // with nowhere sensible to send "Open Classroom" (there isn't one here) can omit it.
-function ReportBody({ report, company, role, badge, claimsTested = [], comparisons = [], onOpenClassroom }) {
+function ReportBody({ report, company, role, badge, stageLabel, formatLabel, claimsTested = [], comparisons = [], onOpenClassroom }) {
   const r = report || {};
   return (
     <>
       <div style={{ fontSize: 13, fontWeight: 700, color: "var(--blue)", textTransform: "uppercase", marginBottom: 6 }}>{badge}</div>
-      <h2 style={{ fontSize: 26, fontWeight: 800, color: "var(--navy)", marginBottom: 24 }}>{role} <span style={{ color: "var(--text-faint)", fontWeight: 600 }}>· {company}</span></h2>
+      <h2 style={{ fontSize: 26, fontWeight: 800, color: "var(--navy)", marginBottom: stageLabel ? 4 : 24 }}>{role} <span style={{ color: "var(--text-faint)", fontWeight: 600 }}>· {company}</span></h2>
+      {/* Phase 4 (application/job context): a candidate doing a recruiter screen AND a
+          technical round for the same application had no way to tell, from the report alone,
+          which stage this one was — stageLabel/formatLabel were always on the interview row
+          (Phase 4A) and are simply threaded through here now. */}
+      {stageLabel && <div style={{ fontSize: 13, color: "var(--text-dim)", marginBottom: 20 }}>{stageLabel}{formatLabel ? ` · ${formatLabel}` : ""}</div>}
 
       <Card style={{ padding: 26, marginBottom: 20 }}>
         <div className="flex items-center gap-8">
@@ -1816,6 +1859,9 @@ function App() {
   const [profile, setProfile] = useState(null);
   const [interview, setInterview] = useState(null);
   const [interviewList, setInterviewList] = useState([]);
+  // Phase 4: applications — one entry per company/role the candidate has started (draft or
+  // active), independent of interviewList (completed interviews only). See loadFullUserState.
+  const [applications, setApplications] = useState([]);
   const [perf, setPerf] = useState(null); // { strengths, weaknesses, competency_history:{key:[scores]}, style_notes, common_issues }
   const [answerInput, setAnswerInput] = useState("");
   const [report, setReport] = useState(null);
@@ -1983,6 +2029,7 @@ function App() {
       setUser({ id: authUser.id, email: authUser.email, first_name: p?.first_name || "", last_name: p?.last_name || "" });
       setPerf(state.perf);
       setInterviewList(state.interviewList);
+      setApplications(state.applications);
       setClassroom(state.classroom);
       setQuestionHistory(state.questionHistory);
       setMemoryLog(state.memoryLog);
@@ -1998,6 +2045,7 @@ function App() {
   function clearAllUserState() {
     setUser(null); setSession(null); setPerf(null); setInterviewList([]); setClassroom([]);
     setQuestionHistory([]); setMemoryLog([]); setAcAttempts([]); setApplicationId(null);
+    setApplications([]);
     // Phase 2G (security/consistency hardening): candidateClaims/candidateIntelligence were
     // missing from this reset — onAuthed() always overwrites both on the NEXT sign-in, so
     // this was never a cross-user data leak in practice, but a signed-out session sitting on
@@ -2081,12 +2129,18 @@ function App() {
   /* ---------------- FILE UPLOAD (TXT / DOCX; PDF gets an honest message) ---------------- */
   async function confirmCompanyRole() {
     setError("");
+    const cleanCompany = sanitizeText(company), cleanRole = sanitizeText(role);
     try {
       if (!applicationId) {
-        const app = await dbCreateApplication(user.id, { company: sanitizeText(company), role: sanitizeText(role), status: "draft" });
+        const app = await dbCreateApplication(user.id, { company: cleanCompany, role: cleanRole, status: "draft" });
         setApplicationId(app.id);
+        // Phase 4 (returning-user continuity): keep this draft visible on the Dashboard in the
+        // SAME session immediately, rather than only after the next reload — same
+        // same-session-availability fix as Phase 3's report/attempt entries.
+        setApplications([{ id: app.id, company: cleanCompany, role: cleanRole, status: "draft", date: Date.now(), jobDescription: "", stageLabel: null, formatLabel: null }, ...applications]);
       } else {
-        await dbUpdateApplication(applicationId, { company: sanitizeText(company), role: sanitizeText(role) });
+        await dbUpdateApplication(applicationId, { company: cleanCompany, role: cleanRole });
+        setApplications(applications.map((a) => (a.id === applicationId ? { ...a, company: cleanCompany, role: cleanRole } : a)));
       }
       setWizardStep(2);
     } catch (e) {
@@ -2252,8 +2306,15 @@ Rules: mini study guide, not an essay. core_knowledge 3-5 points, key_points 3-5
     }
   }
 
+  // BUG FIX (stale state): neither this function nor startCreateFlow below ever cleared
+  // jdText/cvText, so a candidate who pasted a JD/CV for one application, finished that
+  // interview, then came back here (or to "New interview"/"Practise weaknesses") without going
+  // through the Report screen's own "New interview" button (the only path that already called
+  // resetForNewInterview) would silently see the PREVIOUS job's JD/CV still populated on this
+  // wizard's steps 2/3 — a real, confusing continuity bug, not a cosmetic one.
   function practiseThisWeakness(topic) {
     setCompany(topic.company); setRole(topic.role);
+    setJdText(""); setCvText("");
     setTargetTopic(topic.topic); setFocusWeaknesses(true); setApplicationId(null);
     setError(""); setWizardStep(1); setScreen("create");
   }
@@ -2264,7 +2325,50 @@ Rules: mini study guide, not an essay. core_knowledge 3-5 points, key_points 3-5
   }
 
   function startCreateFlow(focusWeak = false) {
+    setCompany(""); setRole(""); setJdText(""); setCvText("");
     setWizardStep(1); setFocusWeaknesses(focusWeak); setTargetTopic(null); setApplicationId(null); setError(""); setScreen("create");
+  }
+
+  // Phase 4 (returning-user continuity): resume a draft application that was started (company/
+  // role saved) but never turned into an interview — also covers the rare partial-failure case
+  // where dbUpdateApplication succeeded (status "active") but dbCreateInterview then failed,
+  // leaving an application with no interview at all (see analyseAndPlan's try/catch — both
+  // states are indistinguishable to the candidate and equally worth resuming). Skips straight
+  // to step 2 since company/role are already known. Best-effort JD/CV restore: JD text is read
+  // straight off the application row when already persisted (an "active" application that
+  // never got as far as creating an interview); otherwise, and for CV in every case, this reads
+  // back whatever was durably saved via a FILE upload (documents.extracted_text) — text that
+  // was only ever pasted, never uploaded, was never persisted anywhere and cannot be recovered;
+  // the candidate simply re-pastes it, same as starting fresh.
+  async function continueApplication(app) {
+    setError("");
+    setCompany(app.company); setRole(app.role); setApplicationId(app.id);
+    setFocusWeaknesses(false); setTargetTopic(null);
+    setJdText(app.jobDescription || ""); setCvText("");
+    setWizardStep(2); setScreen("create");
+    try {
+      const docs = await dbGetApplicationDocuments(user.id, app.id);
+      if (!app.jobDescription) {
+        const jd = docs.find((d) => d.document_type === "jd" && d.extracted_text);
+        if (jd) setJdText(jd.extracted_text);
+      }
+      const cv = docs.find((d) => d.document_type === "cv" && d.extracted_text);
+      if (cv) setCvText(cv.extracted_text);
+    } catch (e) { /* best-effort restore only — the candidate can always re-paste/upload */ }
+  }
+
+  // Phase 4: practise again for an application that already has at least one completed
+  // interview — reuses the SAME application (rather than startCreateFlow's always-new one) so
+  // multiple stages/attempts for one real job genuinely accumulate under one application,
+  // instead of each attempt silently fragmenting into its own disconnected "application" row.
+  // job_description is always persisted for an "active" application (see analyseAndPlan), so
+  // this never needs the documents fallback continueApplication above uses for a draft.
+  function practiseApplicationAgain(app) {
+    setError("");
+    setCompany(app.company); setRole(app.role); setApplicationId(app.id);
+    setFocusWeaknesses(false); setTargetTopic(null);
+    setJdText(app.jobDescription || ""); setCvText("");
+    setWizardStep(app.jobDescription ? 3 : 2); setScreen("create");
   }
 
   /* ---------------- STEP 1: JD + CV ANALYSIS -> PROFILE ---------------- */
@@ -2326,6 +2430,10 @@ Rules: "basis" must honestly mark whether each competency is explicitly stated i
         job_description: cleanJd, interview_stage: stageLabel, interview_type: formatLabel, interview_length: length, status: "active",
         jd_profile: jdProfile, jd_profile_hash: hashText(cleanJd),
       });
+      // Phase 4 (returning-user continuity): mirror the same fields onto local `applications`
+      // state so this application's card reflects "active" + its stage/JD immediately, without
+      // waiting for a reload — same rationale as confirmCompanyRole's own update above.
+      setApplications((prev) => prev.map((a) => (a.id === applicationId ? { ...a, status: "active", jobDescription: cleanJd, stageLabel, formatLabel } : a)));
       const ivRow = await dbCreateInterview(user.id, applicationId, ivConfig, methodologyDistribution);
 
       // Phase 2D: seed newly-extracted CV claims into persistent candidate_claims — reuses
@@ -2805,7 +2913,11 @@ Rules: scores computed honestly from the transcript's evaluations. Never fabrica
       // classroom_topics). Without it, this entry would appear on the Dashboard/Progress
       // screens immediately but silently fail to open (openInterviewReport no-ops with no
       // .report) until the next full reload re-fetched it from the DB.
-      const summary = { id: finalInterview.id, company: finalInterview.company, role: finalInterview.role, date: Date.now(), overall_score: result.overall_score, readiness: result.readiness, breakdown: result.breakdown, report: result };
+      // applicationId/stageLabel/formatLabel added (Phase 4, application/job context) — without
+      // applicationId in particular, this just-finished interview would score/read fine on its
+      // own but silently fail to group under its application on the Dashboard (the
+      // applicationsWithInterviews filter matches on it) until the next reload.
+      const summary = { id: finalInterview.id, applicationId: finalInterview.applicationId, company: finalInterview.company, role: finalInterview.role, date: Date.now(), overall_score: result.overall_score, readiness: result.readiness, breakdown: result.breakdown, report: result, stageLabel: finalInterview.stageLabel, formatLabel: finalInterview.formatLabel };
       setInterviewList([...interviewList, summary]);
 
       await applyPerformanceUpdate({
@@ -2882,14 +2994,15 @@ Rules: scores computed honestly from the transcript's evaluations. Never fabrica
     setScreen("create");
   }
 
-  // Phase 3: reopen a PAST interview's report (Dashboard's "Recent interviews" cards,
+  // Phase 3: reopen a PAST interview's report (Dashboard's per-application "View latest report"
+  // buttons — Phase 4 replaced the original flat "Recent interviews" cards with those —
   // Progress's "Score over time" bars) — iv is an interviewList entry, whose .report is the
   // already-loaded interview_reports row (see loadFullUserState; null only if that insert
   // itself failed after the interview completed, which callers guard against before calling
   // this). Purely a client-side read of state already in memory — no DB read, no AI call.
   function openInterviewReport(iv, backScreen) {
     if (!iv?.report) return;
-    setViewedReport({ ...iv.report, company: iv.company, role: iv.role, date: iv.date });
+    setViewedReport({ ...iv.report, company: iv.company, role: iv.role, date: iv.date, stageLabel: iv.stageLabel, formatLabel: iv.formatLabel });
     setViewedReportComparisons(memoryLog.filter((m) => m.interviewId === iv.id));
     setHistoryBackScreen(backScreen);
     setScreen("report_view");
@@ -3020,6 +3133,55 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
   // extracted for this candidate (across every application/interview, per Phase 2D's
   // cross-interview persistence), most-recently-updated first.
   const claimsOverview = [...candidateClaims].sort((a, b) => new Date(b.updated_at || b.created_at) - new Date(a.updated_at || a.created_at));
+
+  // Phase 4 (application/job context, returning-user continuity): groups completed interviews
+  // under the application they belong to, so a candidate can see everything tied to one real
+  // job pursuit in one place instead of two disconnected lists. Every interview already carries
+  // a valid applicationId (dbCreateInterview always requires one); one whose application row
+  // can't be found (should never happen — defensive only) is simply excluded, same "don't
+  // invent a fallback group" contract as the rest of this file. Sorted by most recent activity
+  // (an old application with a brand-new "practise again" attempt should surface before an
+  // otherwise-untouched one), not merely by when the application was first created.
+  const applicationsWithInterviews = applications
+    .map((app) => {
+      const interviews = interviewList.filter((iv) => iv.applicationId === app.id).sort((a, b) => b.date - a.date);
+      const lastActivity = Math.max(app.date, ...interviews.map((iv) => iv.date));
+      return { ...app, interviews, lastActivity };
+    })
+    .sort((a, b) => b.lastActivity - a.lastActivity);
+
+  // Phase 4 (Dashboard/Progress "what should I do next"): a GLOBAL, cross-application
+  // Candidate State/Strategy snapshot — the SAME pure, already-tested functions submitAnswer
+  // already runs mid-interview (candidateState.js/interviewStrategy.js, both untouched here),
+  // just computed from already-hydrated state for DISPLAY rather than for scheduling a live
+  // turn. transcript/requiredCompetencies are omitted (there is no single "current interview"
+  // or "current JD" outside of one) — every priority reflects only real, already-persisted
+  // evidence (categoryCoverage/competencyCoverage/claims), never an AI call, never a second
+  // intelligence system. Recomputed on every render — cheap, pure, no side effects, same as
+  // every other derived value in this block.
+  let globalCandidateState = candidateIntelligence;
+  try {
+    globalCandidateState = buildCandidateState({ candidateSignals: candidateIntelligence, claims: candidateClaims, questionHistory });
+  } catch (e) { console.error("global candidate state build failed:", e.message); }
+  let globalStrategy = null;
+  try {
+    globalStrategy = buildInterviewStrategy({ candidateSignals: globalCandidateState, claims: candidateClaims });
+  } catch (e) { console.error("global candidate strategy build failed:", e.message); }
+  // Gated on having at least one COMPLETED interview: before that, categoryCoverage is
+  // "unknown" for every category by definition (buildCandidateSignals from empty memoryRows),
+  // which would surface as several identical, zero-evidence "priorities" instead of one
+  // genuinely useful signal — the existing "no interviews yet" empty states already cover that
+  // case better. claim/key resolution never fabricates a label: a priority whose claim can't be
+  // found in candidateClaims (should not happen) is dropped rather than shown blank.
+  const nextPriorities = (interviewList.length > 0 && globalStrategy?.priorities?.length)
+    ? globalStrategy.priorities.slice(0, 5).map((p) => {
+        if (p.type === "claim") {
+          const claim = candidateClaims.find((c) => c.id === p.key);
+          return claim ? { type: p.type, label: claim.claim_text, reason: p.reason } : null;
+        }
+        return { type: p.type, label: p.type === "category" ? p.key.replace(/_/g, " ") : p.key, reason: p.reason };
+      }).filter(Boolean)
+    : [];
 
   if (!authChecked) {
     return (
@@ -3368,8 +3530,18 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
               <div style={{ fontSize: 30, fontWeight: 800, color: "var(--navy)" }}>{interviewList.length}</div>
             </Card>
             <Card style={{ padding: 20 }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-faint)", marginBottom: 8 }}>TOP FOCUS AREA</div>
-              <div style={{ fontSize: 14.5, color: "var(--navy)", fontWeight: 600, lineHeight: 1.4 }}>{perf?.weaknesses?.[0] || "Complete an interview to find out"}</div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-faint)", marginBottom: 8 }}>NEXT UP</div>
+              {/* Phase 4 (Dashboard "what should I do next"): the single highest-priority item
+                  from the SAME deterministic Candidate Strategy the scheduler itself would
+                  nudge toward (interviewStrategy.js, untouched) — grounded in real stored
+                  evidence (claims/competency/category coverage), never invented. Falls back to
+                  the AI-narrative weakness (pre-existing signal, kept for continuity) when
+                  there's not yet enough evidence for a deterministic priority to exist. */}
+              <div style={{ fontSize: 14.5, color: "var(--navy)", fontWeight: 600, lineHeight: 1.4 }}>
+                {nextPriorities[0]
+                  ? (nextPriorities[0].type === "claim" ? `Retest: "${nextPriorities[0].label}"` : `Practise: ${nextPriorities[0].label}`)
+                  : (perf?.weaknesses?.[0] || "Complete an interview to find out")}
+              </div>
             </Card>
           </div>
 
@@ -3417,27 +3589,49 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
             </div>
           </Card>
 
+          {/* Phase 4 (application/job context, returning-user continuity): replaces the old flat
+              "Recent interviews" list — grouped by application (one real job pursuit) so a
+              candidate can see, per job: how many attempts, the latest score, which stage it
+              was, and — critically — a draft they started but never turned into an interview,
+              which previously had no UI presence anywhere at all. */}
           <div className="flex justify-between items-center mb-3">
-            <div style={{ fontSize: 17, fontWeight: 700, color: "var(--navy)" }}>Recent interviews</div>
+            <div style={{ fontSize: 17, fontWeight: 700, color: "var(--navy)" }}>Your applications</div>
             {interviewList.length > 0 && <Btn variant="ghost" onClick={() => setScreen("progress")} style={{ padding: "6px 4px" }}><BarChart3 size={14} /> View progress</Btn>}
           </div>
-          {interviewList.length === 0 ? (
-            <Card style={{ padding: 36, textAlign: "center", color: "var(--text-faint)", fontSize: 14 }}>No interviews yet. Start your first one to see your readiness score here.</Card>
+          {applicationsWithInterviews.length === 0 ? (
+            <Card style={{ padding: 36, textAlign: "center", color: "var(--text-faint)", fontSize: 14 }}>No applications yet. Start your first one to see your readiness score here.</Card>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {[...interviewList].reverse().map((iv) => (
-                <Card key={iv.id} style={{ padding: 18, cursor: iv.report ? "pointer" : "default" }} onClick={iv.report ? () => openInterviewReport(iv, "dashboard") : undefined}>
-                  <div className="flex justify-between items-start">
-                    <div>
-                      <div style={{ fontSize: 15, fontWeight: 700, color: "var(--navy)" }}>{iv.company}</div>
-                      <div style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 2 }}>{iv.role}</div>
-                      <div style={{ fontSize: 12, color: "var(--text-faint)", marginTop: 6 }}>{new Date(iv.date).toLocaleDateString()}</div>
+            <div className="grid grid-cols-1 gap-3">
+              {applicationsWithInterviews.map((app) => {
+                const latest = app.interviews[0];
+                return (
+                  <Card key={app.id} style={{ padding: 18 }}>
+                    <div className="flex justify-between items-start gap-3 mb-2">
+                      <div>
+                        <div style={{ fontSize: 15, fontWeight: 700, color: "var(--navy)" }}>{app.company}</div>
+                        <div style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 2 }}>{app.role}</div>
+                      </div>
+                      {latest ? (
+                        <div style={{ fontSize: 22, fontWeight: 800, color: "var(--navy)", textAlign: "right" }}>{latest.overall_score}<span style={{ fontSize: 12, color: "var(--text-faint)" }}>/100</span></div>
+                      ) : (
+                        <Pill color="var(--text-dim)" bg="#F1F5F9">Draft</Pill>
+                      )}
                     </div>
-                    <div style={{ fontSize: 22, fontWeight: 800, color: "var(--navy)" }}>{iv.overall_score}<span style={{ fontSize: 12, color: "var(--text-faint)" }}>/100</span></div>
-                  </div>
-                  {iv.report && <div style={{ fontSize: 11.5, color: "var(--blue)", fontWeight: 600, marginTop: 10 }}>View full report <ArrowRight size={11} style={{ verticalAlign: "middle" }} /></div>}
-                </Card>
-              ))}
+                    {(latest?.stageLabel || app.interviews.length > 1) && (
+                      <div className="flex flex-wrap gap-2 mb-3">
+                        {latest?.stageLabel && <Pill color="var(--blue)" bg="var(--highlight)">{latest.stageLabel}</Pill>}
+                        {app.interviews.length > 1 && <Pill color="var(--text-dim)" bg="#F1F5F9">{app.interviews.length} attempts</Pill>}
+                      </div>
+                    )}
+                    <div className="flex flex-wrap gap-2 items-center">
+                      {latest?.report && <Btn variant="ghost" onClick={() => openInterviewReport(latest, "dashboard")} style={{ padding: "6px 10px" }}>View latest report <ArrowRight size={13} /></Btn>}
+                      {latest
+                        ? <Btn variant="secondary" onClick={() => guarded(() => practiseApplicationAgain(app))} style={{ padding: "6px 10px" }}>Practise again</Btn>
+                        : <Btn variant="accent" onClick={() => guarded(() => continueApplication(app))} style={{ padding: "6px 10px" }}>Continue setup <ArrowRight size={13} /></Btn>}
+                    </div>
+                  </Card>
+                );
+              })}
             </div>
           )}
         </div>
@@ -3450,6 +3644,15 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
           <div className="flex gap-2 mb-8">
             {[1, 2, 3, 4].map((s) => <div key={s} style={{ flex: 1, height: 5, borderRadius: 999, background: s <= wizardStep ? "var(--blue)" : "var(--border)" }} />)}
           </div>
+          {/* Phase 4 (application/job context): "Continue setup"/"Practise again" now land
+              directly on step 2/3 with company/role already filled — without this, a candidate
+              would see "Tell us about the role" with no on-screen confirmation of WHICH role,
+              since step 1 (the only place company/role are normally visible) is skipped
+              entirely on those paths. Shown from step 2 onward only — step 1 already shows
+              company/role live in its own form fields. */}
+          {wizardStep > 1 && (company || role) && (
+            <div style={{ fontSize: 12.5, color: "var(--text-dim)", marginBottom: 12 }}>Setting up: <strong style={{ color: "var(--navy)" }}>{role || "this role"}{company ? ` · ${company}` : ""}</strong></div>
+          )}
           {focusWeaknesses && <Pill color="var(--violet)" bg="#F1E9FE">Focused on your weak spots</Pill>}
 
           {wizardStep === 1 && (
@@ -3774,6 +3977,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
         <div className="jr-fade" style={{ maxWidth: 720, margin: "0 auto", padding: "44px 24px" }}>
           <ReportBody
             report={report} company={company} role={role} badge="Interview complete"
+            stageLabel={interview?.stageLabel} formatLabel={interview?.formatLabel}
             claimsTested={claimsTestedThisInterview} comparisons={report.memory_comparisons || []}
             onOpenClassroom={() => setScreen("classroom")}
           />
@@ -3792,6 +3996,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
           <ReportBody
             report={viewedReport} company={viewedReport.company} role={viewedReport.role}
             badge={"Completed " + new Date(viewedReport.date).toLocaleDateString()}
+            stageLabel={viewedReport.stageLabel} formatLabel={viewedReport.formatLabel}
             comparisons={viewedReportComparisons}
             onOpenClassroom={() => setScreen("classroom")}
           />
@@ -3858,6 +4063,47 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                 </Card>
               )}
             </>
+          )}
+
+          {/* Phase 4 (Progress "genuinely useful, not just statistics"): deterministic next-
+              practice recommendations, straight from the SAME Candidate Strategy the live
+              scheduler itself would nudge toward (interviewStrategy.js, untouched) — claims
+              still needing testing, competencies/categories not yet demonstrated, ranked by
+              the module's own priority score. Every reason string is already candidate-facing
+              and grounded in real stored evidence; nothing here is invented. */}
+          {interviewList.length > 0 && (
+            <Card style={{ padding: 22, marginBottom: 20 }}>
+              <div className="flex items-center gap-2 mb-3"><Target size={15} color="var(--violet)" /><div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase" }}>Recommended next practice</div></div>
+              {nextPriorities.length === 0 ? (
+                <div style={{ fontSize: 13.5, color: "var(--text-faint)" }}>Nothing stands out as urgent right now — your coverage looks solid so far.</div>
+              ) : (
+                nextPriorities.map((p, i) => (
+                  <div key={i} style={{ padding: "9px 0", borderBottom: i < nextPriorities.length - 1 ? "1px solid var(--border)" : "none" }}>
+                    <div style={{ fontSize: 13.5, color: "var(--navy)", fontWeight: 600, textTransform: p.type === "claim" ? "none" : "capitalize" }}>{p.type === "claim" ? `"${p.label}"` : p.label}</div>
+                    <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 2 }}>{p.reason}</div>
+                  </div>
+                ))
+              )}
+            </Card>
+          )}
+
+          {/* Interview area coverage — candidateState.js's own per-category status
+              (unknown/insufficient/demonstrated), already computed for every scheduling
+              decision the adaptive engine makes, simply never surfaced to the candidate
+              before now. */}
+          {interviewList.length > 0 && (
+            <Card style={{ padding: 22, marginBottom: 20 }}>
+              <div className="flex items-center gap-2 mb-3"><BarChart3 size={15} color="var(--blue)" /><div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase" }}>Interview area coverage</div></div>
+              {Object.entries(globalCandidateState?.categories || {}).map(([cat, info]) => {
+                const meta = { unknown: { text: "Not yet tested", color: "var(--text-faint)" }, insufficient: { text: "Needs more evidence", color: "var(--warn)" }, demonstrated: { text: "Demonstrated", color: "var(--good)" } }[info.status] || { text: "—", color: "var(--text-faint)" };
+                return (
+                  <div key={cat} className="flex justify-between items-center mb-2" style={{ fontSize: 13.5 }}>
+                    <span style={{ color: "var(--navy)", textTransform: "capitalize" }}>{cat.replace(/_/g, " ")}</span>
+                    <span style={{ color: meta.color, fontWeight: 600 }}>{meta.text}{info.testedCount > 0 ? ` · ${info.testedCount} tested` : ""}</span>
+                  </div>
+                );
+              })}
+            </Card>
           )}
 
           <Card style={{ padding: 22, marginBottom: 20 }}>
