@@ -98,7 +98,11 @@ describe("continueApplication (STRUCTURAL)", () => {
 });
 
 describe("practiseApplicationAgain (STRUCTURAL)", () => {
-  const FN_SRC = extractFunctionSource("function practiseApplicationAgain(app) {", "/* ---------------- STEP 1: JD + CV ANALYSIS");
+  // Tight boundary — practiseApplicationAgain's own body only. The old "STEP 1: JD + CV
+  // ANALYSIS" end marker used to be immediately after this function; Phase 7 inserted the
+  // invitation-scanner helpers (which DO call callClaude/DB functions) in between, so that
+  // marker would now sweep unrelated code into this function's own "no AI/DB call" check.
+  const FN_SRC = extractFunctionSource("function practiseApplicationAgain(app) {", "/* ---------------- PHASE 7: INTERVIEW INVITATION SCANNER");
 
   it("reuses the existing application id — deliberately different from startCreateFlow's always-new one", () => {
     expect(FN_SRC).toMatch(/setApplicationId\(app\.id\)/);

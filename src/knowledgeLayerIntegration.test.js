@@ -55,7 +55,13 @@ describe("HireVue-style (independent_batch) interviews never activate the knowle
   });
 
   it("STRUCTURAL: independent_batch's OWN prompt builder (buildQuestionBatchPrompt/generateQuestionBatch) never imports or references the knowledge layer — full pipeline isolation, not just the gate", () => {
-    const BATCH_SRC = extractFunctionSource("function buildQuestionBatchPrompt(", "async function generateAcScenario(");
+    // Tight boundary — buildQuestionBatchPrompt + generateQuestionBatch ONLY, ending right
+    // before the PDF-extraction section. The much later "async function generateAcScenario("
+    // marker used to work only by coincidence: it silently swept in every unrelated function
+    // in between (analyseAndPlan, the Phase 7 invitation-scanner helpers, ...), so a legitimate
+    // comment merely MENTIONING the knowledge layer elsewhere could fail this check for a
+    // function that never actually references it.
+    const BATCH_SRC = extractFunctionSource("function buildQuestionBatchPrompt(", "/* PDF TEXT EXTRACTION");
     expect(BATCH_SRC).not.toMatch(/interviewKnowledge|resolveKnowledgeDomain|buildKnowledgeGuidance|KNOWLEDGE GUIDANCE/);
   });
 
