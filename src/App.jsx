@@ -44,6 +44,14 @@ import { buildInterviewStrategy } from "./interviewStrategy";
 // consumes it as a drop-in replacement, never a second input. Never decides category, turn
 // type, or anchor source itself — see candidateState.js's own docstring.
 import { buildEvidenceEvent, updateClaimEvidence, buildCandidateState, updateCandidateState } from "./candidateState";
+// Phase 6: universal interview knowledge layer — a pure, deterministic module answering "what
+// canonical knowledge/concepts should reasonably be tested for THIS interview type" (e.g. an
+// Investment Banking technical round's fairly predictable universe of DCF/comps/accretion-
+// dilution), which none of the JD/CV-personalised architecture above has any way to know on its
+// own. Never decides category, turn_type, or anchor source itself, never calls the AI, never
+// applies to a HireVue-style (independent_batch) interview — see the module's own docstring for
+// the full applicability gate. Consumed only inside buildQuestionGenerationPrompt below.
+import { resolveKnowledgeDomain, buildKnowledgeGuidance } from "./interviewKnowledge";
 
 /* ================================================================== *
  * JOB.READY — DESIGN SYSTEM (unchanged from previous build)
@@ -457,9 +465,26 @@ const ANCHOR_NOTE = {
   cv: "Ground the question in the specific CV claim below that's being challenged — quote or closely reference it.",
   previous_answer: "Ground the question directly in the candidate's previous answer text below.",
 };
-export function buildQuestionGenerationPrompt(genInput, interview, profile, candidateSignals, candidateStrategy) {
+export function buildQuestionGenerationPrompt(genInput, interview, profile, candidateSignals, candidateStrategy, candidateState) {
   const gi = genInput || {};
   const isNormalTurn = gi.turnType === "normal";
+  // Phase 6: universal interview knowledge layer — see interviewKnowledge.js's own docstring
+  // for the full pipeline. Only ever attempted for a normal turn (a probing turn's competency
+  // is already fixed, inherited from the question it's probing — see competencyLine below; the
+  // knowledge layer has no say there, same as it has no say over category/turn_type/anchor for
+  // ANY turn). domain resolution and guidance-building are both pure/cheap — recomputed here
+  // rather than cached, since profile.interview_profile is fixed for the whole interview anyway.
+  // Never fatal: a build failure degrades to no guidance, i.e. today's pre-Phase-6 behaviour.
+  let knowledgeGuidance = null;
+  if (isNormalTurn) {
+    try {
+      const domain = resolveKnowledgeDomain(profile?.interview_profile);
+      knowledgeGuidance = buildKnowledgeGuidance({
+        domain, category: gi.category, pipeline: interview?.config?.pipeline,
+        candidateState, transcript: interview?.transcript, jdRequirements: profile?.interview_profile?.jd_requirements,
+      });
+    } catch (knowledgeErr) { console.error("knowledge layer guidance build failed:", knowledgeErr.message); }
+  }
   // Phase 2D: optional, informational-only candidate-intelligence note for a normal turn —
   // "evidence supplied to question generation" per the 2D/2C integration contract. Never
   // structural: it can only nudge phrasing/angle, never choose category, competency, or
@@ -487,8 +512,16 @@ export function buildQuestionGenerationPrompt(genInput, interview, profile, cand
   }
   const directive = TURN_TYPE_DIRECTIVE[gi.turnType] || TURN_TYPE_DIRECTIVE.normal;
   const anchorNote = ANCHOR_NOTE[gi.anchorSource] || "";
+  // Phase 6: when knowledge guidance resolved a target concept for this (normal) turn, that
+  // concept's label effectively becomes this turn's competency — the SAME mechanism a probing
+  // turn's already-fixed competency already uses (the model echoes a given label back rather
+  // than inventing one), just sourced from the knowledge layer instead of adaptiveEngine.js.
+  // This is content-generation's own existing latitude for a normal turn's competency, never
+  // the scheduler's — category/turn_type/anchor_source are untouched by any of this.
   const competencyLine = gi.competency
     ? `The "competency" this question must cover is already fixed as "${gi.competency}" — echo it back in your competency field unchanged.`
+    : knowledgeGuidance
+    ? `The "competency" this question must cover is already fixed as "${knowledgeGuidance.targetConcept.label}" — echo it back in your competency field unchanged.`
     : `Pick a short "competency" label for what this question probes (e.g. "leadership", "stakeholder management").`;
   // Same anchor_source vocabulary/instruction the batch pipeline's own prompt already uses
   // (buildQuestionBatchPrompt) — kept consistent rather than inventing new wording.
@@ -498,10 +531,18 @@ export function buildQuestionGenerationPrompt(genInput, interview, profile, cand
   const anchorSourceRule = isNormalTurn
     ? `\n"anchor_source" describes what grounds the question: "cv" when it references a specific fact from the candidate's background below, "jd" when it's built directly from a specific requirement in the job description, "company" when it's grounded in company-specific context, or "generic" when it's a standard question for the category/competency with no specific anchor.`
     : "";
+  // Phase 6: compact, RETRIEVED (never the full catalogue) knowledge guidance for this one
+  // turn — see interviewKnowledge.js's buildKnowledgeGuidance. Explicitly instructs the model
+  // never to reveal this internal taxonomy/labelling and never to copy the archetype wording
+  // verbatim — the model still owns HOW to ask it naturally; the knowledge layer only owns
+  // WHAT should be tested.
+  const knowledgeBlock = knowledgeGuidance
+    ? `\nKNOWLEDGE GUIDANCE\nDomain: ${knowledgeGuidance.domainLabel}\nPriority concepts:\n${knowledgeGuidance.priorityConcepts.map((c, i) => `${i + 1}. ${c.label} — ${c.statusLabel}`).join("\n")}\nCurrent target concept: ${knowledgeGuidance.targetConcept.label}\n${knowledgeGuidance.targetConcept.archetype}\nAsk this as a natural, conversational interview question in your own words. Do not reveal this internal taxonomy or these labels to the candidate. Do not mechanically copy the wording above verbatim.`
+    : "";
   const system = `You are a real, professional interviewer conducting a live interview. You are NOT effusive or full of praise — you are neutral and probing. Return strict JSON only, no prose, in this exact shape:
 { "text": "", "competency": ""${anchorField} }
 ${directive} ${anchorNote}
-${competencyLine}${anchorSourceRule}${candidateNote}
+${competencyLine}${anchorSourceRule}${candidateNote}${knowledgeBlock}
 Ask ONE natural, specific interview question — no preamble, no meta-commentary, no mention of "category" or "turn type". The category, question ordering, and overall structure of this interview are already decided elsewhere — you are only writing this one question's text (and, where asked, its competency label${isNormalTurn ? "/anchor source" : ""}).`;
 
   const contextLines = [
@@ -2730,7 +2771,7 @@ Rules: honest 0-100 scores. follow_up_worthy: true only if the answer surfaced s
         // pre-answer `interview` — buildQuestionGenerationPrompt's own repetition-avoidance
         // context (askedSoFar, above) would otherwise be missing the very turn that just
         // happened. .id/.applicationId/.maxQuestions are unchanged; only .transcript differs.
-        const nextQuestion = await generateAndPersistNextQuestion({ ...interview, transcript: newTranscript }, profile, currentQ.dbId, currentQ?.turn_type ?? null, decision, genInput, targetedClaimId, candidateStrategy);
+        const nextQuestion = await generateAndPersistNextQuestion({ ...interview, transcript: newTranscript }, profile, currentQ.dbId, currentQ?.turn_type ?? null, decision, genInput, targetedClaimId, candidateStrategy, candidateStateForStrategy);
         setInterview({ ...interview, transcript: newTranscript, currentQuestion: nextQuestion, pendingRecovery: null });
         setAnswerInput("");
         setScreen("interview");
@@ -2762,8 +2803,8 @@ Rules: honest 0-100 scores. follow_up_worthy: true only if the answer surfaced s
   // (Phase 2E, optional) is informational-only context for the prompt — see
   // buildQuestionGenerationPrompt's own docstring; it never affects decision/genInput, which
   // the scheduler has already finalised by the time this function runs.
-  async function generateAndPersistNextQuestion(interviewForPrompt, profileForPrompt, answeredQuestionId, answeredTurnType, decision, genInput, targetedClaimId = null, candidateStrategy = null) {
-    const { system, userText } = buildQuestionGenerationPrompt(genInput, interviewForPrompt, profileForPrompt, candidateIntelligence, candidateStrategy);
+  async function generateAndPersistNextQuestion(interviewForPrompt, profileForPrompt, answeredQuestionId, answeredTurnType, decision, genInput, targetedClaimId = null, candidateStrategy = null, candidateStateForKnowledge = null) {
+    const { system, userText } = buildQuestionGenerationPrompt(genInput, interviewForPrompt, profileForPrompt, candidateIntelligence, candidateStrategy, candidateStateForKnowledge);
     const raw = await callClaude(system, userText, 700, false, {
       requestType: "interview_turn_generate", applicationId: interviewForPrompt.applicationId, interviewId: interviewForPrompt.id,
     });
@@ -2810,12 +2851,16 @@ Rules: honest 0-100 scores. follow_up_worthy: true only if the answer surfaced s
     // includes the just-answered turn (set before entering CALL2_FAILED — see submitAnswer).
     // Never fatal: a build failure degrades to no strategy context for the retried prompt.
     let candidateStrategy = null;
+    // Phase 6: lifted out of the try block below (not just a local const inside it) so the
+    // Call-2 retry call can reuse the SAME already-built Candidate State the knowledge layer
+    // needs — never recomputed twice, never a second Candidate State build.
+    let candidateStateForStrategy = candidateIntelligence;
     try {
       // Phase 2F: candidateClaims here already reflects any evidence update submitAnswer
       // persisted for the just-answered question BEFORE Call 2 failed (see the claim-update
       // block above, which always runs before the Call-2 try/catch) — so building Candidate
       // State from it now picks that up with no extra computation needed.
-      const candidateStateForStrategy = buildCandidateState({ candidateSignals: candidateIntelligence, claims: candidateClaims, questionHistory });
+      candidateStateForStrategy = buildCandidateState({ candidateSignals: candidateIntelligence, claims: candidateClaims, questionHistory });
       candidateStrategy = buildInterviewStrategy({
         candidateSignals: candidateStateForStrategy, claims: candidateClaims,
         requiredCompetencies: profile?.interview_profile?.competencies, transcript: interview.transcript,
@@ -2823,7 +2868,7 @@ Rules: honest 0-100 scores. follow_up_worthy: true only if the answer surfaced s
     } catch (csErr) { console.error("candidate strategy build failed:", csErr.message); }
     try {
       const { decision, genInput } = await reconstructSchedulerDecision(interview, profile, questionId, knownDecision, knownGenInput, candidateStrategy);
-      const nextQuestion = await generateAndPersistNextQuestion(interview, profile, questionId, interview.currentQuestion?.turn_type ?? null, decision, genInput, targetedClaimId, candidateStrategy);
+      const nextQuestion = await generateAndPersistNextQuestion(interview, profile, questionId, interview.currentQuestion?.turn_type ?? null, decision, genInput, targetedClaimId, candidateStrategy, candidateStateForStrategy);
       setInterview({ ...interview, currentQuestion: nextQuestion, pendingRecovery: null });
       setScreen("interview");
     } catch (e) {

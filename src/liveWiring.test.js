@@ -710,11 +710,14 @@ describe("PHASE 2E — submitAnswer computes and threads candidateStrategy (STRU
 
   it("candidateStrategy is passed into both runSimulatedAdaptiveTurn and generateAndPersistNextQuestion", () => {
     expect(SUBMIT_ANSWER_SRC).toMatch(/runSimulatedAdaptiveTurn\(\{[\s\S]*candidateStrategy,?\s*\}\)/);
-    expect(SUBMIT_ANSWER_SRC).toMatch(/generateAndPersistNextQuestion\([^)]*candidateStrategy\)/);
+    // Phase 6: generateAndPersistNextQuestion now also takes a trailing candidateStateForStrategy
+    // argument (for the knowledge layer's Candidate-State-aware priority) — candidateStrategy
+    // itself is still passed, just no longer the LAST argument in the call.
+    expect(SUBMIT_ANSWER_SRC).toMatch(/generateAndPersistNextQuestion\([^)]*candidateStrategy[^)]*\)/);
   });
 
   it("generateAndPersistNextQuestion passes candidateStrategy into buildQuestionGenerationPrompt, never into the scheduler decision itself", () => {
-    expect(GENERATE_AND_PERSIST_SRC).toMatch(/buildQuestionGenerationPrompt\(genInput, interviewForPrompt, profileForPrompt, candidateIntelligence, candidateStrategy\)/);
+    expect(GENERATE_AND_PERSIST_SRC).toMatch(/buildQuestionGenerationPrompt\(genInput, interviewForPrompt, profileForPrompt, candidateIntelligence, candidateStrategy, candidateStateForKnowledge\)/);
   });
 });
 
