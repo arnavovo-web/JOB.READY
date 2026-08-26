@@ -1,0 +1,25 @@
+{
+  "sector": "minimal",
+  "knowledgeDomainId": null,
+  "expectDomainMatch": false,
+  "expect": {
+    "company": "",
+    "company_source": "unknown",
+    "role": "",
+    "role_source": "unknown",
+    "division": "",
+    "stage": "unknown",
+    "stage_source": "unknown",
+    "format": "unknown",
+    "format_source": "unknown",
+    "duration_minutes": 0,
+    "components": []
+  },
+  "optionalFields": [],
+  "topicsMustInclude": [],
+  "topicsMustNotInclude": [
+    "technical", "behavioural", "case", "coding", "valuation", "dcf", "hirevue"
+  ],
+  "notes": "No company, role, stage, format or content is stated anywhere. This is the pure 'not enough information' case — the system must invent absolutely nothing.",
+  "knowledgeLayer": { "pipeline": "adaptive_turn", "categoryToTest": "technical_functional", "shouldActivate": false }
+}

@@ -1,0 +1,26 @@
+{
+  "sector": "long_email",
+  "knowledgeDomainId": null,
+  "expectDomainMatch": false,
+  "expect": {
+    "company": "Thornfield Group",
+    "company_source": "explicit",
+    "role": "Graduate Trainee - Operations",
+    "role_source": "explicit",
+    "division": "",
+    "stage": ["unknown", "first_round"],
+    "stage_source": ["unknown", "explicit", "inferred"],
+    "format": "live_conversational",
+    "format_source": "explicit",
+    "duration_minutes": 30,
+    "components": ["behavioural_competency"]
+  },
+  "optionalFields": ["division", "team", "date", "time", "location", "stage", "stage_source"],
+  "topicsMustInclude": [],
+  "topicsMustNotInclude": [
+    "confidentiality notice", "registered office", "equal opportunities", "unsubscribe",
+    "reasonable adjustments", "case study", "technical assessment", "group exercise"
+  ],
+  "notes": "A genuinely long, mostly-boilerplate email (legal disclaimer, repeated footer, general process explanation) with only one short paragraph of real interview detail buried in the middle. The extraction must find that paragraph and must never let the surrounding boilerplate leak into any topic/preparation field. 'Second-round' has no exact canonical match, so 'unknown' is an equally acceptable answer to a best-effort 'first_round' guess.",
+  "knowledgeLayer": { "pipeline": "adaptive_turn", "categoryToTest": "behavioural_competency", "shouldActivate": false }
+}

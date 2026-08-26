@@ -1,0 +1,25 @@
+{
+  "sector": "vague",
+  "knowledgeDomainId": null,
+  "expectDomainMatch": false,
+  "expect": {
+    "company": "Thornwell Group",
+    "company_source": "explicit",
+    "role": "Analyst",
+    "role_source": "explicit",
+    "division": "",
+    "stage": "unknown",
+    "stage_source": "unknown",
+    "format": "unknown",
+    "format_source": "unknown",
+    "duration_minutes": 0,
+    "components": []
+  },
+  "optionalFields": [],
+  "topicsMustInclude": [],
+  "topicsMustNotInclude": [
+    "technical", "behavioural", "case", "coding", "valuation", "dcf"
+  ],
+  "notes": "The email gives a real company and role but genuinely no stage/format/content detail — every other field must remain unknown/empty rather than guessed.",
+  "knowledgeLayer": { "pipeline": "adaptive_turn", "categoryToTest": "technical_functional", "shouldActivate": false }
+}

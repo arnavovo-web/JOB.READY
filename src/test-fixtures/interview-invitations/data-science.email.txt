@@ -1,0 +1,17 @@
+Subject: Vantage Analytics — Data Science Analyst Intern Technical Interview
+
+Hi Jordan,
+
+We'd like to invite you to interview for the Data Science Analyst Intern position at Vantage Analytics.
+
+This will be a technical interview over Zoom, 45 minutes, with one of our data scientists. We'll cover statistics fundamentals and your understanding of machine learning at a conceptual level — nothing requiring you to write code live, but be ready to explain your reasoning clearly.
+
+Details:
+- Format: Video call (Zoom), technical interview
+- Duration: 45 minutes
+- Date: Friday 12th July, 1:00pm BST
+
+Let us know if you need to reschedule.
+
+Thanks,
+Vantage Analytics Recruiting

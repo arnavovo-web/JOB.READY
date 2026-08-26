@@ -1,0 +1,24 @@
+{
+  "sector": "general_graduate_scheme",
+  "knowledgeDomainId": null,
+  "expectDomainMatch": false,
+  "expect": {
+    "company": "Kestrel Group",
+    "company_source": "explicit",
+    "role": "Graduate Programme",
+    "role_source": "explicit",
+    "division": "",
+    "stage": "first_round",
+    "stage_source": "explicit",
+    "format": "live_conversational",
+    "format_source": "explicit",
+    "duration_minutes": 30,
+    "components": ["motivation_fit", "behavioural_competency"]
+  },
+  "optionalFields": ["division", "team", "date", "time", "location", "role"],
+  "topicsMustInclude": [],
+  "topicsMustNotInclude": [
+    "investment banking", "consulting", "software engineer", "data scientist", "product manager", "marketing", "audit"
+  ],
+  "knowledgeLayer": { "pipeline": "adaptive_turn", "categoryToTest": "behavioural_competency", "shouldActivate": false }
+}

@@ -1,0 +1,17 @@
+Subject: Ferro Dynamics — Software Engineering Intern Live Coding Interview
+
+Hi Jordan,
+
+You've made it to the next stage for the Software Engineering Intern position at Ferro Dynamics — a live coding interview.
+
+This round is 90 minutes on a shared coding platform (CoderPad) with two of our engineers watching and asking questions as you go. It's focused purely on coding and problem solving — you'll write real, running code rather than just describing an approach. We don't require any particular programming language; use whichever you're most comfortable with.
+
+Details:
+- Format: Live coding interview (CoderPad, video call)
+- Duration: 90 minutes
+- Date: Tuesday 5th August, 11:00am BST
+
+Please make sure you can share your screen and that CoderPad works in your browser ahead of time.
+
+Best,
+Ferro Dynamics Talent Team

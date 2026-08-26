@@ -1,0 +1,24 @@
+{
+  "sector": "sales_and_trading",
+  "knowledgeDomainId": "sales_and_trading",
+  "expectDomainMatch": true,
+  "expect": {
+    "company": "Northbridge Markets",
+    "company_source": "explicit",
+    "role": "Global Markets Summer Analyst",
+    "role_source": "explicit",
+    "division": "Sales & Trading",
+    "stage": "technical",
+    "stage_source": "explicit",
+    "format": "technical",
+    "format_source": "explicit",
+    "duration_minutes": 45,
+    "components": ["technical_functional"]
+  },
+  "optionalFields": ["division", "team", "date", "time", "location"],
+  "topicsMustInclude": ["fixed income", "market making"],
+  "topicsMustNotInclude": [
+    "black-scholes", "duration and convexity", "yield curve construction", "options greeks"
+  ],
+  "knowledgeLayer": { "pipeline": "adaptive_turn", "categoryToTest": "technical_functional", "shouldActivate": true }
+}

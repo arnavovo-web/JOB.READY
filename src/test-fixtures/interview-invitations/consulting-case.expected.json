@@ -1,0 +1,24 @@
+{
+  "sector": "consulting",
+  "knowledgeDomainId": "consulting",
+  "expectDomainMatch": true,
+  "expect": {
+    "company": "Arden & Co Consulting",
+    "company_source": "explicit",
+    "role": "Summer Associate Consultant",
+    "role_source": "explicit",
+    "division": "Management Consulting",
+    "stage": "first_round",
+    "stage_source": "explicit",
+    "format": "live_conversational",
+    "format_source": "explicit",
+    "duration_minutes": 60,
+    "components": ["situational_judgement"]
+  },
+  "optionalFields": ["division", "team", "date", "time", "location"],
+  "topicsMustInclude": ["case"],
+  "topicsMustNotInclude": [
+    "mece", "profitability framework", "market sizing framework", "porter's five forces", "3 c framework"
+  ],
+  "knowledgeLayer": { "pipeline": "adaptive_turn", "categoryToTest": "situational_judgement", "shouldActivate": true }
+}

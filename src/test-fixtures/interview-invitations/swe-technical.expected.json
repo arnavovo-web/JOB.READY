@@ -1,0 +1,24 @@
+{
+  "sector": "software_engineering",
+  "knowledgeDomainId": "software_engineering",
+  "expectDomainMatch": true,
+  "expect": {
+    "company": "Solstice Technologies",
+    "company_source": "explicit",
+    "role": "Software Engineer Intern",
+    "role_source": "explicit",
+    "division": "",
+    "stage": "technical",
+    "stage_source": "explicit",
+    "format": "technical",
+    "format_source": "explicit",
+    "duration_minutes": 60,
+    "components": ["technical_functional"]
+  },
+  "optionalFields": ["division", "team", "date", "time", "location"],
+  "topicsMustInclude": ["data structures", "algorithms"],
+  "topicsMustNotInclude": [
+    "big-o", "dynamic programming", "system design", "leetcode", "graph traversal"
+  ],
+  "knowledgeLayer": { "pipeline": "adaptive_turn", "categoryToTest": "technical_functional", "shouldActivate": true }
+}

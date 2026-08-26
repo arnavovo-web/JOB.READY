@@ -1,0 +1,25 @@
+{
+  "sector": "investment_banking",
+  "knowledgeDomainId": "investment_banking",
+  "expectDomainMatch": true,
+  "expect": {
+    "company": "Cavendish Capital Partners",
+    "company_source": "explicit",
+    "role": "Investment Banking Summer Analyst",
+    "role_source": "explicit",
+    "division": "M&A Advisory",
+    "stage": "technical",
+    "stage_source": "explicit",
+    "format": "technical",
+    "format_source": "explicit",
+    "duration_minutes": 45,
+    "components": ["technical_functional"]
+  },
+  "optionalFields": ["division", "team", "date", "time", "location"],
+  "topicsMustInclude": ["accounting", "valuation"],
+  "topicsMustNotInclude": [
+    "dcf", "discounted cash flow", "three financial statements", "three statement",
+    "accretion", "dilution", "lbo", "comparable company analysis", "excel model"
+  ],
+  "knowledgeLayer": { "pipeline": "adaptive_turn", "categoryToTest": "technical_functional", "shouldActivate": true }
+}

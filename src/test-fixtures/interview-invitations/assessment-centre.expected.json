@@ -1,0 +1,25 @@
+{
+  "sector": "assessment_centre",
+  "knowledgeDomainId": null,
+  "expectDomainMatch": false,
+  "expect": {
+    "company": "Harrow Partners",
+    "company_source": "explicit",
+    "role": "Graduate Analyst",
+    "role_source": "explicit",
+    "division": "",
+    "stage": ["unknown", "first_round", "final_round"],
+    "stage_source": ["unknown", "explicit", "inferred"],
+    "format": ["unknown", "live_conversational"],
+    "format_source": ["unknown", "explicit", "inferred"],
+    "duration_minutes": 240,
+    "components": ["behavioural_competency", "situational_judgement"]
+  },
+  "optionalFields": ["division", "team", "date", "time", "location", "duration_minutes", "components"],
+  "topicsMustInclude": [],
+  "topicsMustNotInclude": [
+    "dcf", "coding", "leetcode", "case interview framework"
+  ],
+  "notes": "An assessment centre day does not map cleanly onto any single canonical interview stage/format — this fixture intentionally allows several defensible outcomes. It must NEVER be misclassified as a HireVue-style asynchronous_video interview, and the scanner must never attempt to build a dedicated Assessment Centre exercise (that is a separate, untouched engine).",
+  "knowledgeLayer": { "pipeline": "adaptive_turn", "categoryToTest": "situational_judgement", "shouldActivate": false }
+}

@@ -1,0 +1,17 @@
+Subject: Ferro Dynamics — First Interview (Software Engineering New Grad)
+
+Hi Jordan,
+
+Thanks for applying to the Software Engineering New Grad role at Ferro Dynamics. We'd like to invite you to your first interview.
+
+This will be a single 75-minute video call combining two parts: a short coding exercise where you'll solve a problem together with the interviewer, and a set of behavioural questions about how you've worked in a team. Both parts happen in the same call with the same interviewer.
+
+Details:
+- Format: Video call
+- Duration: 75 minutes
+- Date: Monday 22nd July, 10:00am BST
+
+Please have a code editor ready to share your screen.
+
+Thanks,
+Ferro Dynamics Talent Team

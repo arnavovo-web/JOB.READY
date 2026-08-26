@@ -1,0 +1,24 @@
+{
+  "sector": "consulting",
+  "knowledgeDomainId": "consulting",
+  "expectDomainMatch": true,
+  "expect": {
+    "company": "Arden & Co Consulting",
+    "company_source": "explicit",
+    "role": "Summer Associate Consultant",
+    "role_source": "explicit",
+    "division": "Management Consulting",
+    "stage": "recruiter_screen",
+    "stage_source": "explicit",
+    "format": "live_conversational",
+    "format_source": "explicit",
+    "duration_minutes": 20,
+    "components": ["motivation_fit", "behavioural_competency"]
+  },
+  "optionalFields": ["division", "team", "date", "time", "location"],
+  "topicsMustInclude": [],
+  "topicsMustNotInclude": [
+    "case", "case study", "mece", "profitability framework", "market sizing"
+  ],
+  "knowledgeLayer": { "pipeline": "adaptive_turn", "categoryToTest": "behavioural_competency", "shouldActivate": false }
+}

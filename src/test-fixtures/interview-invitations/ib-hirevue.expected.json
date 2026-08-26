@@ -1,0 +1,24 @@
+{
+  "sector": "investment_banking",
+  "knowledgeDomainId": "investment_banking",
+  "expectDomainMatch": true,
+  "expect": {
+    "company": "Cavendish Capital Partners",
+    "company_source": "explicit",
+    "role": "Investment Banking Analyst",
+    "role_source": "explicit",
+    "division": "",
+    "stage": "recruiter_screen",
+    "stage_source": ["explicit", "inferred"],
+    "format": "asynchronous_video",
+    "format_source": "explicit",
+    "duration_minutes": { "min": 30, "max": 60 },
+    "components": ["behavioural_competency", "motivation_fit"]
+  },
+  "optionalFields": ["division", "team", "date", "time", "location", "duration_minutes", "stage_source"],
+  "topicsMustInclude": [],
+  "topicsMustNotInclude": [
+    "dcf", "valuation", "financial modelling", "accounting", "technical", "excel"
+  ],
+  "knowledgeLayer": { "pipeline": "independent_batch", "categoryToTest": "technical_functional", "shouldActivate": false }
+}

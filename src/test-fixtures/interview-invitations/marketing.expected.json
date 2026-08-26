@@ -1,0 +1,24 @@
+{
+  "sector": "marketing",
+  "knowledgeDomainId": "marketing",
+  "expectDomainMatch": true,
+  "expect": {
+    "company": "Lumen Brands",
+    "company_source": "explicit",
+    "role": "Marketing Graduate",
+    "role_source": "explicit",
+    "division": "",
+    "stage": "first_round",
+    "stage_source": "explicit",
+    "format": "live_conversational",
+    "format_source": "explicit",
+    "duration_minutes": 40,
+    "components": ["behavioural_competency", "situational_judgement"]
+  },
+  "optionalFields": ["division", "team", "date", "time", "location"],
+  "topicsMustInclude": [],
+  "topicsMustNotInclude": [
+    "4ps", "brand positioning framework", "customer acquisition cost", "seo", "google analytics"
+  ],
+  "knowledgeLayer": { "pipeline": "adaptive_turn", "categoryToTest": "situational_judgement", "shouldActivate": true }
+}

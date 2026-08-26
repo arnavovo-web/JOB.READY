@@ -1,0 +1,24 @@
+{
+  "sector": "private_equity",
+  "knowledgeDomainId": "private_equity",
+  "expectDomainMatch": true,
+  "expect": {
+    "company": "Highfield Equity Partners",
+    "company_source": "explicit",
+    "role": "Private Equity Summer Analyst",
+    "role_source": "explicit",
+    "division": "",
+    "stage": "final_round",
+    "stage_source": "explicit",
+    "format": ["technical", "live_conversational"],
+    "format_source": ["explicit", "inferred"],
+    "duration_minutes": 90,
+    "components": ["technical_functional", "situational_judgement"]
+  },
+  "optionalFields": ["division", "team", "date", "time", "location", "format", "format_source", "components"],
+  "topicsMustInclude": ["portfolio company"],
+  "topicsMustNotInclude": [
+    "lbo model", "leveraged buyout model", "irr calculation", "waterfall", "debt paydown", "exit multiple"
+  ],
+  "knowledgeLayer": { "pipeline": "adaptive_turn", "categoryToTest": "technical_functional", "shouldActivate": true }
+}

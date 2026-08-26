@@ -1,0 +1,24 @@
+{
+  "sector": "accounting",
+  "knowledgeDomainId": "accounting",
+  "expectDomainMatch": true,
+  "expect": {
+    "company": "Baxter Fielding LLP",
+    "company_source": "explicit",
+    "role": "Audit Associate",
+    "role_source": "explicit",
+    "division": "",
+    "stage": "technical",
+    "stage_source": "explicit",
+    "format": "technical",
+    "format_source": "explicit",
+    "duration_minutes": 45,
+    "components": ["technical_functional"]
+  },
+  "optionalFields": ["division", "team", "date", "time", "location"],
+  "topicsMustInclude": ["audit", "financial statements"],
+  "topicsMustNotInclude": [
+    "revenue recognition", "materiality threshold", "gaas", "going concern", "internal controls testing"
+  ],
+  "knowledgeLayer": { "pipeline": "adaptive_turn", "categoryToTest": "technical_functional", "shouldActivate": true }
+}

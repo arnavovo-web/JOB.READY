@@ -1,0 +1,24 @@
+{
+  "sector": "data_science",
+  "knowledgeDomainId": "data_science",
+  "expectDomainMatch": true,
+  "expect": {
+    "company": "Vantage Analytics",
+    "company_source": "explicit",
+    "role": "Data Science Analyst Intern",
+    "role_source": "explicit",
+    "division": "",
+    "stage": "technical",
+    "stage_source": "explicit",
+    "format": "technical",
+    "format_source": "explicit",
+    "duration_minutes": 45,
+    "components": ["technical_functional"]
+  },
+  "optionalFields": ["division", "team", "date", "time", "location"],
+  "topicsMustInclude": ["statistics", "machine learning"],
+  "topicsMustNotInclude": [
+    "p-value", "regression", "neural network", "gradient descent", "sql query"
+  ],
+  "knowledgeLayer": { "pipeline": "adaptive_turn", "categoryToTest": "technical_functional", "shouldActivate": true }
+}

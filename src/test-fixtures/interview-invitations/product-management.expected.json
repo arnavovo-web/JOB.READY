@@ -1,0 +1,24 @@
+{
+  "sector": "product_management",
+  "knowledgeDomainId": "product_management",
+  "expectDomainMatch": true,
+  "expect": {
+    "company": "Meridian Software",
+    "company_source": "explicit",
+    "role": "Associate Product Manager",
+    "role_source": "explicit",
+    "division": "",
+    "stage": "first_round",
+    "stage_source": "explicit",
+    "format": "live_conversational",
+    "format_source": "explicit",
+    "duration_minutes": 45,
+    "components": ["behavioural_competency", "situational_judgement"]
+  },
+  "optionalFields": ["division", "team", "date", "time", "location"],
+  "topicsMustInclude": [],
+  "topicsMustNotInclude": [
+    "a/b testing", "rice scoring", "product roadmap prioritization framework", "sql", "wireframe"
+  ],
+  "knowledgeLayer": { "pipeline": "adaptive_turn", "categoryToTest": "situational_judgement", "shouldActivate": true }
+}
