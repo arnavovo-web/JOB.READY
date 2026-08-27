@@ -36,6 +36,15 @@ import {
   CANONICAL_STAGE_KEYS, resolveInvitationIdentity, deriveQuestionMixSignal,
   recommendedQuestionMixTypes, questionMixSignalSummary, buildCanonicalInterviewConfig,
 } from "./invitationScannerResolve";
+// Phase 13A: Application Intelligence — a shared, deterministic layer that answers
+// "what appears to matter for THIS application, using ONLY user-provided information".
+// Assembled (no new AI call) from the SAME interview_profile extraction + the invitation
+// scanner's output, persisted on the application, and read back by interviews/Classroom.
+// It provides context/priorities only — it never touches the scheduler or the Knowledge
+// Layer gate (see the module's own docstring).
+import {
+  buildApplicationIntelligence, validateApplicationIntelligence, applicationIntelligenceLessonContext,
+} from "./applicationIntelligence";
 // Phase 2C.3: the live adaptive interview's deterministic scheduler wiring.
 // submitAnswer/regenerateNextQuestion never compute a category, turn type,
 // anchor source, or competency themselves — every one of those decisions
@@ -353,6 +362,20 @@ export function validateProfile(p) {
     opening_question: {
       text: str(p.opening_question?.text, "Tell me about yourself and why you're interested in this role."),
       category: mapLegacyCategory(str(p.opening_question?.category, "motivation_fit")), competency: str(p.opening_question?.competency),
+    },
+    // Phase 13A: optional application-intelligence block on the SAME response. Defensive
+    // coercion only — the deterministic assembler (buildApplicationIntelligence) and its
+    // verbatim-evidence cross-check are what actually guard against hallucinated company
+    // values; a missing/malformed block here just yields fewer themes, never a crash.
+    application_intelligence: {
+      company_themes: arr(p.application_intelligence?.company_themes)
+        .map((t) => ({ theme: str(t?.theme).slice(0, 200), evidence: str(t?.evidence).slice(0, 300) }))
+        .filter((t) => t.theme).slice(0, 12),
+      role_themes: arr(p.application_intelligence?.role_themes)
+        .map((t) => ({ theme: str(t?.theme).slice(0, 200), evidence: str(t?.evidence).slice(0, 300) }))
+        .filter((t) => t.theme).slice(0, 12),
+      company_context_strength: ["strong", "moderate", "weak"].includes(p.application_intelligence?.company_context_strength) ? p.application_intelligence.company_context_strength : "weak",
+      role_context_strength: ["strong", "moderate", "weak"].includes(p.application_intelligence?.role_context_strength) ? p.application_intelligence.role_context_strength : "weak",
     },
   };
 }
@@ -1095,6 +1118,10 @@ async function loadFullUserState(userId) {
     date: new Date(a.created_at).getTime(),
     jobDescription: a.job_description || "",
     stageLabel: a.interview_stage || null, formatLabel: a.interview_type || null,
+    // Phase 13A: survives reload for returning users. validateApplicationIntelligence returns
+    // null for a legacy application that has nothing stored (or a DB without the column) —
+    // every downstream reader treats null as "no intelligence yet".
+    applicationIntelligence: validateApplicationIntelligence(a.application_intelligence),
   }));
   let reportsByInterview = new Map();
   if (interviewsRaw.length) {
@@ -2700,7 +2727,17 @@ function App() {
   "grounding_note": ""
 }
 Rules: mini study guide, not an essay. core_knowledge 3-5 points, key_points 3-5, quick_check 2-3 questions with 3-4 options each. "grounded" is true only for points you are confident are accurate and current; mark false for general guidance and never present an unverified company fact as confirmed. If you can't establish reliable specifics, say so in grounding_note and stay general. example_answer_snippet shows how to use the knowledge, not fabricated achievements. Match depth to the candidate's level given.`;
-      const userText = `Weakness topic: ${topic.topic}\nCategory: ${topic.category}\nWeakness as identified: ${topic.description}\nCompany: ${topic.company}\nRole: ${topic.role}\nRelated interview question: ${topic.relatedQuestion || "n/a"}\nCandidate level: ${candidateLevel()}\n\n${wantsWeb ? "This likely requires real, current, company-specific or market information — use web search to verify facts before teaching them." : "General interview-technique or subject-matter topic; no need to search."}`;
+      // Phase 13A: minimal, read-only Application Intelligence integration — append the
+      // EVIDENCE-BACKED application context (verbatim quotes from the user's OWN materials
+      // only) to this EXISTING lesson call. No new AI call, no schema change; empty string
+      // when the application has no intelligence or only weak context, so legacy applications
+      // and generic topics are completely unaffected.
+      const lessonAppIntel = applications.find((a) => a.id === topic.applicationId)?.applicationIntelligence || null;
+      const lessonDimension = /technical|role_specific/.test(topic.category) ? "technical"
+        : /behav/.test(topic.category) ? "behavioural"
+        : /company|commercial|motivat/.test(topic.category) ? "motivational" : undefined;
+      const appIntelContext = applicationIntelligenceLessonContext(lessonAppIntel, { dimension: lessonDimension });
+      const userText = `Weakness topic: ${topic.topic}\nCategory: ${topic.category}\nWeakness as identified: ${topic.description}\nCompany: ${topic.company}\nRole: ${topic.role}\nRelated interview question: ${topic.relatedQuestion || "n/a"}\nCandidate level: ${candidateLevel()}${appIntelContext}\n\n${wantsWeb ? "This likely requires real, current, company-specific or market information — use web search to verify facts before teaching them." : "General interview-technique or subject-matter topic; no need to search."}`;
       // ROOT-CAUSE FIX (found via live testing 2026-08-21): when wantsWeb is true, Anthropic's
       // web_search tool runs its search+reasoning round-trip inside the SAME max_tokens budget
       // as the final answer. 2200 tokens was enough for the search step alone, leaving nothing
@@ -2988,9 +3025,16 @@ Rules: mini study guide, not an essay. core_knowledge 3-5 points, key_points 3-5
     "skills": [""], "behavioural_examples": [""],
     "potential_probe_areas": [{"claim": "", "why": ""}]
   },
+  "application_intelligence": {
+    "company_themes": [{"theme": "", "evidence": ""}],
+    "role_themes": [{"theme": "", "evidence": ""}],
+    "company_context_strength": "strong|moderate|weak",
+    "role_context_strength": "strong|moderate|weak"
+  },
   "opening_question": { "text": "", "category": "motivation_fit|cv_behavioural|role_specific|technical|commercial_awareness", "competency": "" }
 }
-Rules: "basis" must honestly mark whether each competency is explicitly stated in the JD, reasonably inferred, or just generally expected for this role type. question_mix percentages sum to 100 and reflect the actual role type. potential_probe_areas should point at specific claims worth challenging. opening_question must be natural and specific, not generic. jd_requirements should list distinct requirements actually evidenced in the job description — "evidence_quote" must be an exact short quote copied verbatim from the job description text (not a paraphrase or summary), "confidence" follows the same explicit/inferred/general distinction as competencies' basis, and "occurrences" is how many times this requirement (or a clear restatement of it) appears in the job description text.`;
+Rules: "basis" must honestly mark whether each competency is explicitly stated in the JD, reasonably inferred, or just generally expected for this role type. question_mix percentages sum to 100 and reflect the actual role type. potential_probe_areas should point at specific claims worth challenging. opening_question must be natural and specific, not generic. jd_requirements should list distinct requirements actually evidenced in the job description — "evidence_quote" must be an exact short quote copied verbatim from the job description text (not a paraphrase or summary), "confidence" follows the same explicit/inferred/general distinction as competencies' basis, and "occurrences" is how many times this requirement (or a clear restatement of it) appears in the job description text.
+"application_intelligence" captures what THIS specific application appears to prioritise, using ONLY the company/role/job-description-and-application-context/invitation material provided above — never outside knowledge, never assumed company values. "company_themes" = themes, culture, values or programme characteristics the material EXPLICITLY states about this company; each "evidence" MUST be an exact verbatim quote from the provided text. If the material gives nothing company-specific beyond the name, return "company_themes": [] and "company_context_strength": "weak" — do NOT invent plausible-sounding values. "role_themes" = what the role itself is about (responsibilities, focus areas) with verbatim "evidence" where possible. "*_context_strength" is your honest read of how much genuine company-/role-specific detail the material contains.`;
 
       const stageLabel = stageByKey(ivConfig.stage).label;
       const formatLabel = INTERVIEW_FORMATS[ivConfig.format].label;
@@ -3028,6 +3072,22 @@ Rules: "basis" must honestly mark whether each competency is explicitly stated i
       const jdProfile = buildJdProfile(result.interview_profile.jd_requirements, cleanJd);
       const methodologyDistribution = computeMethodologyDistribution(ivConfig.stage, jdProfile);
 
+      // Phase 13A: assemble Application Intelligence from data ALREADY extracted by the call
+      // above (+ the invitation scanner's output when this was an invitation build). No new AI
+      // call, no web search. Deterministic: it provides context/priorities only and never
+      // touches the scheduler or the Knowledge Layer gate. Persisted on the application row
+      // and mirrored to local state so interviews/Classroom read it back without re-analysing.
+      let applicationIntelligence = null;
+      try {
+        applicationIntelligence = buildApplicationIntelligence({
+          applicationId,
+          company: cleanCompany, role: cleanRole, jdText: cleanJd,
+          interviewProfile: result.interview_profile,
+          aiBlock: result.application_intelligence,
+          invitationDraft: buildMethod === "invitation" ? invitationDraft : null,
+        });
+      } catch (aiErr) { console.error("application intelligence build failed:", aiErr.message); }
+
       // Phase 11: the opening question comes from the AI call above, which can still return a
       // type the user excluded. When the Question Mix restricts the interview, clamp the
       // opening question's category onto the scheduler's OWN deterministic first-turn choice
@@ -3042,11 +3102,15 @@ Rules: "basis" must honestly mark whether each competency is explicitly stated i
       await dbUpdateApplication(applicationId, {
         job_description: cleanJd, interview_stage: stageLabel, interview_type: formatLabel, interview_length: length, status: "active",
         jd_profile: jdProfile, jd_profile_hash: hashText(cleanJd),
+        // Phase 13A: additive JSONB column on `applications`. dbUpdateApplication swallows
+        // errors, so an older DB without this column simply keeps null here (legacy-safe) —
+        // downstream treats null as "not analysed yet" and degrades gracefully.
+        application_intelligence: applicationIntelligence,
       });
       // Phase 4 (returning-user continuity): mirror the same fields onto local `applications`
       // state so this application's card reflects "active" + its stage/JD immediately, without
       // waiting for a reload — same rationale as confirmCompanyRole's own update above.
-      setApplications((prev) => prev.map((a) => (a.id === applicationId ? { ...a, status: "active", jobDescription: cleanJd, stageLabel, formatLabel } : a)));
+      setApplications((prev) => prev.map((a) => (a.id === applicationId ? { ...a, status: "active", jobDescription: cleanJd, stageLabel, formatLabel, applicationIntelligence } : a)));
       const ivRow = await dbCreateInterview(user.id, applicationId, ivConfig, methodologyDistribution);
 
       // Phase 2D: seed newly-extracted CV claims into persistent candidate_claims — reuses
@@ -4324,14 +4388,19 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                 {buildMethod === "invitation" ? "Paste the job description if you have one, or upload a file. Optional — your interview invitation already gave us a head start." : "Paste the job description, or upload a file."}
               </p>
               <Card style={{ padding: 22 }}>
-                <div className="flex items-center justify-between mb-3">
-                  <div className="flex items-center gap-2" style={{ color: "var(--text-faint)", fontSize: 12 }}><Upload size={13} /> Paste text, or upload .txt / .docx / .pdf</div>
+                <div className="flex items-center justify-between mb-2">
+                  <label htmlFor="jd-context-input" style={{ fontSize: 13, fontWeight: 700, color: "var(--navy)" }}>Job Description &amp; Application Context</label>
                   <label style={{ fontSize: 12, fontWeight: 600, color: fileBusy === "jd" ? "var(--text-faint)" : "var(--blue)", cursor: fileBusy === "jd" ? "default" : "pointer" }}>
                     {fileBusy === "jd" ? "Processing..." : "Upload file"}
                     <input disabled={fileBusy === "jd"} type="file" accept=".txt,.docx,.pdf,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" style={{ display: "none" }} onChange={(e) => handleFileUpload(e, "jd")} />
                   </label>
                 </div>
-                <textarea aria-label="Job description" value={jdText} onChange={(e) => setJdText(e.target.value)} placeholder="Paste the job description here"
+                <p id="jd-context-help" style={{ fontSize: 12.5, color: "var(--text-dim)", margin: "0 0 10px", lineHeight: 1.5 }}>
+                  Include as much detail as possible about the company, role and requirements. This helps JOB.READY personalise your interview questions and development recommendations.
+                </p>
+                <div className="flex items-center gap-2" style={{ color: "var(--text-faint)", fontSize: 11.5, marginBottom: 8 }}><Upload size={12} /> Paste text, or upload .txt / .docx / .pdf</div>
+                <textarea id="jd-context-input" aria-label="Job Description and Application Context" aria-describedby="jd-context-help" value={jdText} onChange={(e) => setJdText(e.target.value)}
+                  placeholder="Paste the job description and any other relevant information about the company, role, programme or requirements..."
                   style={{ width: "100%", height: 220, padding: 13, border: "1.5px solid var(--border)", borderRadius: "var(--radius-sm)", fontSize: 13.5, lineHeight: 1.5, fontFamily: "var(--font)" }} />
               </Card>
               {error && <div style={{ color: "var(--bad)", fontSize: 13, marginTop: 12 }}>{error}</div>}
