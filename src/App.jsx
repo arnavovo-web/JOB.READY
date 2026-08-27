@@ -18,6 +18,16 @@ import {
   CATEGORIES, mapLegacyCategory, mapCategoryWithLegacyFallback, normalizeCategoryMix,
   BATCH_ANCHOR_SOURCES, computeMethodologyDistribution,
 } from "./methodology";
+// Phase 11: user-controlled Question Mix — a pure, deterministic constraint layer.
+// The user's selection on the Build Interview screen is a HARD permission boundary:
+// it filters which canonical categories the EXISTING scheduler may use (via
+// applyQuestionMixToDistribution feeding effectiveMethodologyDistribution) and gates
+// whether the Technical Knowledge Layer may operate at all (isTechnicalMixEnabled ->
+// buildQuestionGenerationPrompt). It never picks a category/turn/anchor itself.
+import {
+  QUESTION_MIX_OPTIONS, normalizeQuestionMix, questionMixIsValid, questionMixRestricts,
+  isTechnicalMixEnabled, applyQuestionMixToDistribution, resolveAllowedCategories, resolveOpeningCategory,
+} from "./questionMix";
 // Phase 2C.3: the live adaptive interview's deterministic scheduler wiring.
 // submitAnswer/regenerateNextQuestion never compute a category, turn type,
 // anchor source, or competency themselves — every one of those decisions
@@ -740,6 +750,11 @@ export function buildQuestionGenerationPrompt(genInput, interview, profile, cand
       const domain = resolveKnowledgeDomain(profile?.interview_profile);
       knowledgeGuidance = buildKnowledgeGuidance({
         domain, category: gi.category, pipeline: interview?.config?.pipeline,
+        // Phase 11: the Technical Knowledge Layer may operate ONLY when the user's
+        // Question Mix (persisted on config) includes "Technical Knowledge". `false`
+        // makes it completely unavailable regardless of role/JD/domain/stage; a legacy
+        // interview with no question_mix resolves to true (pre-Phase-11 behaviour).
+        technicalMixEnabled: isTechnicalMixEnabled(interview?.config?.question_mix),
         // Phase 9: the interview's own resolved stage/format now narrow concept
         // applicability (a concept may opt in to applicableStages/applicableFormats).
         // Both are read straight off the already-persisted config — no new state.
@@ -909,7 +924,13 @@ export function isInterviewComplete(transcriptLength, maxQuestions) {
 // distribution). Shared by submitAnswer's live path and reconstructSchedulerDecision's
 // recovery path so the two can never compute a different distribution for the same interview.
 export function effectiveMethodologyDistribution(interview) {
-  return interview?.methodologyDistribution || computeMethodologyDistribution(interview?.config?.stage, null);
+  const base = interview?.methodologyDistribution || computeMethodologyDistribution(interview?.config?.stage, null);
+  // Phase 11: the user's Question Mix is a hard filter on the distribution the scheduler
+  // sees — disallowed categories are zeroed and the rest renormalised to 100, so
+  // methodology.js's scheduleNextCategory (unchanged) can never pick a category the user
+  // didn't approve. A legacy interview with no config.question_mix (or one that permits all
+  // three types) gets the SAME object back, unchanged — pre-Phase-11 behaviour exactly.
+  return applyQuestionMixToDistribution(base, interview?.config?.question_mix);
 }
 
 export function computeRecoveryDecision({ interview, profile, priorTranscript, answeredEntry, legacyDecision, methodologyDistribution, candidateStrategy }) {
@@ -2192,6 +2213,10 @@ function App() {
   const [interviewStage, setInterviewStage] = useState("first_round"); // recruiter_screen | first_round | technical | final_round
   const [interviewFormat, setInterviewFormat] = useState(null); // null = use the stage's default format; only meaningful when the stage allows a choice
   const [length, setLength] = useState(12);
+  // Phase 11: the user's explicit Question Mix. Starts EMPTY — never pre-selected,
+  // never inferred from stage/role/JD. The user must pick >=1 before building.
+  const [questionMix, setQuestionMix] = useState({ technical: false, behavioural: false, motivational: false });
+  const questionMixSelected = normalizeQuestionMix(questionMix); // string[] | null
   const [jdText, setJdText] = useState("");
   const [cvText, setCvText] = useState("");
   const [focusWeaknesses, setFocusWeaknesses] = useState(false);
@@ -2671,6 +2696,7 @@ Rules: mini study guide, not an essay. core_knowledge 3-5 points, key_points 3-5
   function practiseThisWeakness(topic) {
     setCompany(topic.company); setRole(topic.role);
     setJdText(""); setCvText(""); setBuildMethod("jdcv");
+    setQuestionMix({ technical: false, behavioural: false, motivational: false }); // Phase 11: always an explicit choice
     setTargetTopic(topic.topic); setFocusWeaknesses(true); setApplicationId(null);
     setError(""); setWizardStep(1); setScreen("create");
   }
@@ -2688,6 +2714,9 @@ Rules: mini study guide, not an essay. core_knowledge 3-5 points, key_points 3-5
   function startCreateFlow(focusWeak = false) {
     setCompany(""); setRole(""); setJdText(""); setCvText(""); setBuildMethod("jdcv");
     setInvitationText(""); setInvitationDraft(null);
+    // Phase 11: the Question Mix must be an explicit choice every time — never carried over
+    // from a previous build, never pre-selected.
+    setQuestionMix({ technical: false, behavioural: false, motivational: false });
     setFocusWeaknesses(focusWeak); setTargetTopic(null); setApplicationId(null); setError(""); setScreen("create_choose");
   }
 
@@ -2842,6 +2871,18 @@ Rules: mini study guide, not an essay. core_knowledge 3-5 points, key_points 3-5
       const invitationKnowledgeContext = buildInvitationKnowledgeContext(invitationDraft);
       if (invitationKnowledgeContext) ivConfig.invitationContext = invitationKnowledgeContext;
     }
+    // Phase 11: persist the user's explicit Question Mix onto the config JSON blob (same
+    // additive, no-migration pattern as invitationContext above). This is a HARD constraint:
+    // effectiveMethodologyDistribution filters the scheduler's category universe to it, and
+    // the Technical Knowledge Layer is gated on it (isTechnicalMixEnabled). Defensive guard:
+    // analyseAndPlan is only reachable from the wizard's "Build my interview" button, which is
+    // disabled until >=1 type is selected — but never build an interview with no/invalid mix.
+    if (!questionMixIsValid(questionMixSelected)) {
+      setError("Choose at least one question type for your interview.");
+      setScreen("create"); setWizardStep(4);
+      return;
+    }
+    ivConfig.question_mix = questionMixSelected; // string[] of "technical"|"behavioural"|"motivational"
     try {
       const weaknessNote = targetTopic
         ? `The candidate came here specifically from a Classroom lesson to practise this exact weakness: "${targetTopic}". Weight the question plan heavily toward re-testing this specific competency — it should be tested more than once, with rising difficulty if the candidate does well.` +
@@ -2882,7 +2923,16 @@ Rules: "basis" must honestly mark whether each competency is explicitly stated i
       const jdBlock = cleanJd
         ? `Job description:\n${cleanJd}`
         : `Job description: none provided.${invitationContext ? " Rely on the interview invitation details below, plus general knowledge of this role type, division and stage." : ""}`;
-      const userText = `${weaknessNote}\n\nCompany: ${cleanCompany}\nRole: ${cleanRole}\nInterview stage: ${stageLabel}\nInterview format: ${formatLabel}${invitationContext}\n\n${jdBlock}\n\nCandidate CV:\n${cleanCv || "none provided."}`;
+      // Phase 11: tell the SAME interview_profile call (no new AI call) which question types
+      // the user explicitly chose, so the opening_question it proposes is already one of the
+      // allowed types. This is context only — App.jsx deterministically clamps the opening
+      // category below regardless of what the model returns, and the adaptive scheduler is
+      // constrained by effectiveMethodologyDistribution for every subsequent turn.
+      const QUESTION_MIX_PROMPT_LABEL = { technical: "technical knowledge", behavioural: "behavioural / competency", motivational: "motivational" };
+      const questionMixNote = questionMixRestricts(questionMixSelected)
+        ? `\n\nThe candidate has restricted this interview to these question types ONLY: ${questionMixSelected.map((t) => QUESTION_MIX_PROMPT_LABEL[t]).join(", ")}. The "opening_question" you propose MUST be one of those types — do not open with a type the candidate excluded, even if it would be normal for this stage.`
+        : "";
+      const userText = `${weaknessNote}\n\nCompany: ${cleanCompany}\nRole: ${cleanRole}\nInterview stage: ${stageLabel}\nInterview format: ${formatLabel}${invitationContext}${questionMixNote}\n\n${jdBlock}\n\nCandidate CV:\n${cleanCv || "none provided."}`;
       const result = validateProfile(await callClaude(system, userText, 3000, false, { requestType: "interview_profile", applicationId }));
 
       // Phase 2B: build the structured jd_profile (evidence-quote-verified
@@ -2895,6 +2945,17 @@ Rules: "basis" must honestly mark whether each competency is explicitly stated i
       // this is purely additive persistence.
       const jdProfile = buildJdProfile(result.interview_profile.jd_requirements, cleanJd);
       const methodologyDistribution = computeMethodologyDistribution(ivConfig.stage, jdProfile);
+
+      // Phase 11: the opening question comes from the AI call above, which can still return a
+      // type the user excluded. When the Question Mix restricts the interview, clamp the
+      // opening question's category onto the scheduler's OWN deterministic first-turn choice
+      // for the mix-filtered distribution (resolveOpeningCategory reuses scheduleNextCategory
+      // — never a bespoke pick). No effect when the mix permits all three types.
+      const clampedOpeningCategory = resolveOpeningCategory(methodologyDistribution, ivConfig.question_mix, length);
+      if (clampedOpeningCategory && mapLegacyCategory(result.opening_question.category) !== clampedOpeningCategory
+          && !resolveAllowedCategories(ivConfig.question_mix).has(mapLegacyCategory(result.opening_question.category))) {
+        result.opening_question.category = clampedOpeningCategory;
+      }
 
       await dbUpdateApplication(applicationId, {
         job_description: cleanJd, interview_stage: stageLabel, interview_type: formatLabel, interview_length: length, status: "active",
@@ -2943,7 +3004,13 @@ Rules: "basis" must honestly mark whether each competency is explicitly stated i
       // single-opening-question path (interview_turn generates the rest, one at a time).
       if (ivConfig.pipeline === "independent_batch") {
         const cvBackground = cvBackgroundSummary(result.candidate_profile);
-        const batch = await generateQuestionBatch(ivConfig, result.interview_profile, cvBackground, cleanJd, weaknessNote, { applicationId, interviewId: ivRow.id }, methodologyDistribution);
+        // Phase 11: the user's Question Mix constrains the async/batch pipeline too — it is the
+        // SAME Build Interview setting. The batch pipeline still never touches the Knowledge
+        // Layer (Phase 6 separation intact); this only filters the composition weights the
+        // existing buildQuestionBatchPrompt already consumes, so an excluded type is asked for
+        // as 0%. Identity for a legacy build or an all-three selection.
+        const batchDistribution = applyQuestionMixToDistribution(methodologyDistribution, ivConfig.question_mix);
+        const batch = await generateQuestionBatch(ivConfig, result.interview_profile, cvBackground, cleanJd, weaknessNote, { applicationId, interviewId: ivRow.id }, batchDistribution);
         if (!batch.questions.length) throw new Error("Couldn't generate the interview questions. Please try again.");
         const savedRows = await dbInsertQuestionBatch(ivRow.id, batch.questions, { prepSeconds: ivConfig.preparation_time, answerSeconds: ivConfig.answer_time });
         const questions = savedRows.map((row, i) => ({
@@ -3468,6 +3535,7 @@ Rules: scores computed honestly from the transcript's evaluations. Never fabrica
 
   function resetForNewInterview() {
     setCompany(""); setRole(""); setJdText(""); setCvText(""); setInterviewStage("first_round"); setInterviewFormat(null); setLength(12);
+    setQuestionMix({ technical: false, behavioural: false, motivational: false }); // Phase 11: always an explicit choice
     setProfile(null); setInterview(null); setReport(null); setError(""); setFocusWeaknesses(false); setWizardStep(1); setApplicationId(null);
     // Phase 7: same entry point as Dashboard's "New interview" (startCreateFlow) — offers the
     // same choice of input method rather than assuming JD/CV.
@@ -4260,6 +4328,54 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                   </>
                 )}
 
+                {/* Phase 11: user-controlled Question Mix — mandatory, multi-select, never pre-selected.
+                    Stage above provides context; this provides PERMISSION. */}
+                <div role="group" aria-labelledby="question-mix-label" aria-describedby="question-mix-help">
+                  <label id="question-mix-label" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Question Mix</label>
+                  <div id="question-mix-help" style={{ fontSize: 12.5, color: "var(--text-dim)", marginTop: 2, marginBottom: 8 }}>
+                    Select the types of questions you want in this interview. Choose one or more.
+                  </div>
+                  <div className="flex flex-col gap-2 mb-4">
+                    {QUESTION_MIX_OPTIONS.map((opt) => {
+                      const on = !!questionMix[opt.type];
+                      return (
+                        <button
+                          key={opt.type}
+                          role="checkbox"
+                          aria-checked={on}
+                          aria-label={opt.label}
+                          onClick={() => setQuestionMix((m) => ({ ...m, [opt.type]: !m[opt.type] }))}
+                          style={{
+                            textAlign: "left", padding: "12px 14px", borderRadius: "var(--radius-sm)", cursor: "pointer",
+                            display: "flex", gap: 12, alignItems: "flex-start",
+                            border: on ? "1.5px solid var(--blue)" : "1.5px solid var(--border)",
+                            background: on ? "var(--highlight)" : "#fff",
+                          }}
+                        >
+                          <span aria-hidden="true" style={{
+                            flexShrink: 0, width: 18, height: 18, marginTop: 1, borderRadius: 5,
+                            border: on ? "1.5px solid var(--blue)" : "1.5px solid var(--border)",
+                            background: on ? "var(--blue)" : "#fff",
+                            display: "flex", alignItems: "center", justifyContent: "center",
+                          }}>
+                            {on && <CheckCircle2 size={13} color="#fff" />}
+                          </span>
+                          <span>
+                            <span style={{ display: "block", fontSize: 14, fontWeight: 700, color: on ? "var(--blue)" : "var(--navy)" }}>{opt.label}</span>
+                            <span style={{ display: "block", fontSize: 12.5, color: "var(--text-dim)", marginTop: 2 }}>{opt.description}</span>
+                            <span style={{ display: "block", fontSize: 12, color: "var(--text-faint)", marginTop: 3 }}>{opt.example}</span>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {!questionMixSelected && (
+                    <div role="status" style={{ fontSize: 12.5, color: "var(--bad)", marginTop: -8, marginBottom: 12 }}>
+                      Select at least one question type before continuing.
+                    </div>
+                  )}
+                </div>
+
                 <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Length</label>
                 <div className="flex gap-2 mt-2">
                   {[["Short", 8], ["Standard", 12], ["Long", 18]].map(([l, v]) => (
@@ -4278,7 +4394,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
               {error && <div style={{ color: "var(--bad)", fontSize: 13, marginTop: 14 }}>{error}</div>}
               <div className="flex flex-wrap gap-3 mt-5">
                 <Btn variant="secondary" onClick={() => setWizardStep(3)}><ArrowLeft size={15} /> Back</Btn>
-                <Btn variant="accent" full onClick={() => guarded(analyseAndPlan)}>Build my interview <Sparkles size={16} /></Btn>
+                <Btn variant="accent" full disabled={!questionMixSelected} onClick={() => guarded(analyseAndPlan)}>Build my interview <Sparkles size={16} /></Btn>
               </div>
             </div>
             );

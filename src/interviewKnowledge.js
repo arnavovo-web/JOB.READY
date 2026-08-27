@@ -131,12 +131,19 @@ function basePriorityFor(concept) {
 
 // ---- 9.7 applicability gate ----------------------------------------
 /**
- * isKnowledgeLayerApplicable({ pipeline, category, domain })
+ * isKnowledgeLayerApplicable({ pipeline, category, domain, technicalMixEnabled })
  *
- * UNCHANGED from Phase 6. Three independent AND-ed conditions:
+ * AND-ed conditions (all must hold):
  *   - pipeline === "adaptive_turn" (a HireVue-style independent_batch
  *     interview never reaches here anyway — this is a second, explicit,
  *     independently-testable layer of the same protection).
+ *   - Phase 11: technicalMixEnabled !== false — i.e. the user's Question Mix
+ *     on the Build Interview screen INCLUDES "Technical Knowledge". Passing
+ *     `false` here makes the Technical Knowledge Layer completely
+ *     unavailable, regardless of role, JD, domain match or interview stage.
+ *     `undefined` (a caller that predates Phase 11, or a legacy interview
+ *     with no stored question_mix) is treated as enabled — pre-Phase-11
+ *     behaviour is preserved for those.
  *   - domain is a resolved domain object (null => no confident role/JD
  *     match => layer inert).
  *   - the SCHEDULER's own already-decided category (normalised through the
@@ -144,8 +151,9 @@ function basePriorityFor(concept) {
  *     eligible — never motivation_fit / behavioural_competency.
  * Deterministic, pure, explainable. Never throws.
  */
-export function isKnowledgeLayerApplicable({ pipeline, category, domain } = {}) {
+export function isKnowledgeLayerApplicable({ pipeline, category, domain, technicalMixEnabled } = {}) {
   if (pipeline !== "adaptive_turn") return false;
+  if (technicalMixEnabled === false) return false;
   if (!domain || !domain.id) return false;
   if (!KNOWLEDGE_ELIGIBLE_CATEGORIES.includes(mapLegacyCategory(category))) return false;
   return true;
@@ -433,7 +441,7 @@ function scoreConcept(concept, { domainId, domainLabel, normalizedCategory, cand
  * caller treats that identically to "no guidance".
  */
 export function selectKnowledgeConcepts({
-  domain, category, pipeline, stage, format,
+  domain, category, pipeline, stage, format, technicalMixEnabled,
   candidateState, jdRequirements, invitationContext, transcript, limit,
 } = {}) {
   const group = domainGroup(domain);
@@ -446,7 +454,7 @@ export function selectKnowledgeConcepts({
     concepts: [],
     excludedAskedThisInterview: [],
   };
-  if (!isKnowledgeLayerApplicable({ pipeline, category, domain })) return emptyResult;
+  if (!isKnowledgeLayerApplicable({ pipeline, category, domain, technicalMixEnabled })) return emptyResult;
 
   const normalizedCategory = mapLegacyCategory(category);
   const inv = normalizeInvitationContext(invitationContext);
@@ -515,13 +523,16 @@ export function selectKnowledgeConcepts({
  * selectKnowledgeConcepts so there is exactly one selection code path.
  * stage/format/invitationContext are all OPTIONAL: omitting them reproduces
  * Phase 6 behaviour (aside from the always-present empty misconceptions[]).
+ * Phase 11: `technicalMixEnabled: false` returns null unconditionally — the
+ * user's Question Mix did not include Technical Knowledge, so the layer is
+ * completely unavailable. `undefined` = enabled (legacy / pre-Phase-11).
  */
 export function buildKnowledgeGuidance({
-  domain, category, pipeline, stage, format,
+  domain, category, pipeline, stage, format, technicalMixEnabled,
   candidateState, transcript, jdRequirements, invitationContext,
 } = {}) {
   const selection = selectKnowledgeConcepts({
-    domain, category, pipeline, stage, format,
+    domain, category, pipeline, stage, format, technicalMixEnabled,
     candidateState, jdRequirements, invitationContext, transcript,
     limit: MAX_GUIDANCE_CONCEPTS,
   });
