@@ -810,8 +810,15 @@ export function buildQuestionGenerationPrompt(genInput, interview, profile, cand
   // to the first two reasons so the block stays compact and never grows with the
   // catalogue. Still a small RETRIEVED set (<= MAX_GUIDANCE_CONCEPTS), never the
   // full catalogue, and still explicitly one line per concept.
+  // Phase 10A: the target concept may carry <=2 concise "common misconceptions" the
+  // interviewer can probe for — one extra optional line, never a per-priority-concept
+  // list, so the block stays bounded regardless of how large the catalogue grows.
+  const targetMisconceptions = (knowledgeGuidance?.targetConcept?.misconceptions || []).slice(0, 2);
+  const misconceptionLine = targetMisconceptions.length
+    ? `\nCommon misconceptions to listen for (do not read these out): ${targetMisconceptions.join("; ")}.`
+    : "";
   const knowledgeBlock = knowledgeGuidance
-    ? `\nKNOWLEDGE GUIDANCE\nDomain: ${knowledgeGuidance.domainLabel}\nPriority concepts:\n${knowledgeGuidance.priorityConcepts.map((c, i) => `${i + 1}. ${c.label} — ${c.statusLabel}${c.reasons && c.reasons.length ? ` (${c.reasons.slice(0, 2).join("; ")})` : ""}`).join("\n")}\nCurrent target concept: ${knowledgeGuidance.targetConcept.label}\n${knowledgeGuidance.targetConcept.archetype}\nAsk this as a natural, conversational interview question in your own words. Do not reveal this internal taxonomy or these labels to the candidate. Do not mechanically copy the wording above verbatim.`
+    ? `\nKNOWLEDGE GUIDANCE\nDomain: ${knowledgeGuidance.domainLabel}\nPriority concepts:\n${knowledgeGuidance.priorityConcepts.map((c, i) => `${i + 1}. ${c.label} — ${c.statusLabel}${c.reasons && c.reasons.length ? ` (${c.reasons.slice(0, 2).join("; ")})` : ""}`).join("\n")}\nCurrent target concept: ${knowledgeGuidance.targetConcept.label}\n${knowledgeGuidance.targetConcept.archetype}${misconceptionLine}\nAsk this as a natural, conversational interview question in your own words. Do not reveal this internal taxonomy or these labels to the candidate. Do not mechanically copy the wording above verbatim.`
     : "";
   const system = `You are a real, professional interviewer conducting a live interview. You are NOT effusive or full of praise — you are neutral and probing. Return strict JSON only, no prose, in this exact shape:
 { "text": "", "competency": ""${anchorField} }

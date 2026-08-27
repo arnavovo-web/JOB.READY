@@ -325,3 +325,37 @@ describe("Phase 9: wiring is additive — no new AI call, no scheduler ownership
     expect(SOURCE).toMatch(/if \(invitationKnowledgeContext\) ivConfig\.invitationContext = invitationKnowledgeContext/);
   });
 });
+
+/* ================================================================== *
+ * PHASE 10A — MISCONCEPTIONS LINE IN THE PROMPT (EXECUTABLE + STRUCTURAL)
+ * ================================================================== */
+describe("Phase 10A: the target concept's misconceptions reach Call 2 as one bounded line, never a per-concept list", () => {
+  const genInput = { category: "technical_functional", turnType: "normal", anchorSource: null, questionNumber: 1 };
+
+  it("when the selected target concept carries misconceptions, a single 'Common misconceptions to listen for' line appears after the archetype", () => {
+    // ib_three_statements carries misconceptions and is the natural first target for a fresh IB technical turn.
+    const interview = { maxQuestions: 10, transcript: [], config: { pipeline: "adaptive_turn", stage: "first_round", format: "live_conversational" } };
+    const { system } = buildQuestionGenerationPrompt(genInput, interview, ibProfile, null, null, null);
+    expect(system).toMatch(/KNOWLEDGE GUIDANCE/);
+    const misMatch = system.match(/Common misconceptions to listen for \(do not read these out\): ([^\n]*)/);
+    expect(misMatch, "misconceptions line present").toBeTruthy();
+    // Bounded: at most two, joined by "; " — never a bullet list, never one per priority concept.
+    expect(misMatch[1].split(";").length).toBeLessThanOrEqual(2);
+    expect((system.match(/Common misconceptions to listen for/g) || []).length).toBe(1);
+  });
+
+  it("the misconceptions line sits AFTER 'Current target concept:' so the bounded priority-concepts block is unaffected", () => {
+    const interview = { maxQuestions: 10, transcript: [], config: { pipeline: "adaptive_turn", stage: "first_round", format: "live_conversational" } };
+    const { system } = buildQuestionGenerationPrompt(genInput, interview, ibProfile, null, null, null);
+    const listMatch = system.match(/Priority concepts:\n([\s\S]*?)\nCurrent target concept:/);
+    expect(listMatch).toBeTruthy();
+    expect(listMatch[1]).not.toMatch(/Common misconceptions/);
+    expect(listMatch[1].trim().split("\n").length).toBeLessThanOrEqual(4);
+  });
+
+  it("STRUCTURAL: the prompt surfaces misconceptions for the TARGET concept only — sliced to 2, never mapped over priorityConcepts", () => {
+    const FN_SRC = extractFunctionSource("export function buildQuestionGenerationPrompt(", "// §5: Call 2's response validator");
+    expect(FN_SRC).toMatch(/knowledgeGuidance\?\.targetConcept\?\.misconceptions \|\| \[\]\)\.slice\(0, 2\)/);
+    expect(FN_SRC).not.toMatch(/priorityConcepts\.map[\s\S]{0,120}misconception/i);
+  });
+});

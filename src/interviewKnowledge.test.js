@@ -122,7 +122,8 @@ describe("getDomainConcepts — flat-catalogue retrieval, category + optional st
     expect(concepts.length).toBeGreaterThan(0);
     expect(concepts.some((c) => c.id === "ib_three_statements")).toBe(true);
     expect(concepts.some((c) => c.id === "ib_dcf")).toBe(true);
-    expect(concepts.every((c) => c.domain === "investment_banking")).toBe(true);
+    // Every returned concept is either home to this domain OR explicitly shared into it (Phase 10A).
+    expect(concepts.every((c) => c.domain === "investment_banking" || (c.sharedWithDomains || []).includes("investment_banking"))).toBe(true);
     // Phase 6 backwards-compat alias.
     expect(concepts.every((c) => typeof c.topicLabel === "string")).toBe(true);
   });
@@ -378,7 +379,9 @@ describe("the Knowledge Infrastructure never assigns category / turn_type / anch
   it("buildKnowledgeGuidance output exposes only domainLabel / priorityConcepts / targetConcept", () => {
     const g = buildKnowledgeGuidance({ domain: IB_DOMAIN, category: "technical_functional", pipeline: "adaptive_turn", candidateState: null, transcript: [] });
     expect(Object.keys(g).sort()).toEqual(["domainLabel", "priorityConcepts", "targetConcept"]);
-    expect(Object.keys(g.targetConcept).sort()).toEqual(["archetype", "label"]);
+    // Phase 10A: targetConcept additionally carries `misconceptions` (always an array, may be empty).
+    expect(Object.keys(g.targetConcept).sort()).toEqual(["archetype", "label", "misconceptions"]);
+    expect(Array.isArray(g.targetConcept.misconceptions)).toBe(true);
   });
 });
 

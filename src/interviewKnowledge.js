@@ -215,6 +215,19 @@ function conceptMatchesInterviewContext(concept, stage, format) {
   return contextAllows(concept.applicableStages, stage) && contextAllows(concept.applicableFormats, format);
 }
 
+// ---- 10A.1 shared (multi-domain) concepts -------------------------
+// Phase 10A: a genuinely canonical concept (DCF, EV vs equity value, the
+// three statements, deferred tax...) can legitimately belong to more than
+// one domain's interview. Rather than duplicate it under a second id/label
+// (which would fragment Candidate State and risk near-duplicate drift), the
+// concept keeps ONE home `domain` plus an optional `sharedWithDomains` list.
+// A concept is "in" domain D when D is its home domain OR D is in that list.
+// question guidance can still differ per domain — see pickArchetype's
+// domainArchetypes handling below.
+function conceptInDomain(concept, domainId) {
+  return concept.domain === domainId || arr(concept.sharedWithDomains).includes(domainId);
+}
+
 /**
  * getDomainConcepts(domain, category, { stage, format } = {})
  *
@@ -229,7 +242,7 @@ export function getDomainConcepts(domain, category, { stage, format } = {}) {
   const normalizedCategory = mapLegacyCategory(category);
   const out = [];
   for (const concept of KNOWLEDGE_CONCEPTS) {
-    if (concept.domain !== domain.id) continue;
+    if (!conceptInDomain(concept, domain.id)) continue;
     if (!arr(concept.categories).includes(normalizedCategory)) continue;
     if (!conceptMatchesInterviewContext(concept, stage, format)) continue;
     out.push({ ...concept, topicLabel: str(concept.subdomain) });
@@ -321,10 +334,19 @@ function candidateStateContribution(concept, candidateState) {
   return { delta: strengthAdj + trendAdj, statusLabel, tests: info.tests, reason };
 }
 
-function pickArchetype(concept, testCount) {
-  const archetypes = arr(concept.archetypes).map((a) => str(a));
-  if (!archetypes.length) return `Ask a natural interview question testing "${concept.label}".`;
-  return archetypes[testCount % archetypes.length];
+// Phase 10A: a shared concept may carry domain-specific question guidance
+// (`domainArchetypes: { [domainId]: [...] }`) — e.g. DCF framed as "explain
+// the mechanics" for Investment Banking vs "evaluate the returns
+// implications" for Private Equity. When guidance exists for the interview's
+// domain it is used; otherwise the concept's default `archetypes` apply.
+// Nothing changes for a concept with no domainArchetypes (the vast majority).
+function pickArchetype(concept, testCount, domainId) {
+  const domainSpecific = concept.domainArchetypes && domainId
+    ? arr(concept.domainArchetypes[domainId]).map((a) => str(a)).filter(Boolean)
+    : [];
+  const pool = domainSpecific.length ? domainSpecific : arr(concept.archetypes).map((a) => str(a)).filter(Boolean);
+  if (!pool.length) return `Ask a natural interview question testing "${concept.label}".`;
+  return pool[testCount % pool.length];
 }
 
 function importanceLabel(concept) {
@@ -338,11 +360,13 @@ function importanceLabel(concept) {
  * Deterministic. Returns the full explainable record for one concept:
  *   { id, label, subdomain, importance, difficulty, priority, statusLabel,
  *     tests, reasons: string[], relatedConceptIds, prerequisiteConceptIds,
- *     archetype }
+ *     misconceptions: string[], archetype }
  * `priority` is the bounded [0,200] score; `reasons` explains every signal
- * that moved it.
+ * that moved it. `misconceptions` (Phase 10A, <=3, may be empty) are the
+ * concise "candidates commonly get this wrong" notes the prompt builder can
+ * surface for the target concept only.
  */
-function scoreConcept(concept, { domainLabel, normalizedCategory, candidateState, jdRequirements, inv }) {
+function scoreConcept(concept, { domainId, domainLabel, normalizedCategory, candidateState, jdRequirements, inv }) {
   const base = basePriorityFor(concept);
   const reasons = [`${importanceLabel(concept)} concept for ${domainLabel}`];
 
@@ -376,7 +400,8 @@ function scoreConcept(concept, { domainLabel, normalizedCategory, candidateState
     reasons,
     relatedConceptIds: arr(concept.relatedConceptIds).slice(),
     prerequisiteConceptIds: arr(concept.prerequisiteConceptIds).slice(),
-    archetype: pickArchetype(concept, cs.tests),
+    misconceptions: arr(concept.misconceptions).map((m) => str(m)).filter(Boolean).slice(0, 3),
+    archetype: pickArchetype(concept, cs.tests, domainId),
   };
 }
 
@@ -429,7 +454,7 @@ export function selectKnowledgeConcepts({
 
   const pool = KNOWLEDGE_CONCEPTS.filter(
     (c) =>
-      c.domain === domain.id &&
+      conceptInDomain(c, domain.id) &&
       arr(c.categories).includes(normalizedCategory) &&
       conceptMatchesInterviewContext(c, stage, format)
   );
@@ -447,7 +472,7 @@ export function selectKnowledgeConcepts({
       excludedAskedThisInterview.push(concept.label);
       continue;
     }
-    scored.push(scoreConcept(concept, { domainLabel, normalizedCategory, candidateState, jdRequirements, inv }));
+    scored.push(scoreConcept(concept, { domainId: domain.id, domainLabel, normalizedCategory, candidateState, jdRequirements, inv }));
   }
   if (!scored.length) return { ...base, excludedAskedThisInterview };
 
@@ -482,13 +507,14 @@ export function selectKnowledgeConcepts({
  *         filtering/exclusion (never fabricates guidance from nothing).
  *   else  { domainLabel,
  *           priorityConcepts: [{ label, statusLabel, reasons }],   // <= MAX_GUIDANCE_CONCEPTS
- *           targetConcept:    { label, archetype } }
+ *           targetConcept:    { label, archetype, misconceptions } }
  *
- * `reasons` on each priorityConcept is the only additive field (Phase 9,
- * for explainability) — every existing key is unchanged. Built entirely on
- * top of selectKnowledgeConcepts so there is exactly one selection code
- * path. stage/format/invitationContext are all OPTIONAL: omitting them
- * reproduces Phase 6 behaviour byte-for-byte.
+ * `reasons` on each priorityConcept (Phase 9) and `misconceptions` on the
+ * targetConcept (Phase 10A, always an array, may be empty) are the only
+ * additive fields — every other key is unchanged. Built entirely on top of
+ * selectKnowledgeConcepts so there is exactly one selection code path.
+ * stage/format/invitationContext are all OPTIONAL: omitting them reproduces
+ * Phase 6 behaviour (aside from the always-present empty misconceptions[]).
  */
 export function buildKnowledgeGuidance({
   domain, category, pipeline, stage, format,
@@ -509,6 +535,10 @@ export function buildKnowledgeGuidance({
       statusLabel: c.statusLabel,
       reasons: c.reasons.slice(),
     })),
-    targetConcept: { label: target.label, archetype: target.archetype },
+    targetConcept: {
+      label: target.label,
+      archetype: target.archetype,
+      misconceptions: arr(target.misconceptions).slice(),
+    },
   };
 }

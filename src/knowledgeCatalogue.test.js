@@ -196,10 +196,17 @@ describe("Phase 6 -> Phase 9 migration lost nothing", () => {
     }
   });
 
-  it("the catalogue grew only by a small, deliberate amount (infrastructure phase, not an expansion)", () => {
-    const added = KNOWLEDGE_CONCEPTS.length - 41;
-    expect(added).toBeGreaterThanOrEqual(0);
-    expect(added).toBeLessThanOrEqual(5);
+  it("Phase 9 added only a small infrastructure increment (3 IB valuation concepts)", () => {
+    const p9Added = KNOWLEDGE_CONCEPTS.filter((c) => ["ib_wacc", "ib_terminal_value", "ib_lbo_analysis"].includes(c.id));
+    expect(p9Added).toHaveLength(3);
+  });
+
+  it("Phase 10A is a deliberate, bounded finance expansion — not an unbounded question dump", () => {
+    const total = KNOWLEDGE_CONCEPTS.length;
+    // 41 (Phase 6) + 3 (Phase 9) + Phase 10A finance expansion. Curated, cross-checked,
+    // canonical concepts only — the brief's guidance was "roughly 40-100 genuinely useful".
+    expect(total).toBeGreaterThanOrEqual(44);
+    expect(total).toBeLessThanOrEqual(140);
   });
 
   it("every Phase 6 concept's label is unchanged (labels are Candidate State keys — a rename would orphan evidence)", () => {
@@ -210,5 +217,136 @@ describe("Phase 6 -> Phase 9 migration lost nothing", () => {
     expect(labelById.swe_big_o).toBe("Time/space complexity (Big O)");
     expect(labelById.consulting_market_sizing).toBe("Market sizing");
     expect(labelById.pe_lbo_mechanics).toBe("LBO mechanics");
+  });
+});
+
+/* ============================== Phase 10A schema additions ============================== */
+describe("Phase 10A optional schema fields are well-formed", () => {
+  it("sharedWithDomains, when present, is a non-empty array of REAL domain ids, never the concept's own home domain", () => {
+    for (const c of KNOWLEDGE_CONCEPTS) {
+      if (!("sharedWithDomains" in c)) continue;
+      expect(Array.isArray(c.sharedWithDomains) && c.sharedWithDomains.length > 0, `${c.id}`).toBe(true);
+      for (const d of c.sharedWithDomains) {
+        expect(VALID_DOMAIN_IDS.has(d), `${c.id} -> shared with unknown domain ${d}`).toBe(true);
+        expect(d).not.toBe(c.domain);
+      }
+      // no duplicate entries
+      expect(new Set(c.sharedWithDomains).size).toBe(c.sharedWithDomains.length);
+    }
+  });
+
+  it("domainArchetypes, when present, is keyed only by domains the concept actually belongs to, with non-empty stem arrays", () => {
+    for (const c of KNOWLEDGE_CONCEPTS) {
+      if (!("domainArchetypes" in c)) continue;
+      const belongsTo = new Set([c.domain, ...(c.sharedWithDomains || [])]);
+      for (const [dom, stems] of Object.entries(c.domainArchetypes)) {
+        expect(belongsTo.has(dom), `${c.id} -> domainArchetypes for ${dom} it doesn't belong to`).toBe(true);
+        expect(Array.isArray(stems) && stems.length > 0, `${c.id} -> empty domainArchetypes[${dom}]`).toBe(true);
+        for (const s of stems) {
+          expect(typeof s === "string" && s.trim().length > 0).toBe(true);
+          expect(s).not.toMatch(new RegExp(c.id)); // never leak the internal id
+        }
+      }
+    }
+  });
+
+  it("misconceptions, when present, is a short array (<=3) of short non-empty strings, id-free", () => {
+    for (const c of KNOWLEDGE_CONCEPTS) {
+      if (!("misconceptions" in c)) continue;
+      expect(Array.isArray(c.misconceptions)).toBe(true);
+      expect(c.misconceptions.length).toBeLessThanOrEqual(3);
+      for (const m of c.misconceptions) {
+        expect(typeof m === "string" && m.trim().length > 0).toBe(true);
+        expect(m.length).toBeLessThanOrEqual(160); // concise, never an essay
+        expect(m).not.toMatch(new RegExp(c.id));
+      }
+    }
+  });
+
+  it("a shared concept carrying domain-specific guidance provides it for EVERY domain it is shared into (no silent fallback surprises)", () => {
+    for (const c of KNOWLEDGE_CONCEPTS) {
+      if (!c.domainArchetypes || !c.sharedWithDomains) continue;
+      // If the author bothered to differentiate guidance at all, each shared domain should get it.
+      for (const d of c.sharedWithDomains) {
+        expect(Array.isArray(c.domainArchetypes[d]) && c.domainArchetypes[d].length > 0,
+          `${c.id} is shared into ${d} but has no ${d} domainArchetypes`).toBe(true);
+      }
+    }
+  });
+});
+
+/* ============================== Phase 10A finance coverage ============================== */
+describe("Phase 10A — the four finance domains have meaningful research-backed coverage", () => {
+  const inDomain = (id) => KNOWLEDGE_CONCEPTS.filter((c) => c.domain === id || (c.sharedWithDomains || []).includes(id));
+
+  it("each of the four finance domains reaches a substantive concept count (home + shared)", () => {
+    expect(inDomain("investment_banking").length).toBeGreaterThanOrEqual(18);
+    expect(inDomain("private_equity").length).toBeGreaterThanOrEqual(14);
+    expect(inDomain("sales_and_trading").length).toBeGreaterThanOrEqual(14);
+    expect(inDomain("accounting").length).toBeGreaterThanOrEqual(14);
+  });
+
+  it("each finance domain has a spread of importance levels — core foundations AND at least one specialist concept", () => {
+    for (const id of ["investment_banking", "private_equity", "sales_and_trading", "accounting"]) {
+      const levels = new Set(inDomain(id).map((c) => c.importance));
+      expect(levels.has("core"), `${id} has no core concept`).toBe(true);
+      expect(levels.has("specialist"), `${id} has no specialist concept`).toBe(true);
+    }
+  });
+
+  it("desk/team-specialist S&T derivatives-family concepts are stage-gated (never auto-drawn into an early generic screen)", () => {
+    for (const id of ["st_derivatives", "st_credit_spreads", "st_structured_products"]) {
+      const c = KNOWLEDGE_CONCEPTS.find((x) => x.id === id);
+      expect(c, id).toBeTruthy();
+      expect(c.importance).toBe("specialist");
+      expect(c.applicableStages).toEqual(["technical", "final_round"]);
+    }
+  });
+
+  it("known canonical concepts each exist EXACTLY ONCE (regression against accidental near-duplicates)", () => {
+    const labels = KNOWLEDGE_CONCEPTS.map((c) => c.label.toLowerCase());
+    const countMatching = (re) => labels.filter((l) => re.test(l)).length;
+    // "Enterprise value vs equity value" — one concept, not two under slightly different names.
+    expect(countMatching(/enterprise value.*equity value|equity value.*enterprise value/)).toBe(1);
+    // DCF — exactly one canonical concept.
+    expect(labels.filter((l) => l === "dcf valuation").length).toBe(1);
+    expect(countMatching(/discounted cash flow/)).toBe(0); // covered by "DCF valuation", not a synonym duplicate
+    // Three financial statements — one.
+    expect(countMatching(/three financial statements/)).toBe(1);
+    // Accretion/dilution — one.
+    expect(countMatching(/accretion.?dilution/)).toBe(1);
+    // Deferred tax — one shared concept, not an "ib_" duplicate.
+    expect(labels.filter((l) => l.startsWith("deferred tax")).length).toBe(1);
+  });
+
+  it("no NEW-P10A concept re-uses another concept's FULL keyword set (a strong duplicate signal), and multi-keyword phrases dominate", () => {
+    // Deliberate light overlap between related concepts (e.g. DCF <-> WACC both list "wacc") is
+    // fine and intentional; an identical keyword SET is not.
+    const sigs = KNOWLEDGE_CONCEPTS.map((c) => ({ id: c.id, sig: [...c.keywords].sort().join("|") }));
+    const seen = new Map();
+    for (const { id, sig } of sigs) {
+      expect(seen.has(sig), `${id} has an identical keyword set to ${seen.get(sig)}`).toBe(false);
+      seen.set(sig, id);
+    }
+    // Every NEW-P10A concept (finance expansion) leans on multi-word phrases for precise,
+    // low-collision matching — at least half its keywords contain a space.
+    const P6P9 = new Set([
+      ...["ib_three_statements","ib_statement_linkage","ib_working_capital","ib_depreciation","ib_dcf","ib_trading_comps","ib_precedent_transactions","ib_ev_vs_equity","ib_accretion_dilution","ib_synergies","ib_purchase_accounting","ib_ma_rationale","st_bond_pricing","st_duration_convexity","st_options_greeks","st_market_context","pe_lbo_mechanics","pe_returns_drivers","pe_value_creation","consulting_profitability","consulting_market_sizing","consulting_market_entry","consulting_structuring","acc_double_entry","acc_revenue_recognition","acc_deferred_tax","acc_audit_risk","swe_big_o","swe_data_structures","swe_system_design","swe_concurrency","ds_bias_variance","ds_overfitting","ds_ab_testing","ds_model_eval","pm_prioritisation","pm_metrics","pm_launch_strategy","mkt_mix","mkt_segmentation","mkt_roi","ib_wacc","ib_terminal_value","ib_lbo_analysis"],
+    ]);
+    for (const c of KNOWLEDGE_CONCEPTS) {
+      if (P6P9.has(c.id)) continue;
+      const multi = c.keywords.filter((k) => k.includes(" ")).length;
+      expect(multi / c.keywords.length, `${c.id} keyword set is too single-word-heavy`).toBeGreaterThanOrEqual(0.5);
+    }
+  });
+
+  it("no finance keyword is a bare ultra-generic token that could collide with another sector's JD text", () => {
+    const BANNED = new Set(["analysis", "model", "value", "risk", "cash", "debt", "growth", "market", "price", "big", "data", "test", "and", "with", "the"]);
+    for (const c of KNOWLEDGE_CONCEPTS) {
+      for (const kw of c.keywords) {
+        expect(BANNED.has(kw), `${c.id} has bare generic keyword "${kw}"`).toBe(false);
+        expect(kw.trim().length, `${c.id} keyword too short: "${kw}"`).toBeGreaterThanOrEqual(3);
+      }
+    }
   });
 });
