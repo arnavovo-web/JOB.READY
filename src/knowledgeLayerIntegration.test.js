@@ -13,7 +13,7 @@
  * ================================================================== */
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
-import { buildQuestionGenerationPrompt } from "./App.jsx";
+import { buildQuestionGenerationPrompt, buildInvitationKnowledgeContext } from "./App.jsx";
 import { KNOWLEDGE_DOMAINS } from "./interviewKnowledge.js";
 
 const SOURCE = readFileSync(new URL("./App.jsx", import.meta.url), "utf8");
@@ -221,5 +221,107 @@ describe("Candidate State is threaded through to the knowledge layer without a s
     const buildCandidateStateCalls = (REGEN_SRC.match(/buildCandidateState\(/g) || []).length;
     expect(buildCandidateStateCalls).toBe(1);
     expect(REGEN_SRC).toMatch(/generateAndPersistNextQuestion\([^)]*candidateStateForStrategy\)/);
+  });
+});
+
+/* ================================================================== *
+ * PHASE 9 — INTERVIEW-CONTEXT + INVITATION THREADING (EXECUTABLE + STRUCTURAL)
+ * ================================================================== */
+describe("Phase 9: the interview's own resolved stage/format narrow concept applicability", () => {
+  const genInput = { category: "technical_functional", turnType: "normal", anchorSource: null, questionNumber: 1 };
+
+  it("a recruiter_screen never surfaces a technical/final-round-only concept (ib_lbo_analysis) in the guidance block", () => {
+    const liveInterview = { maxQuestions: 8, transcript: [], config: { pipeline: "adaptive_turn", stage: "recruiter_screen", format: "live_conversational" } };
+    const live = buildQuestionGenerationPrompt(genInput, liveInterview, ibProfile, null, null, null).system;
+    expect(live).toMatch(/KNOWLEDGE GUIDANCE/);
+    expect(live).not.toMatch(/LBO analysis/);
+  });
+
+  it("a technical stage CAN surface the same stage-restricted concept", () => {
+    const interview = { maxQuestions: 10, transcript: [], config: { pipeline: "adaptive_turn", stage: "technical", format: "technical" } };
+    // Force it to the top with an explicit invitation topic so it deterministically appears.
+    const withInvite = { ...interview, config: { ...interview.config, invitationContext: { explicitTopics: ["lbo analysis"], explicitComponents: [] } } };
+    const { system } = buildQuestionGenerationPrompt(genInput, withInvite, ibProfile, null, null, null);
+    expect(system).toMatch(/LBO analysis/);
+  });
+
+  it("an interview with no stage/format in config still gets guidance (backwards compatible — no filtering)", () => {
+    const interview = { maxQuestions: 8, transcript: [], config: { pipeline: "adaptive_turn" } };
+    const { system } = buildQuestionGenerationPrompt(genInput, interview, ibProfile, null, null, null);
+    expect(system).toMatch(/KNOWLEDGE GUIDANCE/);
+  });
+});
+
+describe("Phase 9: explicit invitation topics reach the knowledge block; inferred context does not", () => {
+  const genInput = { category: "technical_functional", turnType: "normal", anchorSource: null, questionNumber: 1 };
+
+  it("config.invitationContext with an explicit topic surfaces an 'explicit invitation topic' reason", () => {
+    const interview = { maxQuestions: 10, transcript: [], config: { pipeline: "adaptive_turn", stage: "technical", format: "technical", invitationContext: { explicitTopics: ["valuation"], explicitComponents: ["technical_functional"] } } };
+    const { system } = buildQuestionGenerationPrompt(genInput, interview, ibProfile, null, null, null);
+    expect(system).toMatch(/explicit invitation topic: valuation/);
+  });
+
+  it("no invitationContext => the knowledge block never contains an 'explicit invitation topic' phrase", () => {
+    const interview = { maxQuestions: 10, transcript: [], config: { pipeline: "adaptive_turn", stage: "technical", format: "technical" } };
+    const { system } = buildQuestionGenerationPrompt(genInput, interview, ibProfile, null, null, null);
+    expect(system).toMatch(/KNOWLEDGE GUIDANCE/);
+    expect(system).not.toMatch(/explicit invitation topic/);
+  });
+
+  it("the knowledge block stays bounded even with reasons added — still <= 4 priority-concept lines", () => {
+    const interview = { maxQuestions: 10, transcript: [], config: { pipeline: "adaptive_turn", stage: "technical", format: "technical", invitationContext: { explicitTopics: ["valuation", "accounting"], explicitComponents: ["technical_functional"] } } };
+    const { system } = buildQuestionGenerationPrompt(genInput, interview, ibProfile, null, null, null);
+    const listMatch = system.match(/Priority concepts:\n([\s\S]*?)\nCurrent target concept:/);
+    expect(listMatch).toBeTruthy();
+    expect(listMatch[1].trim().split("\n").length).toBeLessThanOrEqual(4);
+  });
+});
+
+describe("Phase 9: buildInvitationKnowledgeContext — explicit-only, never an inferred topic", () => {
+  it("collects topic strings the email named (explicit by extraction contract) into explicitTopics", () => {
+    const ctx = buildInvitationKnowledgeContext({
+      technical_topics: ["Accounting", "Valuation"], commercial_topics: [], mentioned_competencies: ["Financial modelling"],
+      preparation_areas: [], components: ["technical_functional"], components_source: "explicit",
+    });
+    expect(ctx.explicitTopics).toEqual(expect.arrayContaining(["accounting", "valuation", "financial modelling"]));
+    expect(ctx.explicitComponents).toEqual(["technical_functional"]);
+  });
+
+  it("returns null when the invitation named no topics and no explicit components (a vague invitation)", () => {
+    expect(buildInvitationKnowledgeContext({ technical_topics: [], commercial_topics: [], mentioned_competencies: [], preparation_areas: [], components: [], components_source: "inferred" })).toBeNull();
+    expect(buildInvitationKnowledgeContext(null)).toBeNull();
+    expect(buildInvitationKnowledgeContext({})).toBeNull();
+  });
+
+  it("does NOT treat components as explicit unless components_source === 'explicit'", () => {
+    const ctx = buildInvitationKnowledgeContext({ technical_topics: ["valuation"], components: ["technical_functional"], components_source: "inferred" });
+    expect(ctx.explicitComponents).toEqual([]);
+    expect(ctx.explicitTopics).toContain("valuation");
+  });
+
+  it("never throws on malformed input", () => {
+    expect(() => buildInvitationKnowledgeContext({ technical_topics: "not an array", components: 42 })).not.toThrow();
+  });
+});
+
+describe("Phase 9: wiring is additive — no new AI call, no scheduler ownership, batch pipeline untouched", () => {
+  it("buildQuestionGenerationPrompt still consults the knowledge layer exactly once (resolveKnowledgeDomain + buildKnowledgeGuidance), now also passing stage/format/invitationContext", () => {
+    const FN_SRC = extractFunctionSource("export function buildQuestionGenerationPrompt(", "// §5: Call 2's response validator");
+    expect((FN_SRC.match(/resolveKnowledgeDomain\(/g) || []).length).toBe(1);
+    expect((FN_SRC.match(/buildKnowledgeGuidance\(/g) || []).length).toBe(1);
+    expect(FN_SRC).toMatch(/stage:\s*interview\?\.config\?\.stage/);
+    expect(FN_SRC).toMatch(/invitationContext:\s*interview\?\.config\?\.invitationContext/);
+    // still never assigns scheduler-owned fields from knowledge output
+    expect(FN_SRC).not.toMatch(/knowledgeGuidance\.(category|turnType|anchorSource|anchor_source)/);
+  });
+
+  it("buildInvitationKnowledgeContext is defined well before, and never referenced inside, the batch pipeline", () => {
+    const BATCH_SRC = extractFunctionSource("function buildQuestionBatchPrompt(", "/* PDF TEXT EXTRACTION");
+    expect(BATCH_SRC).not.toMatch(/buildInvitationKnowledgeContext|invitationContext/);
+  });
+
+  it("the invitation->config bridge only runs for buildMethod === 'invitation' and only persists an explicit-signal object", () => {
+    expect(SOURCE).toMatch(/if \(buildMethod === "invitation" && invitationDraft\) \{\s*\n\s*const invitationKnowledgeContext = buildInvitationKnowledgeContext\(invitationDraft\)/);
+    expect(SOURCE).toMatch(/if \(invitationKnowledgeContext\) ivConfig\.invitationContext = invitationKnowledgeContext/);
   });
 });

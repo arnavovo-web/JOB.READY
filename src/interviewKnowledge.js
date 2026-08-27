@@ -1,77 +1,73 @@
 /* ================================================================== *
- * PHASE 6 — UNIVERSAL INTERVIEW KNOWLEDGE LAYER
+ * PHASE 9 — SCALABLE INTERVIEW KNOWLEDGE INFRASTRUCTURE (LOGIC / API)
  * ------------------------------------------------------------------
- * A pure, deterministic module (same pattern as methodology.js /
- * candidateIntelligence.js / candidateState.js / interviewStrategy.js)
- * that answers ONE question the rest of the architecture never could:
- * "what canonical knowledge/concepts should reasonably be tested for
- * THIS type of interview?" — e.g. an Investment Banking technical round
- * has a fairly predictable universe (three statements, DCF, comps,
- * accretion/dilution...) that a generic JD/CV-personalised engine has
- * no way to know about on its own.
+ * Phase 6 introduced a "universal interview knowledge layer": for an
+ * interview type with a predictable knowledge universe (an Investment
+ * Banking technical round -> three statements, DCF, comps, accretion/
+ * dilution...) it decides what canonical concepts are worth testing, which
+ * a purely JD/CV-personalised engine has no way to know on its own.
  *
- * This module makes NO AI calls, performs NO web search, touches NO
- * database, and NEVER throws on malformed/missing input — every
- * function defensively degrades to an inert/empty result, same
- * contract every other pure module in this codebase already follows.
- * A degraded result (no domain match, no applicable category, no
- * candidate state) simply means "the existing architecture behaves
- * exactly as it did before this module existed" — never a crash, never
- * a fabricated concept.
+ * Phase 9 keeps every Phase 6 guarantee and makes the layer SCALABLE and
+ * STRUCTURED for substantial future growth:
  *
- *   Interview configuration (stage/format/pipeline, from App.jsx's
- *   existing INTERVIEW_STAGES/INTERVIEW_FORMATS/resolveInterviewConfig
- *   — NOT duplicated here)
- *           |
- *           v
- *   isKnowledgeLayerApplicable() — the explicit, deterministic gate.
- *   Reads the SCHEDULER's own already-decided category (methodology.js/
- *   adaptiveEngine.js, untouched) as its primary signal — it does not
- *   independently guess "is this a technical moment", it trusts the
- *   scheduler's category decision, which is already stage/format/JD-
- *   aware. A HireVue-style (independent_batch) interview never reaches
- *   this gate in the first place: this module is only ever consulted
- *   from buildQuestionGenerationPrompt (Call 2), which the batch
- *   pipeline never calls at all (see buildQuestionBatchPrompt, wholly
- *   separate) — the gate's own pipeline check is a second, explicit,
- *   testable layer of the same protection, not the only one.
- *           |
- *           v
- *   resolveKnowledgeDomain() — deterministic keyword matching over
- *   ALREADY-EXTRACTED interview_profile fields (role/division/
- *   responsibilities/required_skills/preferred_skills/technical_topics/
- *   commercial_topics/jd_requirements) — no new AI call, no raw JD
- *   re-parsing. A generic/unmatched role correctly resolves to no
- *   domain, which alone is enough to make the whole layer inert for
- *   that interview, independent of the category gate above.
- *           |
- *           v
- *   buildKnowledgeGuidance() — ranks that domain's concepts (filtered to
- *   the scheduler's own category) by: baseline importance, whether the
- *   JD specifically emphasises it (jd_requirements intersection), and —
- *   critically — EXISTING Candidate State (candidateState.js's own
- *   already-computed per-competency .tests/.trend/.mostRecentEvidence,
- *   keyed by the EXACT SAME free-text competency label this module
- *   stamps going forward). This is deliberately not a parallel
- *   intelligence system: an "unseen" concept and a "demonstrated
- *   strongly" one are read directly off the same structure
- *   candidateState.js already produces for every other competency.
- *           |
- *           v
- *   App.jsx's buildQuestionGenerationPrompt turns the returned structured
- *   guidance into a short prompt paragraph for Call 2 — category/
- *   turn_type/anchor_source remain entirely the scheduler's; this module
- *   only ever influences the ONE thing a "normal" turn's content
- *   generation already owned before this module existed: the specific
- *   competency label Call 2's question targets.
+ *   1. DATA / LOGIC SEPARATION. The catalogue itself (domains, groups, the
+ *      flat canonical concept list with the Phase 9 schema) now lives in
+ *      knowledgeCatalogue.js — inert, serialisable, zero-dependency data.
+ *      THIS module is pure logic: domain resolution, the applicability
+ *      gate, the deterministic concept-selection API, and the compact
+ *      guidance object the prompt builder consumes.
+ *
+ *   2. INTERVIEW-CONTEXT APPLICABILITY. Selection can now narrow on the
+ *      interview's STAGE and FORMAT (via each concept's optional
+ *      applicableStages / applicableFormats). A caller that supplies no
+ *      stage/format is completely unaffected — every migrated Phase 6
+ *      concept is unrestricted, so behaviour is byte-identical unless a
+ *      concept opts in to a restriction.
+ *
+ *   3. EXPLICIT INVITATION CONTEXT. When the interview was built from a
+ *      scanned invitation, the topics the email EXPLICITLY named can boost
+ *      the concepts they match. Inferred context (just "an Investment
+ *      Banking interview") produces NO explicit topics and therefore NO
+ *      boost — the explicit-vs-inferred boundary Phase 7/8 protect is
+ *      preserved exactly: this layer never treats an inferred domain as an
+ *      explicitly-mentioned concept.
+ *
+ *   4. EXPLAINABILITY. selectKnowledgeConcepts() returns, per concept, the
+ *      bounded priority it computed AND the human-readable reasons it was
+ *      selected ("Core concept for Investment Banking", "JD relevance",
+ *      "explicit invitation topic: valuation", "candidate weakness —
+ *      worth revisiting"). Deterministic and inspectable.
+ *
+ * UNCHANGED FROM PHASE 6 (hard guarantees, all still tested):
+ *   - NO AI call, NO web search, NO database, NO React. Zero new AI calls.
+ *   - NEVER decides category / turn_type / anchor_source — the scheduler
+ *     (methodology.js + adaptiveEngine.js) owns those, untouched.
+ *   - NEVER applies to a HireVue-style (independent_batch) interview: the
+ *     gate requires pipeline === "adaptive_turn", AND the batch pipeline
+ *     never calls the prompt builder that consults this module at all.
+ *   - NEVER applies to a motivation_fit / behavioural_competency turn.
+ *   - NEVER throws: every function degrades to an inert/empty result on
+ *     malformed or missing input.
+ *   - NEVER a parallel Candidate State: it reads candidateState.js's OWN
+ *     already-computed per-competency .tests / .trend / .mostRecentEvidence,
+ *     it never recomputes evidence.
+ *   - The concept `label` is used verbatim as the stamped competency, so it
+ *     is also the Candidate State lookup key.
  * ================================================================== */
 
-// Reuses methodology.js's own canonical taxonomy — same import pattern
-// candidateIntelligence.js/candidateState.js/interviewStrategy.js already
-// use (`import { ACTIVE_CATEGORIES, mapLegacyCategory } from "./methodology.js"`)
-// — never a second/duplicate taxonomy, and never at risk of silently
-// drifting from methodology.js's own category strings.
+// Two imports, both data/taxonomy, neither with any behaviour of its own:
+//  - methodology.js: the canonical category taxonomy (never a second copy).
+//  - knowledgeCatalogue.js: the Phase 9 catalogue data (never inlined here).
+// This module still imports NOTHING that makes its own decisions — not
+// adaptiveEngine.js, candidateState.js, candidateIntelligence.js or
+// interviewStrategy.js — it only ever RECEIVES their output as plain args.
 import { CATEGORIES, mapLegacyCategory } from "./methodology.js";
+import {
+  KNOWLEDGE_DOMAINS, KNOWLEDGE_DOMAIN_GROUPS, KNOWLEDGE_CONCEPTS,
+  IMPORTANCE_LEVELS, IMPORTANCE_BASE_PRIORITY,
+} from "./knowledgeCatalogue.js";
+
+export { KNOWLEDGE_DOMAINS, KNOWLEDGE_DOMAIN_GROUPS, KNOWLEDGE_CONCEPTS, IMPORTANCE_LEVELS };
 
 // ---- local, self-contained helpers ----
 function str(v, fallback = "") {
@@ -83,340 +79,92 @@ function arr(v) {
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
+function norm(v) {
+  return str(v).trim().toLowerCase();
+}
 
-// ---- 6.1 the categories the knowledge layer may ever apply to ----------
+// ---- 9.5 the categories the knowledge layer may ever apply to ---------
 // Derived by EXCLUSION from methodology.js's own CATEGORIES, not a hardcoded
 // inclusion list — canonical domain knowledge (DCF, big-O, case frameworks...)
-// must never leak into a motivation or behavioural turn, regardless of
-// domain/JD match, but any OTHER category methodology.js defines (now or in
-// the future) is eligible by default. Exclusion, not inclusion, is the
-// deliberate choice: a hardcoded inclusion list would silently exclude a
-// future new category by omission; this can only ever silently miss
-// EXCLUDING one, a strictly safer failure direction for "should knowledge
-// ever apply here".
+// must never leak into a motivation or behavioural turn, but any OTHER
+// category methodology.js defines (now or in future) is eligible by default.
+// Exclusion is the safer failure direction: it can only ever miss EXCLUDING
+// one, never silently exclude a legitimate future category.
 export const KNOWLEDGE_ELIGIBLE_CATEGORIES = CATEGORIES.filter(
   (c) => c !== "motivation_fit" && c !== "behavioural_competency"
 );
 
-// ---- 6.2 applicability gate --------------------------------------------
+// ---- 9.6 bounded priority signal constants --------------------------
+// Every adjustment a signal can make to a concept's priority is declared
+// here, so "can any single signal dominate indefinitely?" is answerable by
+// reading one block. Base priority comes from importance (three coarse
+// values). Each adjustment is small relative to the gap between importance
+// bands (15), so importance still matters — but no single signal, and no
+// stack of them, can pin the same concept as the target every turn:
+// a concept asked THIS interview is HARD-excluded regardless of score.
+const JD_BOOST = 20;                 // JD requirement keyword intersection
+const INVITATION_TOPIC_BOOST = 30;   // topic the invitation email EXPLICITLY named
+const RECENT_STRENGTH_ADJUSTMENT = { strong: -45, moderate: -18, weak: 25, contradictory: 30 };
+const TREND_ADJUSTMENT = { declining: 15, improving: -10 };
+const PRIORITY_MIN = 0;
+const PRIORITY_MAX = 200;
+export const MAX_GUIDANCE_CONCEPTS = 4;
+
+const IMPORTANCE_RANK = { core: 3, important: 2, specialist: 1 };
+
+// Pre-index the flat catalogue once (module load) for O(1) id lookups and a
+// stable declaration-order index used as the final deterministic tie-break.
+const CONCEPT_BY_ID = new Map();
+KNOWLEDGE_CONCEPTS.forEach((c, i) => CONCEPT_BY_ID.set(c.id, { concept: c, index: i }));
+
+/** getConceptById(id) — the canonical concept object, or null. Never throws. */
+export function getConceptById(id) {
+  const hit = CONCEPT_BY_ID.get(str(id));
+  return hit ? hit.concept : null;
+}
+
+/** basePriorityFor(concept) — importance -> base priority, defensive default "important". */
+function basePriorityFor(concept) {
+  const level = IMPORTANCE_LEVELS.includes(concept?.importance) ? concept.importance : "important";
+  return IMPORTANCE_BASE_PRIORITY[level] ?? IMPORTANCE_BASE_PRIORITY.important;
+}
+
+// ---- 9.7 applicability gate ----------------------------------------
 /**
  * isKnowledgeLayerApplicable({ pipeline, category, domain })
  *
- * pipeline: the resolved interview config's pipeline ("adaptive_turn" |
- *   "independent_batch" | anything else/legacy). Only "adaptive_turn" can
- *   ever be applicable — a HireVue-style (independent_batch) interview
- *   already never calls buildQuestionGenerationPrompt at all (it uses the
- *   wholly separate buildQuestionBatchPrompt/generateQuestionBatch), so
- *   this check is a second, explicit, independently-testable guarantee of
- *   the same protection, not the only one.
- * category: the SCHEDULER's own already-decided category for this turn
- *   (methodology.js/adaptiveEngine.js, untouched) — the primary signal.
- *   Trusting the scheduler's decision (rather than re-deriving "is this a
- *   technical moment" independently) is deliberate: a rare technical_
- *   functional turn inside an otherwise-behavioural recruiter screen is
- *   itself already a bounded, deterministic, stage/envelope-aware decision
- *   (see methodology.js's STAGE_METHODOLOGY) — this module simply asks "if
- *   the scheduler decided THIS turn is technical, is there canonical
- *   knowledge worth drawing on", never "should this turn be technical".
- * domain: resolveKnowledgeDomain()'s output — null means no confident
- *   role/JD match, which alone makes the layer inert regardless of category.
- *
- * Deterministic, pure, explainable: three independent AND-ed conditions,
- * no AI, no heuristics beyond the ones already named above.
+ * UNCHANGED from Phase 6. Three independent AND-ed conditions:
+ *   - pipeline === "adaptive_turn" (a HireVue-style independent_batch
+ *     interview never reaches here anyway — this is a second, explicit,
+ *     independently-testable layer of the same protection).
+ *   - domain is a resolved domain object (null => no confident role/JD
+ *     match => layer inert).
+ *   - the SCHEDULER's own already-decided category (normalised through the
+ *     same mapLegacyCategory every other consumer uses) is knowledge-
+ *     eligible — never motivation_fit / behavioural_competency.
+ * Deterministic, pure, explainable. Never throws.
  */
 export function isKnowledgeLayerApplicable({ pipeline, category, domain } = {}) {
   if (pipeline !== "adaptive_turn") return false;
-  if (!domain) return false;
-  // Normalized via the SAME mapLegacyCategory every other consumer of the scheduler's category
-  // decision already uses (candidateState.js/candidateIntelligence.js/interviewStrategy.js) —
-  // defensive only, since the scheduler's own category is already canonical by the time it
-  // reaches here; never a second category-mapping implementation.
+  if (!domain || !domain.id) return false;
   if (!KNOWLEDGE_ELIGIBLE_CATEGORIES.includes(mapLegacyCategory(category))) return false;
   return true;
 }
 
-// ---- 6.3 knowledge catalogue --------------------------------------------
-// A deliberately REPRESENTATIVE initial set, not an exhaustive world model —
-// proves the architecture across genuinely different knowledge universes
-// (finance, consulting, tech, product, marketing) per the design brief.
-// Extensible: adding a domain/topic/concept requires no code change, only a
-// new entry below. roleKeywords are specific multi-word phrases (never bare
-// generic words like "analyst") so resolveKnowledgeDomain's substring match
-// stays precise rather than firing on incidental overlap. Every concept
-// declares which of KNOWLEDGE_ELIGIBLE_CATEGORIES it belongs to — most
-// technical concepts sit under technical_functional; a handful of
-// market-context concepts also (or only) sit under commercial_awareness.
-// difficulty reuses the SAME "foundational|intermediate|advanced" enum
-// App.jsx's own batch pipeline already uses (see App.jsx's DIFFS) — not a
-// second scale. `label` is used VERBATIM as the competency stamped on a
-// knowledge-guided question, so it doubles as the Candidate State lookup
-// key — see buildKnowledgeGuidance below.
-export const KNOWLEDGE_DOMAINS = [
-  {
-    id: "investment_banking",
-    label: "Investment Banking",
-    roleKeywords: ["investment banking", "ib analyst", "equity capital markets", "debt capital markets", "leveraged finance", "m&a advisory", "mergers and acquisitions"],
-    topics: [
-      {
-        label: "Accounting & Financial Statements",
-        concepts: [
-          { id: "ib_three_statements", label: "Three financial statements", categories: ["technical_functional"], difficulty: "foundational", priority: 70, keywords: ["financial statements", "income statement", "balance sheet", "cash flow statement"], archetypes: [
-            "Ask the candidate to name the three financial statements and briefly describe what each one shows.",
-            "Ask how a specific transaction (e.g. buying equipment with cash) would flow through all three statements.",
-          ] },
-          { id: "ib_statement_linkage", label: "Statement linkage", categories: ["technical_functional"], difficulty: "intermediate", priority: 65, keywords: ["net income flows", "linkage", "retained earnings", "statements link"], archetypes: [
-            "Ask the candidate to walk through how net income links the income statement to the balance sheet and cash flow statement.",
-            "Give a scenario (e.g. a $10m increase in depreciation) and ask how it flows through all three statements.",
-          ] },
-          { id: "ib_working_capital", label: "Working capital", categories: ["technical_functional"], difficulty: "intermediate", priority: 55, keywords: ["working capital", "receivables", "payables", "inventory"], archetypes: [
-            "Ask what working capital is and why an increase in it reduces free cash flow.",
-          ] },
-          { id: "ib_depreciation", label: "Depreciation & amortisation", categories: ["technical_functional"], difficulty: "foundational", priority: 50, keywords: ["depreciation", "amortisation", "capex", "non-cash"], archetypes: [
-            "Ask why depreciation is added back in the cash flow statement despite reducing net income.",
-          ] },
-        ],
-      },
-      {
-        label: "Valuation",
-        concepts: [
-          { id: "ib_dcf", label: "DCF valuation", categories: ["technical_functional"], difficulty: "advanced", priority: 75, keywords: ["dcf", "discounted cash flow", "wacc", "terminal value"], archetypes: [
-            "Ask the candidate to walk through, at a high level, how a DCF valuation is built.",
-            "Ask what happens to a DCF valuation if the discount rate (WACC) increases, and why.",
-          ] },
-          { id: "ib_trading_comps", label: "Trading comparables", categories: ["technical_functional"], difficulty: "intermediate", priority: 65, keywords: ["trading comps", "comparable companies", "ev/ebitda"], archetypes: [
-            "Ask how a trading comparables analysis is performed and what makes a company a good comparable.",
-          ] },
-          { id: "ib_precedent_transactions", label: "Precedent transactions", categories: ["technical_functional"], difficulty: "intermediate", priority: 55, keywords: ["precedent transactions", "control premium", "deal comps"], archetypes: [
-            "Ask why precedent transaction multiples are usually higher than trading comps multiples.",
-          ] },
-          { id: "ib_ev_vs_equity", label: "Enterprise value vs equity value", categories: ["technical_functional"], difficulty: "foundational", priority: 60, keywords: ["enterprise value", "equity value", "ev to equity bridge"], archetypes: [
-            "Ask the candidate to explain the difference between enterprise value and equity value, and how you bridge between them.",
-          ] },
-        ],
-      },
-      {
-        label: "M&A",
-        concepts: [
-          { id: "ib_accretion_dilution", label: "Accretion/dilution", categories: ["technical_functional"], difficulty: "advanced", priority: 65, keywords: ["accretion", "dilution", "eps impact", "exchange ratio"], archetypes: [
-            "Ask what makes an acquisition accretive or dilutive to the acquirer's EPS.",
-            "Give a simplified acquirer/target P/E scenario and ask whether the deal would be accretive or dilutive.",
-          ] },
-          { id: "ib_synergies", label: "Synergies", categories: ["technical_functional", "commercial_awareness"], difficulty: "intermediate", priority: 50, keywords: ["synergies", "cost synergies", "revenue synergies"], archetypes: [
-            "Ask the candidate to distinguish cost synergies from revenue synergies and which are usually more reliable to underwrite.",
-          ] },
-          { id: "ib_purchase_accounting", label: "Purchase accounting", categories: ["technical_functional"], difficulty: "advanced", priority: 45, keywords: ["purchase accounting", "goodwill", "purchase price allocation"], archetypes: [
-            "Ask what goodwill represents and how it arises in an acquisition.",
-          ] },
-          { id: "ib_ma_rationale", label: "Recent M&A market context", categories: ["commercial_awareness"], difficulty: "intermediate", priority: 55, keywords: ["recent deal", "m&a activity", "deal rationale"], archetypes: [
-            "Ask the candidate to discuss a recent M&A deal they've followed and what the strategic rationale appeared to be.",
-          ] },
-        ],
-      },
-    ],
-  },
-  {
-    id: "sales_and_trading",
-    label: "Sales & Trading",
-    roleKeywords: ["sales and trading", "global markets", "fx trading", "fixed income trading", "equities trading", "trading desk", "market making"],
-    topics: [
-      {
-        label: "Markets",
-        concepts: [
-          { id: "st_bond_pricing", label: "Bond pricing and yield", categories: ["technical_functional"], difficulty: "foundational", priority: 65, keywords: ["bond price", "yield", "coupon", "inverse relationship"], archetypes: [
-            "Ask the candidate to explain why bond prices and yields move inversely.",
-          ] },
-          { id: "st_duration_convexity", label: "Duration and convexity", categories: ["technical_functional"], difficulty: "advanced", priority: 60, keywords: ["duration", "convexity", "interest rate sensitivity"], archetypes: [
-            "Ask what duration measures and how convexity refines that estimate for larger rate moves.",
-          ] },
-          { id: "st_options_greeks", label: "Options and the Greeks", categories: ["technical_functional"], difficulty: "advanced", priority: 55, keywords: ["delta", "gamma", "vega", "theta", "options"], archetypes: [
-            "Ask the candidate to explain what delta measures for an option position.",
-          ] },
-          { id: "st_market_context", label: "Current market conditions", categories: ["commercial_awareness"], difficulty: "intermediate", priority: 65, keywords: ["central bank", "rate decision", "market volatility", "recent move"], archetypes: [
-            "Ask the candidate what's currently happening in a market they follow and how they'd position around it.",
-          ] },
-        ],
-      },
-    ],
-  },
-  {
-    id: "private_equity",
-    label: "Private Equity",
-    roleKeywords: ["private equity", "leveraged buyout", "lbo analyst", "portfolio company"],
-    topics: [
-      {
-        label: "LBO Mechanics",
-        concepts: [
-          { id: "pe_lbo_mechanics", label: "LBO mechanics", categories: ["technical_functional"], difficulty: "advanced", priority: 75, keywords: ["lbo", "leveraged buyout", "debt paydown"], archetypes: [
-            "Ask the candidate to walk through, at a high level, how a leveraged buyout generates returns.",
-          ] },
-          { id: "pe_returns_drivers", label: "Returns drivers (IRR/MOIC)", categories: ["technical_functional"], difficulty: "advanced", priority: 65, keywords: ["irr", "moic", "returns", "multiple expansion"], archetypes: [
-            "Ask what the main drivers of returns are in a leveraged buyout (multiple expansion, deleveraging, EBITDA growth).",
-          ] },
-          { id: "pe_value_creation", label: "Value creation levers", categories: ["technical_functional", "commercial_awareness"], difficulty: "intermediate", priority: 55, keywords: ["value creation", "operational improvement", "add-on acquisitions"], archetypes: [
-            "Ask what a PE firm can actually do, operationally, to create value in a portfolio company beyond financial engineering.",
-          ] },
-        ],
-      },
-    ],
-  },
-  {
-    id: "consulting",
-    label: "Management Consulting",
-    roleKeywords: ["management consulting", "strategy consulting", "case interview", "case study interview"],
-    topics: [
-      {
-        label: "Case Frameworks",
-        concepts: [
-          { id: "consulting_profitability", label: "Profitability framework", categories: ["case_problem_solving", "situational_judgement"], difficulty: "foundational", priority: 70, keywords: ["profitability", "revenue minus cost", "profit decline"], archetypes: [
-            "Pose a short profitability-decline scenario and ask how the candidate would structure their diagnosis.",
-          ] },
-          { id: "consulting_market_sizing", label: "Market sizing", categories: ["case_problem_solving", "situational_judgement"], difficulty: "intermediate", priority: 65, keywords: ["market sizing", "estimate the size", "top-down", "bottom-up"], archetypes: [
-            "Ask the candidate to size a market (e.g. the market for umbrellas in a given city) and explain their approach.",
-          ] },
-          { id: "consulting_market_entry", label: "Market entry framework", categories: ["case_problem_solving", "situational_judgement"], difficulty: "intermediate", priority: 55, keywords: ["market entry", "should we enter", "new market"], archetypes: [
-            "Pose a market-entry scenario and ask what factors the candidate would evaluate before recommending entry.",
-          ] },
-          { id: "consulting_structuring", label: "Structuring an ambiguous problem", categories: ["case_problem_solving", "situational_judgement"], difficulty: "foundational", priority: 60, keywords: ["structure the problem", "issue tree", "hypothesis"], archetypes: [
-            "Ask the candidate how they'd structure their thinking before diving into an ambiguous business problem.",
-          ] },
-        ],
-      },
-    ],
-  },
-  {
-    id: "accounting",
-    label: "Accounting",
-    roleKeywords: ["audit associate", "assurance associate", "chartered accountant", "acca", "tax advisory", "external audit"],
-    topics: [
-      {
-        label: "Core Accounting",
-        concepts: [
-          { id: "acc_double_entry", label: "Double-entry bookkeeping", categories: ["technical_functional"], difficulty: "foundational", priority: 65, keywords: ["double entry", "debits and credits", "journal entry"], archetypes: [
-            "Ask the candidate to explain double-entry bookkeeping with a simple example.",
-          ] },
-          { id: "acc_revenue_recognition", label: "Revenue recognition", categories: ["technical_functional"], difficulty: "intermediate", priority: 60, keywords: ["revenue recognition", "when is revenue recognised"], archetypes: [
-            "Ask when revenue should be recognised for a multi-year service contract, and why.",
-          ] },
-          { id: "acc_deferred_tax", label: "Deferred tax", categories: ["technical_functional"], difficulty: "advanced", priority: 45, keywords: ["deferred tax", "temporary difference"], archetypes: [
-            "Ask what a deferred tax liability represents and how it typically arises.",
-          ] },
-          { id: "acc_audit_risk", label: "Audit risk assessment", categories: ["technical_functional", "situational_judgement"], difficulty: "intermediate", priority: 55, keywords: ["audit risk", "materiality", "control risk"], archetypes: [
-            "Ask how the candidate would assess audit risk and materiality for a new client engagement.",
-          ] },
-        ],
-      },
-    ],
-  },
-  {
-    id: "software_engineering",
-    label: "Software Engineering",
-    roleKeywords: ["software engineer", "backend developer", "frontend developer", "full stack developer", "software development engineer"],
-    topics: [
-      {
-        label: "Computer Science Fundamentals",
-        concepts: [
-          { id: "swe_big_o", label: "Time/space complexity (Big O)", categories: ["technical_functional"], difficulty: "foundational", priority: 70, keywords: ["big o", "time complexity", "space complexity"], archetypes: [
-            "Ask the candidate to explain what Big O notation measures and give an example of an O(n log n) algorithm.",
-          ] },
-          { id: "swe_data_structures", label: "Data structure trade-offs", categories: ["technical_functional"], difficulty: "intermediate", priority: 65, keywords: ["data structure", "hash map", "array vs linked list"], archetypes: [
-            "Ask when the candidate would choose a hash map over an array, and what the trade-offs are.",
-          ] },
-          { id: "swe_system_design", label: "System design fundamentals", categories: ["technical_functional"], difficulty: "advanced", priority: 60, keywords: ["system design", "scalability", "load balancing", "caching"], archetypes: [
-            "Ask the candidate to sketch, at a high level, how they'd design a system to handle a large increase in read traffic.",
-          ] },
-          { id: "swe_concurrency", label: "Concurrency basics", categories: ["technical_functional"], difficulty: "advanced", priority: 50, keywords: ["concurrency", "race condition", "thread safety"], archetypes: [
-            "Ask the candidate to explain what a race condition is and how it can be avoided.",
-          ] },
-        ],
-      },
-    ],
-  },
-  {
-    id: "data_science",
-    label: "Data Science",
-    roleKeywords: ["data scientist", "machine learning engineer", "ml engineer", "data science analyst"],
-    topics: [
-      {
-        label: "Statistics & ML",
-        concepts: [
-          { id: "ds_bias_variance", label: "Bias-variance trade-off", categories: ["technical_functional"], difficulty: "intermediate", priority: 65, keywords: ["bias variance", "overfitting", "underfitting"], archetypes: [
-            "Ask the candidate to explain the bias-variance trade-off in their own words.",
-          ] },
-          { id: "ds_overfitting", label: "Overfitting & regularisation", categories: ["technical_functional"], difficulty: "intermediate", priority: 55, keywords: ["overfitting", "regularisation", "l1 l2"], archetypes: [
-            "Ask how the candidate would detect and address overfitting in a model.",
-          ] },
-          { id: "ds_ab_testing", label: "A/B testing", categories: ["technical_functional", "situational_judgement"], difficulty: "intermediate", priority: 60, keywords: ["a/b test", "statistical significance", "experiment design"], archetypes: [
-            "Ask the candidate to design an A/B test for a proposed product change and what they'd measure.",
-          ] },
-          { id: "ds_model_eval", label: "Model evaluation metrics", categories: ["technical_functional"], difficulty: "foundational", priority: 50, keywords: ["precision", "recall", "f1 score", "auc"], archetypes: [
-            "Ask when the candidate would prioritise precision over recall, and give an example.",
-          ] },
-        ],
-      },
-    ],
-  },
-  {
-    id: "product_management",
-    label: "Product Management",
-    roleKeywords: ["product manager", "associate product manager", "product management"],
-    topics: [
-      {
-        label: "Product Sense",
-        concepts: [
-          { id: "pm_prioritisation", label: "Prioritisation framework", categories: ["situational_judgement", "case_problem_solving"], difficulty: "foundational", priority: 65, keywords: ["prioritise", "roadmap", "impact vs effort"], archetypes: [
-            "Ask the candidate how they'd prioritise a backlog of competing feature requests.",
-          ] },
-          { id: "pm_metrics", label: "Defining success metrics", categories: ["situational_judgement", "case_problem_solving"], difficulty: "intermediate", priority: 55, keywords: ["success metrics", "north star metric", "kpi"], archetypes: [
-            "Ask the candidate what metrics they'd track to know whether a new feature was successful.",
-          ] },
-          { id: "pm_launch_strategy", label: "Product launch strategy", categories: ["situational_judgement"], difficulty: "intermediate", priority: 50, keywords: ["launch strategy", "go to market", "rollout"], archetypes: [
-            "Ask how the candidate would approach launching a new feature to minimise risk.",
-          ] },
-        ],
-      },
-    ],
-  },
-  {
-    id: "marketing",
-    label: "Marketing",
-    roleKeywords: ["marketing", "brand management", "digital marketing", "growth marketing"],
-    topics: [
-      {
-        label: "Marketing Fundamentals",
-        concepts: [
-          { id: "mkt_mix", label: "Marketing mix (4Ps)", categories: ["technical_functional", "situational_judgement"], difficulty: "foundational", priority: 55, keywords: ["marketing mix", "4ps", "product price place promotion"], archetypes: [
-            "Ask the candidate to apply the marketing mix (4Ps) to a product of their choice.",
-          ] },
-          { id: "mkt_segmentation", label: "Customer segmentation", categories: ["technical_functional", "situational_judgement"], difficulty: "intermediate", priority: 60, keywords: ["segmentation", "target audience", "customer persona"], archetypes: [
-            "Ask how the candidate would segment the customer base for a given product.",
-          ] },
-          { id: "mkt_roi", label: "Campaign measurement & ROI", categories: ["technical_functional"], difficulty: "intermediate", priority: 55, keywords: ["campaign roi", "conversion rate", "attribution"], archetypes: [
-            "Ask how the candidate would measure whether a marketing campaign was successful.",
-          ] },
-        ],
-      },
-    ],
-  },
-];
-
+// ---- 9.8 domain resolution ---------------------------------------
 const DOMAIN_MATCH_MIN_SCORE = 1;
 
 /**
  * resolveKnowledgeDomain(interviewProfile)
  *
- * interviewProfile: profile.interview_profile (validateProfile's own shape —
- *   role, division, responsibilities, required_skills, preferred_skills,
- *   technical_topics, commercial_topics, jd_requirements). Deliberately
- *   reuses fields the interview_profile AI call already extracts — no new
- *   AI call, no raw-JD re-parsing.
- *
- * Deterministic substring keyword matching, case-insensitive. Returns the
- * best-scoring domain (most roleKeyword hits) when it clears
- * DOMAIN_MATCH_MIN_SCORE, otherwise null — a generic/unmatched role
- * correctly resolves to "no domain", the same safe default as every other
- * degradation path in this module. Ties break on KNOWLEDGE_DOMAINS' own
- * declared order (first strictly-greater score wins, same first-wins
- * convention methodology.js's ACTIVE_CATEGORIES iteration already uses).
+ * UNCHANGED from Phase 6. Deterministic, case-insensitive substring
+ * matching of each domain's roleKeywords against ALREADY-EXTRACTED
+ * interview_profile fields (role/division/responsibilities/required_skills/
+ * preferred_skills/technical_topics/commercial_topics/jd_requirements) —
+ * no new AI call, no raw-JD re-parsing. Returns the best-scoring domain
+ * when it clears DOMAIN_MATCH_MIN_SCORE, else null (a generic/unmatched
+ * role correctly resolves to "no domain"). Ties break on KNOWLEDGE_DOMAINS'
+ * declared order (first strictly-greater score wins).
  */
 export function resolveKnowledgeDomain(interviewProfile) {
   const ip = interviewProfile && typeof interviewProfile === "object" ? interviewProfile : {};
@@ -444,68 +192,133 @@ export function resolveKnowledgeDomain(interviewProfile) {
   return bestScore >= DOMAIN_MATCH_MIN_SCORE ? best : null;
 }
 
+/** domainGroup(domainOrId) — the KNOWLEDGE_DOMAIN_GROUPS entry a domain belongs to, or null. */
+export function domainGroup(domainOrId) {
+  const id = typeof domainOrId === "string" ? domainOrId : domainOrId?.id;
+  if (!id) return null;
+  return KNOWLEDGE_DOMAIN_GROUPS.find((g) => g.domainIds.includes(id)) || null;
+}
+
+// ---- 9.9 interview-context filters --------------------------------
+// A concept with no applicableStages (or an empty one) applies to every
+// stage. A non-empty list restricts it — but ONLY when the caller actually
+// supplies a stage. Callers that don't pass interview context (every
+// pre-Phase-9 caller, and every test that omits it) see no filtering at
+// all: full backwards compatibility. Same rules for applicableFormats.
+function contextAllows(list, value) {
+  const allowed = arr(list);
+  if (!allowed.length) return true;   // unrestricted concept
+  if (!value) return true;            // caller supplied no context to filter on
+  return allowed.includes(value);
+}
+function conceptMatchesInterviewContext(concept, stage, format) {
+  return contextAllows(concept.applicableStages, stage) && contextAllows(concept.applicableFormats, format);
+}
+
 /**
- * getDomainConcepts(domain, category)
+ * getDomainConcepts(domain, category, { stage, format } = {})
  *
- * Flattens a domain's topic/concept tree into a single list, filtered to
- * concepts relevant to the given (scheduler-decided) category. Each
- * returned concept carries its parent topic's label for context. Never
- * throws: a missing/malformed domain or category returns [].
+ * Phase 6 signature preserved (the third arg is optional and new). Returns
+ * the flat catalogue filtered to: this domain, this (scheduler-decided,
+ * legacy-normalised) category, and — when supplied — this stage/format.
+ * Each returned concept is a shallow copy carrying `topicLabel` (Phase 6
+ * alias of `subdomain`) for backwards compatibility. Never throws.
  */
-export function getDomainConcepts(domain, category) {
-  if (!domain || !Array.isArray(domain.topics)) return [];
+export function getDomainConcepts(domain, category, { stage, format } = {}) {
+  if (!domain || !domain.id) return [];
   const normalizedCategory = mapLegacyCategory(category);
   const out = [];
-  for (const topic of domain.topics) {
-    for (const concept of arr(topic?.concepts)) {
-      if (concept && arr(concept.categories).includes(normalizedCategory)) {
-        out.push({ ...concept, topicLabel: str(topic?.label) });
-      }
-    }
+  for (const concept of KNOWLEDGE_CONCEPTS) {
+    if (concept.domain !== domain.id) continue;
+    if (!arr(concept.categories).includes(normalizedCategory)) continue;
+    if (!conceptMatchesInterviewContext(concept, stage, format)) continue;
+    out.push({ ...concept, topicLabel: str(concept.subdomain) });
   }
   return out;
 }
 
-// ---- 6.4 candidate-state-aware priority -----------------------------
-// Reuses candidateState.js's OWN already-computed per-competency fields
-// (.tests / .trend / .mostRecentEvidence.strength) — this module never
-// recomputes evidence strength/trend itself, per the "do not build a
-// parallel Candidate State" constraint. A concept whose label has never
-// been asked (no entry in candidateState.competencies, or .tests === 0)
-// is "not yet tested" — the strongest priority signal, same convention
-// candidateIntelligence.js/interviewStrategy.js already use for an
-// unknown/never-tested category.
-const RECENT_STRENGTH_ADJUSTMENT = { strong: -50, moderate: -20, weak: 25, contradictory: 30 };
-const TREND_ADJUSTMENT = { declining: 15, improving: -10 };
-// Bounded, same rationale as interviewStrategy.js's STRATEGY_NUDGE_CAP /
-// candidateIntelligence.js's MAX_RECOMMENDED_PROBES: a JD-emphasised topic
-// gets a meaningful nudge, never enough to make baseline priority
-// irrelevant on its own.
-const JD_BOOST = 20;
-const MAX_GUIDANCE_CONCEPTS = 4;
-
-function jdBoostFor(concept, jdRequirements) {
-  const reqText = arr(jdRequirements).map((r) => `${str(r?.requirement)} ${str(r?.evidence_quote)}`).join(" ").toLowerCase();
-  if (!reqText.trim()) return 0;
-  const hit = arr(concept.keywords).some((kw) => reqText.includes(str(kw).toLowerCase()));
-  return hit ? JD_BOOST : 0;
+// ---- 9.10 explicit invitation context -----------------------------
+/**
+ * normalizeInvitationContext(raw)
+ *
+ * Coerces whatever the caller passes into the strict internal shape
+ *   { explicitTopics: string[], explicitComponents: string[] }
+ * `explicitTopics` are lower-cased free-text tokens the invitation email
+ * EXPLICITLY named (technical/commercial topics, competencies, preparation
+ * areas — all extracted under Phase 7's "never infer a topic the email
+ * doesn't name" rule and guarded by Phase 8's hallucination fixtures).
+ * `explicitComponents` are canonical categories the email explicitly said
+ * the interview covers. A missing/malformed value degrades to empty — and
+ * empty means "no explicit invitation signal", i.e. exactly the pre-Phase-9
+ * behaviour, never a fabricated topic.
+ */
+export function normalizeInvitationContext(raw) {
+  const r = raw && typeof raw === "object" ? raw : {};
+  const explicitTopics = Array.from(
+    new Set(arr(r.explicitTopics).map((t) => norm(t)).filter((t) => t.length >= 3))
+  );
+  const explicitComponents = arr(r.explicitComponents)
+    .map((c) => mapLegacyCategory(str(c)))
+    .filter((c) => KNOWLEDGE_ELIGIBLE_CATEGORIES.includes(c));
+  return { explicitTopics, explicitComponents };
 }
 
-function scoreConcept(concept, candidateState, jdRequirements) {
-  const info = candidateState?.competencies?.[concept.label];
-  const jdBoost = jdBoostFor(concept, jdRequirements);
+// A concept "matches" an explicit invitation topic when that topic token
+// appears in the concept's label or any of its keywords (either direction
+// of containment — "valuation" matches "DCF valuation"; "financial
+// modelling" matches keyword "financial modelling"). This never asserts the
+// email named the CONCEPT — only that it named this TOPIC, which is the
+// thing actually being echoed in the reason string.
+function invitationTopicMatch(concept, explicitTopics) {
+  if (!explicitTopics.length) return null;
+  const hay = [norm(concept.label), ...arr(concept.keywords).map((k) => norm(k))];
+  for (const topic of explicitTopics) {
+    if (hay.some((h) => h && (h.includes(topic) || topic.includes(h)))) return topic;
+  }
+  return null;
+}
+
+function jdKeywordMatch(concept, jdRequirements) {
+  const reqText = arr(jdRequirements)
+    .map((r) => `${str(r?.requirement)} ${str(r?.evidence_quote)}`)
+    .join(" ")
+    .toLowerCase();
+  if (!reqText.trim()) return false;
+  return arr(concept.keywords).some((kw) => reqText.includes(norm(kw)));
+}
+
+// ---- 9.11 candidate-state-aware scoring --------------------------
+// Reads candidateState.js's OWN already-computed per-competency fields
+// (.tests / .trend / .mostRecentEvidence.strength) keyed by the concept's
+// verbatim label — never recomputes evidence. A concept whose label has
+// never been asked (no entry, or .tests === 0) is "not yet tested" — the
+// strongest priority signal, same convention the rest of the architecture
+// uses for a never-tested competency.
+// statusLabel strings are STABLE (asserted verbatim by tests and surfaced,
+// via the prompt builder, to Call 2) — do not reword casually.
+function candidateStateContribution(concept, candidateState) {
+  const info = candidateState && typeof candidateState === "object"
+    ? candidateState.competencies?.[concept.label]
+    : null;
   if (!info || !info.tests) {
-    return { score: clamp(concept.priority + jdBoost, 0, 200), statusLabel: "not yet tested", tests: 0 };
+    return { delta: 0, statusLabel: "not yet tested", tests: 0, reason: "no candidate evidence yet" };
   }
   const recentStrength = info.mostRecentEvidence?.strength;
   const strengthAdj = RECENT_STRENGTH_ADJUSTMENT[recentStrength] ?? 0;
   const trendAdj = TREND_ADJUSTMENT[info.trend] ?? 0;
-  const score = clamp(concept.priority + jdBoost + strengthAdj + trendAdj, 0, 200);
   let statusLabel;
-  if (recentStrength === "strong" || info.trend === "improving") statusLabel = "demonstrated strongly";
-  else if (recentStrength === "weak" || recentStrength === "contradictory" || info.trend === "declining") statusLabel = "weak — worth revisiting";
-  else statusLabel = "tested, moderate evidence";
-  return { score, statusLabel, tests: info.tests };
+  let reason;
+  if (recentStrength === "strong" || info.trend === "improving") {
+    statusLabel = "demonstrated strongly";
+    reason = "already well evidenced — lower priority";
+  } else if (recentStrength === "weak" || recentStrength === "contradictory" || info.trend === "declining") {
+    statusLabel = "weak — worth revisiting";
+    reason = "candidate weakness — worth revisiting";
+  } else {
+    statusLabel = "tested, moderate evidence";
+    reason = "some evidence — moderate priority";
+  }
+  return { delta: strengthAdj + trendAdj, statusLabel, tests: info.tests, reason };
 }
 
 function pickArchetype(concept, testCount) {
@@ -514,50 +327,188 @@ function pickArchetype(concept, testCount) {
   return archetypes[testCount % archetypes.length];
 }
 
+function importanceLabel(concept) {
+  const level = IMPORTANCE_LEVELS.includes(concept?.importance) ? concept.importance : "important";
+  return level.charAt(0).toUpperCase() + level.slice(1);
+}
+
 /**
- * buildKnowledgeGuidance({ domain, category, pipeline, candidateState,
- *   transcript, jdRequirements })
+ * scoreConcept(concept, ctx)
  *
- * The single structured output this module exists to produce. Returns
- * null whenever the layer isn't applicable OR the domain has no concepts
- * for this category OR every relevant concept has already been asked this
- * interview (never fabricates guidance from nothing). Otherwise returns:
- *   { domainLabel, priorityConcepts: [{ label, statusLabel }],
- *     targetConcept: { label, archetype } }
- *
- * transcript: this interview's OWN turns so far (App.jsx's live shape,
- *   [{ question: { competency }, ... }]) — used ONLY to exclude a concept
- *   already asked THIS interview (hard exclusion, not merely
- *   deprioritisation: "do not repeat a recently asked question" is a hard
- *   requirement, not a preference). Cross-interview history (whether a
- *   concept was tested in a DIFFERENT past interview) comes from
- *   candidateState instead, which naturally persists across interviews —
- *   no separate "recently tested" store needed.
- * jdRequirements: profile.interview_profile.jd_requirements — reused
- *   verbatim, never re-extracted.
- *
- * Never throws: any malformed input degrades to null.
+ * Deterministic. Returns the full explainable record for one concept:
+ *   { id, label, subdomain, importance, difficulty, priority, statusLabel,
+ *     tests, reasons: string[], relatedConceptIds, prerequisiteConceptIds,
+ *     archetype }
+ * `priority` is the bounded [0,200] score; `reasons` explains every signal
+ * that moved it.
  */
-export function buildKnowledgeGuidance({ domain, category, pipeline, candidateState, transcript, jdRequirements } = {}) {
-  if (!isKnowledgeLayerApplicable({ pipeline, category, domain })) return null;
-  const concepts = getDomainConcepts(domain, category);
-  if (!concepts.length) return null;
+function scoreConcept(concept, { domainLabel, normalizedCategory, candidateState, jdRequirements, inv }) {
+  const base = basePriorityFor(concept);
+  const reasons = [`${importanceLabel(concept)} concept for ${domainLabel}`];
+
+  const jdHit = jdKeywordMatch(concept, jdRequirements);
+  if (jdHit) reasons.push("JD relevance");
+
+  const invTopic = invitationTopicMatch(concept, inv.explicitTopics);
+  if (invTopic) reasons.push(`explicit invitation topic: ${invTopic}`);
+
+  if (inv.explicitComponents.includes(normalizedCategory)) {
+    reasons.push("interview explicitly covers this component");
+  }
+
+  const cs = candidateStateContribution(concept, candidateState);
+  reasons.push(cs.reason);
+
+  const priority = clamp(
+    base + (jdHit ? JD_BOOST : 0) + (invTopic ? INVITATION_TOPIC_BOOST : 0) + cs.delta,
+    PRIORITY_MIN, PRIORITY_MAX
+  );
+
+  return {
+    id: concept.id,
+    label: concept.label,
+    subdomain: str(concept.subdomain),
+    importance: IMPORTANCE_LEVELS.includes(concept.importance) ? concept.importance : "important",
+    difficulty: str(concept.difficulty),
+    priority,
+    statusLabel: cs.statusLabel,
+    tests: cs.tests,
+    reasons,
+    relatedConceptIds: arr(concept.relatedConceptIds).slice(),
+    prerequisiteConceptIds: arr(concept.prerequisiteConceptIds).slice(),
+    archetype: pickArchetype(concept, cs.tests),
+  };
+}
+
+// ---- 9.12 the concept selection API -----------------------------
+/**
+ * selectKnowledgeConcepts({
+ *   domain, category, pipeline, stage, format,
+ *   candidateState, jdRequirements, invitationContext, transcript, limit
+ * })
+ *
+ * The single deterministic entry point for "which canonical concepts are
+ * worth testing on THIS scheduler-selected turn, and why". Structured
+ * enough for three consumers: the prompt builder (buildKnowledgeGuidance
+ * below), tests, and any future UI.
+ *
+ * Pipeline:
+ *   gate (isKnowledgeLayerApplicable) ->
+ *   filter catalogue to domain + category + (stage/format if supplied) ->
+ *   HARD-exclude any concept already asked THIS interview (transcript) ->
+ *   score each remaining concept (importance base + JD + explicit
+ *     invitation topic + candidate-state delta, all bounded) ->
+ *   sort by (priority desc, importance rank desc, catalogue order asc) ->
+ *   take `limit` (default MAX_GUIDANCE_CONCEPTS).
+ *
+ * Always returns a stable shape (never throws, never null):
+ *   { applicable, domainId, domainLabel, groupId, category,
+ *     concepts: [...scored records...], excludedAskedThisInterview: [labels] }
+ * `applicable:false` (with concepts:[]) whenever the gate fails — the
+ * caller treats that identically to "no guidance".
+ */
+export function selectKnowledgeConcepts({
+  domain, category, pipeline, stage, format,
+  candidateState, jdRequirements, invitationContext, transcript, limit,
+} = {}) {
+  const group = domainGroup(domain);
+  const emptyResult = {
+    applicable: false,
+    domainId: domain?.id || null,
+    domainLabel: str(domain?.label),
+    groupId: group?.id || null,
+    category: mapLegacyCategory(category),
+    concepts: [],
+    excludedAskedThisInterview: [],
+  };
+  if (!isKnowledgeLayerApplicable({ pipeline, category, domain })) return emptyResult;
+
+  const normalizedCategory = mapLegacyCategory(category);
+  const inv = normalizeInvitationContext(invitationContext);
+  const domainLabel = str(domain.label);
+
+  const pool = KNOWLEDGE_CONCEPTS.filter(
+    (c) =>
+      c.domain === domain.id &&
+      arr(c.categories).includes(normalizedCategory) &&
+      conceptMatchesInterviewContext(c, stage, format)
+  );
+
+  const base = { ...emptyResult, applicable: true };
+  if (!pool.length) return base;
 
   const askedThisInterview = new Set(
-    arr(transcript).map((t) => str(t?.question?.competency).toLowerCase()).filter(Boolean)
+    arr(transcript).map((t) => norm(t?.question?.competency)).filter(Boolean)
   );
-  const candidates = concepts.filter((c) => !askedThisInterview.has(str(c.label).toLowerCase()));
-  if (!candidates.length) return null;
+  const excludedAskedThisInterview = [];
+  const scored = [];
+  for (const concept of pool) {
+    if (askedThisInterview.has(norm(concept.label))) {
+      excludedAskedThisInterview.push(concept.label);
+      continue;
+    }
+    scored.push(scoreConcept(concept, { domainLabel, normalizedCategory, candidateState, jdRequirements, inv }));
+  }
+  if (!scored.length) return { ...base, excludedAskedThisInterview };
 
-  const scored = candidates
-    .map((concept) => ({ concept, ...scoreConcept(concept, candidateState, jdRequirements) }))
-    .sort((a, b) => b.score - a.score);
+  scored.sort((a, b) => {
+    if (b.priority !== a.priority) return b.priority - a.priority;
+    if (IMPORTANCE_RANK[b.importance] !== IMPORTANCE_RANK[a.importance]) {
+      return IMPORTANCE_RANK[b.importance] - IMPORTANCE_RANK[a.importance];
+    }
+    return (CONCEPT_BY_ID.get(a.id)?.index ?? 0) - (CONCEPT_BY_ID.get(b.id)?.index ?? 0);
+  });
 
-  const top = scored.slice(0, MAX_GUIDANCE_CONCEPTS);
-  const target = top[0];
+  const n = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : MAX_GUIDANCE_CONCEPTS;
   return {
-    domainLabel: str(domain.label),
-    priorityConcepts: top.map((s) => ({ label: s.concept.label, statusLabel: s.statusLabel })),
-    targetConcept: { label: target.concept.label, archetype: pickArchetype(target.concept, target.tests) },
+    applicable: true,
+    domainId: domain.id,
+    domainLabel,
+    groupId: group?.id || null,
+    category: normalizedCategory,
+    concepts: scored.slice(0, n),
+    excludedAskedThisInterview,
+  };
+}
+
+// ---- 9.13 compact guidance for the prompt builder ----------------
+/**
+ * buildKnowledgeGuidance({ domain, category, pipeline, stage, format,
+ *   candidateState, transcript, jdRequirements, invitationContext })
+ *
+ * Phase 6 output contract PRESERVED exactly (App.jsx + the Phase 6 test
+ * suite depend on it):
+ *   null  whenever the layer isn't applicable OR no concept survives
+ *         filtering/exclusion (never fabricates guidance from nothing).
+ *   else  { domainLabel,
+ *           priorityConcepts: [{ label, statusLabel, reasons }],   // <= MAX_GUIDANCE_CONCEPTS
+ *           targetConcept:    { label, archetype } }
+ *
+ * `reasons` on each priorityConcept is the only additive field (Phase 9,
+ * for explainability) — every existing key is unchanged. Built entirely on
+ * top of selectKnowledgeConcepts so there is exactly one selection code
+ * path. stage/format/invitationContext are all OPTIONAL: omitting them
+ * reproduces Phase 6 behaviour byte-for-byte.
+ */
+export function buildKnowledgeGuidance({
+  domain, category, pipeline, stage, format,
+  candidateState, transcript, jdRequirements, invitationContext,
+} = {}) {
+  const selection = selectKnowledgeConcepts({
+    domain, category, pipeline, stage, format,
+    candidateState, jdRequirements, invitationContext, transcript,
+    limit: MAX_GUIDANCE_CONCEPTS,
+  });
+  if (!selection.applicable || !selection.concepts.length) return null;
+
+  const target = selection.concepts[0];
+  return {
+    domainLabel: selection.domainLabel,
+    priorityConcepts: selection.concepts.map((c) => ({
+      label: c.label,
+      statusLabel: c.statusLabel,
+      reasons: c.reasons.slice(),
+    })),
+    targetConcept: { label: target.label, archetype: target.archetype },
   };
 }

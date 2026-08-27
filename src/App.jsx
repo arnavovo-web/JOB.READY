@@ -598,6 +598,47 @@ export function buildInvitationContextForProfile(draft) {
   return `\n\nContext from the candidate's actual interview invitation email (use this to ground the interview realistically; do not invent additional specifics beyond it):\n${lines.join("\n")}`;
 }
 
+/**
+ * buildInvitationKnowledgeContext(draft)
+ *
+ * Phase 9: distils the candidate-reviewed invitation extraction into the
+ * small, generic shape the Knowledge Infrastructure consumes —
+ *   { explicitTopics: string[], explicitComponents: string[] }
+ * and NOTHING else. This is the ONLY bridge between the invitation scanner
+ * and interviewKnowledge.js, and it is deliberately narrow:
+ *
+ *  - explicitTopics: the topic strings the EMAIL ITSELF named
+ *    (technical_topics / commercial_topics / mentioned_competencies /
+ *    preparation_areas). Phase 7's extraction prompt forbids inferring any
+ *    topic the email doesn't state, and Phase 8's fixture corpus actively
+ *    guards that ("topicsMustNotInclude"), so these are explicit by
+ *    construction. They are NEVER derived from the role/company/domain
+ *    guess — an invitation that only says "Investment Banking interview"
+ *    yields an empty list here, so the knowledge layer gets no topic boost
+ *    and behaves exactly as it would with no invitation at all. This is the
+ *    explicit-vs-inferred boundary Phase 7/8 protect, carried through
+ *    unbroken.
+ *  - explicitComponents: the canonical categories the email explicitly said
+ *    the interview covers (only when components_source === "explicit").
+ *    Used by the knowledge layer for explainability only — it never
+ *    suppresses or reassigns anything (the scheduler still owns category).
+ *
+ * Returns null when there is no explicit signal at all, so callers can skip
+ * persisting an empty object onto the interview config.
+ */
+export function buildInvitationKnowledgeContext(draft) {
+  const d = draft || {};
+  const explicitTopics = Array.from(new Set([
+    ...arr(d.technical_topics), ...arr(d.commercial_topics),
+    ...arr(d.mentioned_competencies), ...arr(d.preparation_areas),
+  ].map((t) => str(t).trim().toLowerCase()).filter((t) => t.length >= 3)));
+  const explicitComponents = d.components_source === "explicit"
+    ? arr(d.components).map((c) => str(c)).filter(Boolean)
+    : [];
+  if (!explicitTopics.length && !explicitComponents.length) return null;
+  return { explicitTopics, explicitComponents };
+}
+
 // Phase 2C.3 Call 1 (evaluation only). Replaces the old validateNextTurn:
 // no decision, no next_question, no interview_should_end — the model no
 // longer proposes any of those. follow_up_worthy/challenge_worthy/
@@ -699,7 +740,17 @@ export function buildQuestionGenerationPrompt(genInput, interview, profile, cand
       const domain = resolveKnowledgeDomain(profile?.interview_profile);
       knowledgeGuidance = buildKnowledgeGuidance({
         domain, category: gi.category, pipeline: interview?.config?.pipeline,
+        // Phase 9: the interview's own resolved stage/format now narrow concept
+        // applicability (a concept may opt in to applicableStages/applicableFormats).
+        // Both are read straight off the already-persisted config — no new state.
+        stage: interview?.config?.stage, format: interview?.config?.format,
         candidateState, transcript: interview?.transcript, jdRequirements: profile?.interview_profile?.jd_requirements,
+        // Phase 9: when this interview was built from a scanned invitation, the
+        // topics the email EXPLICITLY named (persisted onto config at build time by
+        // buildInvitationKnowledgeContext — never inferred, never the domain guess)
+        // boost the concepts they match. Absent/legacy => undefined => no boost,
+        // i.e. exactly the Phase 6 behaviour.
+        invitationContext: interview?.config?.invitationContext,
       });
     } catch (knowledgeErr) { console.error("knowledge layer guidance build failed:", knowledgeErr.message); }
   }
@@ -754,8 +805,13 @@ export function buildQuestionGenerationPrompt(genInput, interview, profile, cand
   // never to reveal this internal taxonomy/labelling and never to copy the archetype wording
   // verbatim — the model still owns HOW to ask it naturally; the knowledge layer only owns
   // WHAT should be tested.
+  // Phase 9: each priority concept now carries a short, bounded "why it was selected"
+  // (importance / JD relevance / explicit invitation topic / candidate evidence) — kept
+  // to the first two reasons so the block stays compact and never grows with the
+  // catalogue. Still a small RETRIEVED set (<= MAX_GUIDANCE_CONCEPTS), never the
+  // full catalogue, and still explicitly one line per concept.
   const knowledgeBlock = knowledgeGuidance
-    ? `\nKNOWLEDGE GUIDANCE\nDomain: ${knowledgeGuidance.domainLabel}\nPriority concepts:\n${knowledgeGuidance.priorityConcepts.map((c, i) => `${i + 1}. ${c.label} — ${c.statusLabel}`).join("\n")}\nCurrent target concept: ${knowledgeGuidance.targetConcept.label}\n${knowledgeGuidance.targetConcept.archetype}\nAsk this as a natural, conversational interview question in your own words. Do not reveal this internal taxonomy or these labels to the candidate. Do not mechanically copy the wording above verbatim.`
+    ? `\nKNOWLEDGE GUIDANCE\nDomain: ${knowledgeGuidance.domainLabel}\nPriority concepts:\n${knowledgeGuidance.priorityConcepts.map((c, i) => `${i + 1}. ${c.label} — ${c.statusLabel}${c.reasons && c.reasons.length ? ` (${c.reasons.slice(0, 2).join("; ")})` : ""}`).join("\n")}\nCurrent target concept: ${knowledgeGuidance.targetConcept.label}\n${knowledgeGuidance.targetConcept.archetype}\nAsk this as a natural, conversational interview question in your own words. Do not reveal this internal taxonomy or these labels to the candidate. Do not mechanically copy the wording above verbatim.`
     : "";
   const system = `You are a real, professional interviewer conducting a live interview. You are NOT effusive or full of praise — you are neutral and probing. Return strict JSON only, no prose, in this exact shape:
 { "text": "", "competency": ""${anchorField} }
@@ -2769,6 +2825,16 @@ Rules: mini study guide, not an essay. core_knowledge 3-5 points, key_points 3-5
     // in 4A it is NOT yet used to change question-generation or evaluation behaviour — every
     // interview still runs through the existing adaptive engine unchanged (see catalog comment).
     const ivConfig = resolveInterviewConfig(interviewStage, interviewFormat);
+    // Phase 9: when this interview is being built from a scanned invitation, persist the
+    // EXPLICIT-only topic/component signal (buildInvitationKnowledgeContext) onto the config
+    // blob so the Knowledge Infrastructure can consume it at question-generation time and it
+    // survives an interview reload. `config` is already a JSON column (Phase 4A) — this is an
+    // additive nested field, not a schema/DB change. Absent for every non-invitation build,
+    // and for an invitation with no explicit topics at all (the helper returns null).
+    if (buildMethod === "invitation" && invitationDraft) {
+      const invitationKnowledgeContext = buildInvitationKnowledgeContext(invitationDraft);
+      if (invitationKnowledgeContext) ivConfig.invitationContext = invitationKnowledgeContext;
+    }
     try {
       const weaknessNote = targetTopic
         ? `The candidate came here specifically from a Classroom lesson to practise this exact weakness: "${targetTopic}". Weight the question plan heavily toward re-testing this specific competency — it should be tested more than once, with rising difficulty if the candidate does well.` +
