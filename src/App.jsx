@@ -25,9 +25,17 @@ import {
 // whether the Technical Knowledge Layer may operate at all (isTechnicalMixEnabled ->
 // buildQuestionGenerationPrompt). It never picks a category/turn/anchor itself.
 import {
-  QUESTION_MIX_OPTIONS, normalizeQuestionMix, questionMixIsValid, questionMixRestricts,
+  QUESTION_MIX_OPTIONS, QUESTION_MIX_TYPES, normalizeQuestionMix, questionMixIsValid, questionMixRestricts,
   isTechnicalMixEnabled, applyQuestionMixToDistribution, resolveAllowedCategories, resolveOpeningCategory,
 } from "./questionMix";
+// Phase 12: Interview Invitation Email Scanner — guided-setup resolution. Pure, deterministic
+// layer that decides which of the four mandatory identity fields (Company / Role / Stage /
+// Question Mix) the scanned email resolved, so the review screen asks only for what's missing,
+// then hands ONE canonical config to the SAME wizard/engine a manual setup uses.
+import {
+  CANONICAL_STAGE_KEYS, resolveInvitationIdentity, deriveQuestionMixSignal,
+  recommendedQuestionMixTypes, questionMixSignalSummary, buildCanonicalInterviewConfig,
+} from "./invitationScannerResolve";
 // Phase 2C.3: the live adaptive interview's deterministic scheduler wiring.
 // submitAnswer/regenerateNextQuestion never compute a category, turn type,
 // anchor source, or competency themselves — every one of those decisions
@@ -455,16 +463,21 @@ export function buildInvitationExtractionPrompt(emailText) {
 
 Return strict JSON only, no prose, no markdown fences, in this exact shape:
 {
-  "company": "", "company_source": "explicit|inferred|unknown",
-  "role": "", "role_source": "explicit|inferred|unknown",
+  "company": "", "company_source": "explicit|inferred|unknown", "company_evidence": "",
+  "role": "", "role_source": "explicit|inferred|unknown", "role_evidence": "",
   "division": "", "team": "",
-  "stage": "recruiter_screen|first_round|technical|final_round|unknown", "stage_source": "explicit|inferred|unknown",
+  "stage": "recruiter_screen|first_round|technical|final_round|unknown", "stage_source": "explicit|inferred|unknown", "stage_evidence": "",
   "format": "asynchronous_video|live_conversational|technical|unknown", "format_source": "explicit|inferred|unknown",
   "duration_minutes": 0, "duration_source": "explicit|inferred|unknown",
   "date": "", "time": "", "timezone": "", "location": "",
   "interviewer_count": 0,
   "interviewers": [{"name": "", "title": ""}],
   "components": [""], "components_source": "explicit|inferred|unknown",
+  "question_mix": {
+    "technical": {"status": "explicit|inferred|unknown", "evidence": ""},
+    "behavioural": {"status": "explicit|inferred|unknown", "evidence": ""},
+    "motivational": {"status": "explicit|inferred|unknown", "evidence": ""}
+  },
   "technical_topics": [""], "behavioural_topics": [""], "commercial_topics": [""],
   "mentioned_competencies": [""], "preparation_areas": [""],
   "number_of_rounds": 0, "round_sequence": [""],
@@ -485,9 +498,17 @@ Canonical format meanings:
 
 "components" lists every kind of question content the email says this interview will actually cover, using ONLY these values: "motivation_fit" (why this role/company), "behavioural_competency" (past-experience/behavioural questions), "situational_judgement" (hypothetical/judgement scenarios, including case-style questions), "technical_functional" (technical/functional/coding questions), "commercial_awareness" (market/industry/commercial questions). Only include a component the email actually indicates — never guess additional components just because of the company or role name.
 
+"question_mix" records, for each of the three question types the candidate can practise, whether the EMAIL supports including it:
+- "technical" = role-specific technical / functional / coding / case-technical assessment (e.g. "technical interview", "financial modelling", "coding exercise", "you'll be tested on accounting").
+- "behavioural" = experience-based / competency questions (e.g. "tell us about a time...", "competency-based", "your past experience", "STAR", "we'll discuss examples from your CV").
+- "motivational" = motivation / fit / interest questions (e.g. "why this role", "why our firm", "your interest in the industry", "cultural fit").
+For each: "explicit" if the email directly names that kind of assessment; "inferred" if the email clearly implies it without naming it; "unknown" if the email does not indicate it either way. Put a short verbatim quote in "evidence" for explicit/inferred, "" for unknown. A generic line like "we are pleased to invite you to an interview" is "unknown" for ALL THREE — do NOT assume a normal interview covers all types.
+
 RULES — do not hallucinate:
 - Every field must reflect ONLY what the email actually says or very directly implies. If the email doesn't give enough information for a field, use "" / 0 / [] / "unknown" as appropriate — do not guess or invent a plausible-sounding value.
 - "explicit" means the email states it directly. "inferred" means it's a reasonable, DIRECT implication (e.g. "Zoom call" implies live_conversational format). "unknown" means there genuinely isn't enough information.
+- "company" is the organisation RUNNING this interview / offering the role — never a recruitment agency, a client mentioned in passing, or a company from the candidate's own past experience. "role" is the position being interviewed for — do not invent one from the company or industry alone. If either is genuinely unclear, use "" with source "unknown".
+- "*_evidence" fields hold a SHORT verbatim excerpt from the email that supports the value (max ~200 chars), or "" when the source is "unknown". Never put reasoning or commentary there — only a quote.
 - Do NOT infer specific technical concepts, frameworks, or question topics that the email does not mention (e.g. do not add "DCF" or "three financial statements" just because the interview is described as technical and for a finance role) — list only topics the email itself actually names. A downstream system already handles inferring detailed canonical knowledge from the role/company; your job is extraction only, not that inference.
 - Do NOT let the role or company name imply technical content on its own — only classify a "technical_functional" component when the email's OWN wording indicates it.
 - duration_minutes/interviewer_count/number_of_rounds are 0 when not stated.
@@ -511,13 +532,22 @@ const INVITATION_ARRAY_CAP = 12;
 function capArr(v, capper = (x) => str(x)) {
   return arr(v).map(capper).filter(Boolean).slice(0, INVITATION_ARRAY_CAP);
 }
+// Phase 12: per-question-type extraction signal. status is coerced through the SAME
+// validSource ("explicit"|"inferred"|"unknown") the rest of the extractor uses, so an
+// invalid/missing value degrades to "unknown" — never a fabricated "explicit". evidence is
+// a short verbatim excerpt only. `unknown` is preserved verbatim and is NEVER converted to
+// a decision here — the guided-setup layer (invitationScannerResolve.js) and the user do that.
+function validMixSignal(v) {
+  const o = v && typeof v === "object" ? v : {};
+  return { status: validSource(o.status), evidence: str(o.evidence).slice(0, 240) };
+}
 export function validateInvitationExtraction(raw) {
   const r = raw || {};
   return {
-    company: str(r.company).slice(0, 200), company_source: validSource(r.company_source),
-    role: str(r.role).slice(0, 200), role_source: validSource(r.role_source),
+    company: str(r.company).slice(0, 200), company_source: validSource(r.company_source), company_evidence: str(r.company_evidence).slice(0, 240),
+    role: str(r.role).slice(0, 200), role_source: validSource(r.role_source), role_evidence: str(r.role_evidence).slice(0, 240),
     division: str(r.division).slice(0, 200), team: str(r.team).slice(0, 200),
-    stage: validEnumOrUnknown(r.stage, INVITATION_STAGE_KEYS), stage_source: validSource(r.stage_source),
+    stage: validEnumOrUnknown(r.stage, INVITATION_STAGE_KEYS), stage_source: validSource(r.stage_source), stage_evidence: str(r.stage_evidence).slice(0, 240),
     format: validEnumOrUnknown(r.format, INVITATION_FORMAT_KEYS), format_source: validSource(r.format_source),
     duration_minutes: num(r.duration_minutes, 0, 0, 600), duration_source: validSource(r.duration_source),
     date: str(r.date).slice(0, 100), time: str(r.time).slice(0, 100), timezone: str(r.timezone).slice(0, 100), location: str(r.location).slice(0, 200),
@@ -525,6 +555,11 @@ export function validateInvitationExtraction(raw) {
     interviewers: capArr(r.interviewers, (i) => ({ name: str(i?.name).slice(0, 100), title: str(i?.title).slice(0, 150) })).filter((i) => i.name || i.title),
     components: capArr(r.components).filter((c) => INVITATION_COMPONENT_KEYS.includes(c)),
     components_source: validSource(r.components_source),
+    question_mix: {
+      technical: validMixSignal(r.question_mix?.technical),
+      behavioural: validMixSignal(r.question_mix?.behavioural),
+      motivational: validMixSignal(r.question_mix?.motivational),
+    },
     technical_topics: capArr(r.technical_topics, (s) => str(s).slice(0, 150)),
     behavioural_topics: capArr(r.behavioural_topics, (s) => str(s).slice(0, 150)),
     commercial_topics: capArr(r.commercial_topics, (s) => str(s).slice(0, 150)),
@@ -2232,6 +2267,14 @@ function App() {
   const [buildMethod, setBuildMethod] = useState("jdcv");
   const [invitationText, setInvitationText] = useState("");
   const [invitationDraft, setInvitationDraft] = useState(null);
+  // Phase 12: the untouched extraction captured right after the AI call, kept ONLY so the
+  // review screen can tell an AI-found value ("Found in invitation") from one the user has
+  // since edited ("Confirmed by you"). Never persisted, never sent anywhere.
+  const [invitationOriginal, setInvitationOriginal] = useState(null);
+  // Phase 12: the review screen's Question Mix checkboxes — the SAME { technical, behavioural,
+  // motivational } boolean shape as the manual wizard's `questionMix`. Pre-ticked from the
+  // scanner's recommendation, but always the user's explicit choice (Phase 11 principle).
+  const [scanMix, setScanMix] = useState({ technical: false, behavioural: false, motivational: false });
 
   const [profile, setProfile] = useState(null);
   const [interview, setInterview] = useState(null);
@@ -2438,7 +2481,7 @@ function App() {
     // Phase 7: same ownership-hygiene reasoning — a signed-out session must never leave a
     // previous user's pasted invitation email (which may contain personal information — §17)
     // sitting in memory.
-    setBuildMethod("jdcv"); setInvitationText(""); setInvitationDraft(null);
+    setBuildMethod("jdcv"); setInvitationText(""); setInvitationDraft(null); setInvitationOriginal(null); setScanMix({ technical: false, behavioural: false, motivational: false });
     setScreen("landing");
   }
 
@@ -2713,7 +2756,8 @@ Rules: mini study guide, not an essay. core_knowledge 3-5 points, key_points 3-5
   // regardless of which input method they then pick.
   function startCreateFlow(focusWeak = false) {
     setCompany(""); setRole(""); setJdText(""); setCvText(""); setBuildMethod("jdcv");
-    setInvitationText(""); setInvitationDraft(null);
+    setInvitationText(""); setInvitationDraft(null); setInvitationOriginal(null);
+    setScanMix({ technical: false, behavioural: false, motivational: false });
     // Phase 11: the Question Mix must be an explicit choice every time — never carried over
     // from a previous build, never pre-selected.
     setQuestionMix({ technical: false, behavioural: false, motivational: false });
@@ -2725,8 +2769,15 @@ Rules: mini study guide, not an essay. core_knowledge 3-5 points, key_points 3-5
   // new paste-email screen. Neither branch touches the other's state.
   function chooseBuildMethod(method) {
     setBuildMethod(method);
-    if (method === "invitation") { setError(""); setScreen("invitation_paste"); }
-    else { setWizardStep(1); setScreen("create"); }
+    setError("");
+    if (method === "invitation") { setScreen("invitation_paste"); return; }
+    // Phase 12: switching to (or back to) MANUAL setup must be a genuinely fresh start — never
+    // leak a stale scanned email, a stale extraction, or a scanner-recommended Question Mix
+    // into a manual configuration the user is now doing by hand.
+    setInvitationText(""); setInvitationDraft(null); setInvitationOriginal(null);
+    setScanMix({ technical: false, behavioural: false, motivational: false });
+    setQuestionMix({ technical: false, behavioural: false, motivational: false });
+    setWizardStep(1); setScreen("create");
   }
 
   // Phase 4 (returning-user continuity): resume a draft application that was started (company/
@@ -2789,9 +2840,19 @@ Rules: mini study guide, not an essay. core_knowledge 3-5 points, key_points 3-5
       // end — still land on the review screen (every field simply editable/empty) with an
       // honest message, rather than either fabricating something or blocking the candidate.
       if (!invitationExtractionHasUsableSignal(extraction)) {
-        setError("We couldn't find enough interview information in that text. You can fill in the details below manually, or try Job Description & CV instead.");
+        setError("We couldn't find enough interview information in that text. You can fill in the details below manually, or set up manually instead.");
       }
       setInvitationDraft(extraction);
+      // Phase 12: snapshot the untouched extraction for honest "Found in invitation" vs
+      // "Confirmed by you" provenance, and pre-tick the Question Mix from what the email
+      // explicitly named / directly implied — never the "unknown" types (the user decides those).
+      setInvitationOriginal(extraction);
+      const recommended = recommendedQuestionMixTypes(deriveQuestionMixSignal(extraction));
+      setScanMix({
+        technical: recommended.includes("technical"),
+        behavioural: recommended.includes("behavioural"),
+        motivational: recommended.includes("motivational"),
+      });
       setScreen("invitation_review");
     } catch (e) {
       // Covers AI failure, malformed JSON (callClaude's own repair/parse already tried and
@@ -2814,7 +2875,16 @@ Rules: mini study guide, not an essay. core_knowledge 3-5 points, key_points 3-5
     setError("");
     const cleanCompany = sanitizeText(invitationDraft.company).trim();
     const cleanRole = sanitizeText(invitationDraft.role).trim();
-    if (!cleanCompany || !cleanRole) { setError("Enter at least the company and role before continuing."); return; }
+    // Phase 12: deterministic gate — all FOUR mandatory identity fields must be genuinely
+    // resolved before the scanner hands off. buildCanonicalInterviewConfig reuses
+    // questionMix.js's normalizeQuestionMix; `unknown` is never silently turned into a value.
+    const canonical = buildCanonicalInterviewConfig({
+      company: cleanCompany, role: cleanRole, stage: invitationDraft.stage, questionMix: scanMix,
+    });
+    if (!canonical.ok) {
+      setError(Object.values(canonical.errors)[0] || "Please complete the details above before continuing.");
+      return;
+    }
     try {
       // Adversarial-review fix: only reuse an already-set applicationId when it genuinely
       // belongs to THIS company/role. Without this check, a candidate who completes one
@@ -2841,8 +2911,20 @@ Rules: mini study guide, not an essay. core_knowledge 3-5 points, key_points 3-5
         setApplicationId(appId);
       }
       setCompany(cleanCompany); setRole(cleanRole);
-      setInterviewStage(INVITATION_STAGE_KEYS.includes(invitationDraft.stage) ? invitationDraft.stage : "first_round");
+      // Phase 12: the stage is a REAL canonical key by now (buildCanonicalInterviewConfig
+      // rejected anything else, and the review screen's Continue button is disabled until a
+      // concrete stage is chosen) — never the silent "first_round" fallback the Phase 7 code
+      // used when stage came back "unknown".
+      setInterviewStage(canonical.config.stage);
       setInterviewFormat(INVITATION_FORMAT_KEYS.includes(invitationDraft.format) ? invitationDraft.format : null);
+      // Phase 12: pre-fill the Phase 11 Question Mix from the user's confirmed review-screen
+      // choice. It stays fully editable on wizard step 4 (Phase 11: the user controls the
+      // final mix) — the scanner only ever recommended and pre-ticked.
+      setQuestionMix({
+        technical: canonical.config.question_mix.includes("technical"),
+        behavioural: canonical.config.question_mix.includes("behavioural"),
+        motivational: canonical.config.question_mix.includes("motivational"),
+      });
       setWizardStep(4); setScreen("create");
     } catch (e) {
       setError(e.message || "Couldn't save your application. Please try again.");
@@ -3539,7 +3621,7 @@ Rules: scores computed honestly from the transcript's evaluations. Never fabrica
     setProfile(null); setInterview(null); setReport(null); setError(""); setFocusWeaknesses(false); setWizardStep(1); setApplicationId(null);
     // Phase 7: same entry point as Dashboard's "New interview" (startCreateFlow) — offers the
     // same choice of input method rather than assuming JD/CV.
-    setBuildMethod("jdcv"); setInvitationText(""); setInvitationDraft(null);
+    setBuildMethod("jdcv"); setInvitationText(""); setInvitationDraft(null); setInvitationOriginal(null); setScanMix({ technical: false, behavioural: false, motivational: false });
     setScreen("create_choose");
   }
 
@@ -4406,22 +4488,22 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
       {screen === "create_choose" && (
         <div className="jr-fade" style={{ maxWidth: 680, margin: "0 auto", padding: "44px 24px" }}>
           <Btn variant="ghost" onClick={() => setScreen("dashboard")} style={{ marginBottom: 16, padding: "6px 4px" }}><ArrowLeft size={14} /> Dashboard</Btn>
-          <h2 style={{ fontSize: 23, fontWeight: 800, color: "var(--navy)", margin: "14px 0 6px" }}>How would you like to build your interview?</h2>
-          <p style={{ fontSize: 14, color: "var(--text-dim)", marginBottom: 24 }}>Choose whichever you have to hand — you can always add the other one later.</p>
+          <h2 style={{ fontSize: 23, fontWeight: 800, color: "var(--navy)", margin: "14px 0 6px" }}>How would you like to set up your interview?</h2>
+          <p style={{ fontSize: 14, color: "var(--text-dim)", marginBottom: 24 }}>Both options build the same practice interview — pick whichever is easier for you.</p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <Card onClick={() => chooseBuildMethod("jdcv")} style={{ padding: 24, cursor: "pointer" }}>
               <div style={{ width: 36, height: 36, borderRadius: 10, background: "var(--highlight)", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 14 }}>
                 <FileText size={18} color="var(--blue)" />
               </div>
-              <div style={{ fontSize: 16, fontWeight: 700, color: "var(--navy)", marginBottom: 6 }}>Job Description & CV</div>
-              <div style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.5 }}>Build a tailored interview from the job description and your CV.</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: "var(--navy)", marginBottom: 6 }}>Set up manually</div>
+              <div style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.5 }}>Enter your interview details and configure your practice session yourself.</div>
             </Card>
             <Card onClick={() => chooseBuildMethod("invitation")} style={{ padding: 24, cursor: "pointer" }}>
               <div style={{ width: 36, height: 36, borderRadius: 10, background: "#E6FBF6", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 14 }}>
                 <Mail size={18} color="var(--teal)" />
               </div>
-              <div style={{ fontSize: 16, fontWeight: 700, color: "var(--navy)", marginBottom: 6 }}>Interview Invitation</div>
-              <div style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.5 }}>Paste the interview invitation email and we'll set up the interview for you.</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: "var(--navy)", marginBottom: 6 }}>Scan invitation email</div>
+              <div style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.5 }}>Paste your interview invitation email and we'll identify the key details for you.</div>
             </Card>
           </div>
         </div>
@@ -4431,17 +4513,21 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
       {screen === "invitation_paste" && (
         <div className="jr-fade" style={{ maxWidth: 620, margin: "0 auto", padding: "44px 24px" }}>
           <Btn variant="ghost" onClick={() => setScreen("create_choose")} style={{ marginBottom: 16, padding: "6px 4px" }}><ArrowLeft size={14} /> Back</Btn>
-          <h2 style={{ fontSize: 23, fontWeight: 800, color: "var(--navy)", margin: "14px 0 6px" }}>Paste your interview invitation</h2>
-          <p style={{ fontSize: 14, color: "var(--text-dim)", marginBottom: 20 }}>JOB.READY will analyse the invitation to understand the interview format, stage, topics and preparation requirements. Paste the whole email — signatures, scheduling details and disclaimers are fine.</p>
+          <h2 style={{ fontSize: 23, fontWeight: 800, color: "var(--navy)", margin: "14px 0 6px" }}>Scan your interview invitation</h2>
+          <p style={{ fontSize: 14, color: "var(--text-dim)", marginBottom: 20 }}>Paste the interview invitation email below. We'll identify the key details and help fill in anything that's missing. You can paste the whole email — signatures, scheduling links and disclaimers are fine.</p>
           <Card style={{ padding: 22 }}>
-            <textarea aria-label="Interview invitation email" value={invitationText} onChange={(e) => setInvitationText(e.target.value)} placeholder="Paste the full invitation email here..."
+            <textarea aria-label="Interview invitation email" value={invitationText} onChange={(e) => setInvitationText(e.target.value)} placeholder="Paste your interview invitation email here..."
               style={{ width: "100%", height: 280, padding: 13, border: "1.5px solid var(--border)", borderRadius: "var(--radius-sm)", fontSize: 13.5, lineHeight: 1.5, fontFamily: "var(--font)" }} />
             <div style={{ fontSize: 11.5, color: invitationText.length > INVITATION_MAX_CHARS ? "var(--bad)" : "var(--text-faint)", marginTop: 8, textAlign: "right" }}>
               {invitationText.length.toLocaleString()} / {INVITATION_MAX_CHARS.toLocaleString()} characters
             </div>
           </Card>
           {error && <div role="alert" style={{ color: "var(--bad)", fontSize: 13, marginTop: 12 }}>{error}</div>}
-          <Btn variant="accent" full onClick={() => guarded(analyseInvitation)} disabled={!invitationText.trim()} style={{ marginTop: 18 }}>Analyse invitation <Sparkles size={16} /></Btn>
+          <Btn variant="accent" full onClick={() => guarded(analyseInvitation)} disabled={!invitationText.trim()} style={{ marginTop: 18 }}>Scan invitation <Sparkles size={16} /></Btn>
+          <div style={{ fontSize: 12.5, color: "var(--text-faint)", marginTop: 14, textAlign: "center" }}>
+            Don't have an invitation to hand?{" "}
+            <LinkBtn onClick={() => chooseBuildMethod("jdcv")} style={{ color: "var(--blue)", fontWeight: 600, cursor: "pointer" }}>Set up manually instead</LinkBtn>.
+          </div>
         </div>
       )}
 
@@ -4449,11 +4535,15 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
 
       {/* ---------------- PHASE 7: REVIEW EXTRACTED INVITATION ---------------- */}
       {screen === "invitation_review" && invitationDraft && (() => {
-        const stageDisplayLabel = invitationDraft.stage !== "unknown" ? stageByKey(invitationDraft.stage).label : "Not specified — you'll choose next";
-        const formatDisplayLabel = invitationDraft.format !== "unknown" ? INTERVIEW_FORMATS[invitationDraft.format]?.label : "Not specified — you'll choose next";
-        // §11/§12: recomputed live off the CURRENT (possibly candidate-edited) draft on every
-        // render — deterministic, strong-match only, never fuzzy. Editing company/role above
-        // updates this banner immediately, with no separate "re-check" step.
+        // Phase 12: deterministic guided-setup resolution — which of the four mandatory
+        // identity fields (Company / Role / Stage / Question Mix) the email actually resolved.
+        const identity = resolveInvitationIdentity(invitationDraft, { original: invitationOriginal });
+        const canonical = buildCanonicalInterviewConfig({
+          company: invitationDraft.company, role: invitationDraft.role, stage: invitationDraft.stage, questionMix: scanMix,
+        });
+        const stageIsCanonical = CANONICAL_STAGE_KEYS.includes(invitationDraft.stage);
+        const stageLabelNow = stageIsCanonical ? stageByKey(invitationDraft.stage).label : null;
+        const formatDisplayLabel = INVITATION_FORMAT_KEYS.includes(invitationDraft.format) ? (INTERVIEW_FORMATS[invitationDraft.format]?.label || null) : null;
         const match = findInvitationApplicationMatch(invitationDraft.company, invitationDraft.role, applications);
         const topicsList = [
           ...invitationDraft.technical_topics, ...invitationDraft.behavioural_topics,
@@ -4461,11 +4551,25 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
         ];
         const hasLogistics = invitationDraft.interviewer_count > 0 || invitationDraft.date || invitationDraft.location ||
           invitationDraft.preparation_instructions || invitationDraft.required_materials.length > 0 || invitationDraft.deadlines.length > 0 || invitationDraft.next_steps;
+        const mixSummary = identity.questionMix.summary;
+        const typeLabel = (t) => (QUESTION_MIX_OPTIONS.find((o) => o.type === t)?.label || t);
+        // Honest provenance badge — never says "Found in invitation" for something the user typed.
+        const PROV_BADGE = {
+          found: { text: "Found in invitation", color: "var(--teal)", bg: "#E6FBF6" },
+          inferred: { text: "From your invitation", color: "var(--blue)", bg: "var(--highlight)" },
+          confirmed: { text: "Confirmed by you", color: "var(--text-dim)", bg: "#F1F5F9" },
+          missing: { text: "Needs your input", color: "var(--warn)", bg: "#FEF6E7" },
+        };
+        const provBadge = (prov) => {
+          const b = PROV_BADGE[prov];
+          return b ? <Pill color={b.color} bg={b.bg}>{b.text}</Pill> : null;
+        };
+        const anythingMissing = !identity.allIdentityResolved;
         return (
           <div className="jr-fade" style={{ maxWidth: 680, margin: "0 auto", padding: "44px 24px" }}>
             <Btn variant="ghost" onClick={() => setScreen("invitation_paste")} style={{ marginBottom: 16, padding: "6px 4px" }}><ArrowLeft size={14} /> Back</Btn>
 
-            {/* §11: company+role conflict — surfaced, never silently merged/overwritten. */}
+            {/* company+role conflict — surfaced, never silently merged/overwritten. */}
             {match.sameCompanyDifferentRole.length > 0 && (
               <Card style={{ padding: 18, marginBottom: 16, borderLeft: "4px solid var(--warn)" }}>
                 <div className="flex items-center gap-2" style={{ fontSize: 13.5, color: "var(--navy)", fontWeight: 600, marginBottom: 10 }}>
@@ -4480,28 +4584,123 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                 <div style={{ fontSize: 12, color: "var(--text-faint)", marginTop: 4 }}>This invitation appears to be for "<strong>{invitationDraft.role || "—"}</strong>" — if that's genuinely a different role, continuing will create a new, separate application for it.</div>
               </Card>
             )}
-            {/* §11: stage conflict against an EXACTLY-matched application's own latest stage. */}
-            {match.matched?.stageLabel && invitationDraft.stage !== "unknown" && match.matched.stageLabel !== stageDisplayLabel && (
+            {/* stage conflict against an EXACTLY-matched application's own latest stage. */}
+            {match.matched?.stageLabel && stageLabelNow && match.matched.stageLabel !== stageLabelNow && (
               <Card style={{ padding: 16, marginBottom: 16, borderLeft: "4px solid var(--warn)" }}>
-                <div style={{ fontSize: 13.5, color: "var(--navy)" }}>Your existing application for {invitationDraft.company} says <strong>{match.matched.stageLabel}</strong>, but this invitation appears to be for <strong>{stageDisplayLabel}</strong>. You'll confirm the correct stage on the next step.</div>
+                <div style={{ fontSize: 13.5, color: "var(--navy)" }}>Your existing application for {invitationDraft.company} says <strong>{match.matched.stageLabel}</strong>, but this invitation appears to be for <strong>{stageLabelNow}</strong>. You can change the stage below.</div>
               </Card>
             )}
 
+            <h2 style={{ fontSize: 21, fontWeight: 800, color: "var(--navy)", margin: "6px 0 4px" }}>
+              {anythingMissing ? "A few details to confirm" : "We found this in your invitation"}
+            </h2>
+            <p style={{ fontSize: 13.5, color: "var(--text-dim)", marginBottom: 18 }}>
+              {anythingMissing
+                ? "We couldn't tell everything from the email — fill in what's missing. You can edit anything here."
+                : "Check these are right — you can edit anything before continuing."}
+            </p>
+
             <Card style={{ padding: 24, marginBottom: 16 }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: "var(--blue)", textTransform: "uppercase", marginBottom: 16 }}>
-                {invitationExtractionHasUsableSignal(invitationDraft) ? "We found your interview" : "Tell us a bit more"}
+              <div className="flex items-center justify-between" style={{ marginBottom: 4 }}>
+                <label htmlFor="invitation-company" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Company</label>
+                {provBadge(identity.company.provenance)}
               </div>
-              <label htmlFor="invitation-company" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Company</label>
-              <input id="invitation-company" value={invitationDraft.company} onChange={(e) => setInvitationDraft((d) => ({ ...d, company: e.target.value }))} placeholder="e.g. Goldman Sachs" style={{ ...inputStyle, marginTop: 6, marginBottom: 16 }} />
-              <label htmlFor="invitation-role" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Role</label>
-              <input id="invitation-role" value={invitationDraft.role} onChange={(e) => setInvitationDraft((d) => ({ ...d, role: e.target.value }))} placeholder="e.g. Investment Banking Summer Analyst" style={{ ...inputStyle, marginTop: 6 }} />
-              <div className="flex flex-wrap gap-2" style={{ marginTop: 16 }}>
-                <Pill color="var(--blue)" bg="var(--highlight)">{stageDisplayLabel}</Pill>
-                {invitationDraft.components.length > 0 && <Pill color="var(--violet)" bg="#F1E9FE">{invitationDraft.components.map((c) => c.replace(/_/g, " ")).join(" + ")}</Pill>}
-                <Pill color="var(--teal)" bg="#E6FBF6">{formatDisplayLabel}</Pill>
-                {invitationDraft.duration_minutes > 0 && <Pill color="var(--text-dim)" bg="#F1F5F9">{invitationDraft.duration_minutes} minutes</Pill>}
+              <input id="invitation-company" value={invitationDraft.company} onChange={(e) => setInvitationDraft((d) => ({ ...d, company: e.target.value }))} placeholder="Which company is this interview with?" style={{ ...inputStyle, marginTop: 6, marginBottom: 18 }} />
+
+              <div className="flex items-center justify-between" style={{ marginBottom: 4 }}>
+                <label htmlFor="invitation-role" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Role</label>
+                {provBadge(identity.role.provenance)}
               </div>
+              <input id="invitation-role" value={invitationDraft.role} onChange={(e) => setInvitationDraft((d) => ({ ...d, role: e.target.value }))} placeholder="What role are you interviewing for?" style={{ ...inputStyle, marginTop: 6, marginBottom: 18 }} />
+
+              <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
+                <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Interview stage</label>
+                {provBadge(identity.stage.provenance)}
+              </div>
+              <div className="flex flex-wrap gap-2" role="group" aria-label="Interview stage">
+                {CANONICAL_STAGE_KEYS.map((key) => {
+                  const on = invitationDraft.stage === key;
+                  return (
+                    <button key={key} aria-pressed={on} onClick={() => setInvitationDraft((d) => ({ ...d, stage: key }))} style={{
+                      padding: "9px 12px", borderRadius: "var(--radius-sm)", fontSize: 12.5, fontWeight: 600, cursor: "pointer",
+                      border: on ? "1.5px solid var(--blue)" : "1.5px solid var(--border)",
+                      background: on ? "var(--highlight)" : "#fff", color: on ? "var(--blue)" : "var(--text-dim)",
+                    }}>{stageByKey(key).label}</button>
+                  );
+                })}
+              </div>
+              {!stageIsCanonical && (
+                <div role="status" style={{ fontSize: 12.5, color: "var(--warn)", marginTop: 8 }}>
+                  Your invitation didn't make the stage clear — pick the closest one. You can change it on the next screen.
+                </div>
+              )}
             </Card>
+
+            {/* Phase 12 + Phase 11: Question Mix — scanner RECOMMENDS pre-ticks from the email,
+                the user always makes the final choice. Never locks. */}
+            <Card style={{ padding: 24, marginBottom: 16 }}>
+              <div className="flex items-center justify-between" style={{ marginBottom: 4 }}>
+                <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Question Mix</label>
+                {(() => {
+                  // Honest: "Found in invitation" only while the current ticks still match what the
+                  // email pointed to; "Confirmed by you" once the user has changed or supplied it;
+                  // "Needs your input" until at least one type is chosen.
+                  const picked = QUESTION_MIX_TYPES.filter((t) => scanMix[t]);
+                  if (!picked.length) return provBadge("missing");
+                  const matchesEmail = mixSummary.mentioned.length > 0
+                    && picked.length === mixSummary.mentioned.length
+                    && picked.every((t) => mixSummary.mentioned.includes(t));
+                  return provBadge(matchesEmail ? "found" : "confirmed");
+                })()}
+              </div>
+              <div style={{ fontSize: 12.5, color: "var(--text-dim)", marginTop: 2, marginBottom: 10 }}>
+                {mixSummary.mentioned.length > 0
+                  ? `Your invitation points to: ${mixSummary.mentioned.map(typeLabel).join(", ")}.${mixSummary.notMentioned.length ? ` ${mixSummary.notMentioned.map(typeLabel).join(" and ")} ${mixSummary.notMentioned.length === 1 ? "wasn't" : "weren't"} mentioned — choose whether to include ${mixSummary.notMentioned.length === 1 ? "it" : "them"}.` : ""}`
+                  : "Your invitation didn't say which question types the interview covers — choose the ones you want to practise."}
+              </div>
+              <div className="flex flex-col gap-2">
+                {QUESTION_MIX_OPTIONS.map((opt) => {
+                  const on = !!scanMix[opt.type];
+                  return (
+                    <button key={opt.type} role="checkbox" aria-checked={on} aria-label={opt.label}
+                      onClick={() => setScanMix((m) => ({ ...m, [opt.type]: !m[opt.type] }))}
+                      style={{
+                        textAlign: "left", padding: "12px 14px", borderRadius: "var(--radius-sm)", cursor: "pointer",
+                        display: "flex", gap: 12, alignItems: "flex-start",
+                        border: on ? "1.5px solid var(--blue)" : "1.5px solid var(--border)",
+                        background: on ? "var(--highlight)" : "#fff",
+                      }}>
+                      <span aria-hidden="true" style={{
+                        flexShrink: 0, width: 18, height: 18, marginTop: 1, borderRadius: 5,
+                        border: on ? "1.5px solid var(--blue)" : "1.5px solid var(--border)",
+                        background: on ? "var(--blue)" : "#fff",
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                      }}>{on && <CheckCircle2 size={13} color="#fff" />}</span>
+                      <span>
+                        <span style={{ display: "block", fontSize: 14, fontWeight: 700, color: on ? "var(--blue)" : "var(--navy)" }}>{opt.label}</span>
+                        <span style={{ display: "block", fontSize: 12.5, color: "var(--text-dim)", marginTop: 2 }}>{opt.description}</span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              {!normalizeQuestionMix(scanMix) && (
+                <div role="status" style={{ fontSize: 12.5, color: "var(--bad)", marginTop: 10 }}>
+                  Choose at least one question type — you can fine-tune this on the next screen.
+                </div>
+              )}
+            </Card>
+
+            {(formatDisplayLabel || invitationDraft.duration_minutes > 0) && (
+              <Card style={{ padding: 18, marginBottom: 16 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", marginBottom: 8 }}>Also from your invitation</div>
+                <div className="flex flex-wrap gap-2">
+                  {formatDisplayLabel && <Pill color="var(--teal)" bg="#E6FBF6">{formatDisplayLabel}</Pill>}
+                  {invitationDraft.duration_minutes > 0 && <Pill color="var(--text-dim)" bg="#F1F5F9">{invitationDraft.duration_minutes} minutes</Pill>}
+                </div>
+                <div style={{ fontSize: 12, color: "var(--text-faint)", marginTop: 8 }}>You'll confirm format and length on the next screen.</div>
+              </Card>
+            )}
 
             {topicsList.length > 0 && (
               <Card style={{ padding: 20, marginBottom: 16 }}>
@@ -4524,7 +4723,10 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
             )}
 
             {error && <div role="alert" style={{ color: "var(--bad)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
-            <Btn variant="accent" full onClick={() => guarded(confirmInvitationAndBuild)} disabled={!invitationDraft.company.trim() || !invitationDraft.role.trim()}>Continue <ChevronRight size={16} /></Btn>
+            <Btn variant="accent" full onClick={() => guarded(confirmInvitationAndBuild)} disabled={!canonical.ok}>Continue with these details <ChevronRight size={16} /></Btn>
+            <div style={{ fontSize: 12.5, color: "var(--text-faint)", marginTop: 14, textAlign: "center" }}>
+              <LinkBtn onClick={() => chooseBuildMethod("jdcv")} style={{ color: "var(--blue)", fontWeight: 600, cursor: "pointer" }}>Set up manually instead</LinkBtn>
+            </div>
           </div>
         );
       })()}

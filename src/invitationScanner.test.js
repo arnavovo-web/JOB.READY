@@ -273,13 +273,18 @@ describe("confirmInvitationAndBuild — hands off into the EXISTING wizard, neve
     expect(FN_SRC).toMatch(/const applicationIdIsStale = currentApp && \(normalizeForMatch\(currentApp\.company\) !== normalizeForMatch\(cleanCompany\) \|\| normalizeForMatch\(currentApp\.role\) !== normalizeForMatch\(cleanRole\)\);/);
   });
 
-  it("an 'unknown' stage/format from the extraction falls back to the SAME defaults a fresh wizard already uses (first_round / null), never a fabricated one", () => {
-    expect(FN_SRC).toMatch(/INVITATION_STAGE_KEYS\.includes\(invitationDraft\.stage\) \? invitationDraft\.stage : "first_round"/);
+  it("Phase 12: the interview stage handed off is a REAL canonical key (from buildCanonicalInterviewConfig), never the silent 'first_round' fallback the Phase 7 code used for an 'unknown' stage", () => {
+    expect(FN_SRC).not.toMatch(/invitationDraft\.stage : "first_round"/); // the old silent fallback is gone
+    expect(FN_SRC).toMatch(/setInterviewStage\(canonical\.config\.stage\)/);
+    // format still degrades to null (a fresh wizard default), never a fabricated format
     expect(FN_SRC).toMatch(/INVITATION_FORMAT_KEYS\.includes\(invitationDraft\.format\) \? invitationDraft\.format : null/);
   });
 
-  it("requires company and role before proceeding — never hands off with nothing to build from", () => {
-    expect(FN_SRC).toMatch(/if \(!cleanCompany \|\| !cleanRole\) \{ setError/);
+  it("Phase 12: all four mandatory identity fields must pass deterministic validation before hand-off — buildCanonicalInterviewConfig gates it, and 'unknown' is never silently resolved", () => {
+    expect(FN_SRC).toMatch(/const canonical = buildCanonicalInterviewConfig\(\{[\s\S]*?stage: invitationDraft\.stage, questionMix: scanMix,?\s*\}\);/);
+    expect(FN_SRC).toMatch(/if \(!canonical\.ok\) \{\s*\n\s*setError\(/);
+    // the confirmed Question Mix is pushed into the Phase 11 wizard state (never a second system)
+    expect(FN_SRC).toMatch(/setQuestionMix\(\{\s*\n\s*technical: canonical\.config\.question_mix\.includes\("technical"\)/);
   });
 });
 
