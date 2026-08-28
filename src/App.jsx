@@ -1429,6 +1429,34 @@ async function dbUpdateClaim(claimId, fields) {
   const { error } = await supabase.from("candidate_claims").update(fields).eq("id", claimId);
   if (error) console.error("candidate_claims update failed:", error.message);
 }
+// Phase 14.1: materialise a classroom_topics row from a Phase 13B application
+// recommendation that has no interview-diagnosed topic yet, so it can enter the
+// SAME Development Module flow. Uses the existing table/persistence — not a
+// parallel system. Critically: NO interview, NO score. scores stays [] and
+// last_interview_id null, so statusFor() shows "To start" (never red "Needs
+// work") and openDevelopmentModule frames it as an area to prepare, never a
+// demonstrated weakness. Bound to the recommendation's OWN application_id for
+// isolation. No AI call. Returns the inserted row (or null on failure).
+async function dbCreateRecommendationTopic(userId, { applicationId, company, role }, rec) {
+  const supabase = await getSupabase();
+  const { data, error } = await supabase.from("classroom_topics").insert({
+    user_id: userId,
+    application_id: applicationId || null,
+    company: company || "",
+    role: role || "",
+    topic: rec.label,
+    // "technical" | "behavioural" | "motivational" — devDimensionForCategory maps these straight through.
+    category: rec.dimension || "behavioural",
+    // carry the recommendation's own gap wording; for gapKind "preparation" this
+    // literally reads "…an area to prepare… not a demonstrated weakness".
+    description: str(rec.gapSummary) || str(rec.why) || "",
+    related_question: null,
+    scores: [],
+    last_interview_id: null,
+  }).select().single();
+  if (error) { console.error("classroom_topics (recommendation) insert failed:", error.message); return null; }
+  return data;
+}
 async function dbUpsertClassroomTopic(userId, applicationId, interviewIdOrNull, existingId, topic) {
   const supabase = await getSupabase();
   if (existingId) {
@@ -2758,7 +2786,11 @@ function App() {
   /* ---------------- SHARED HELPERS: Classroom + Interview DNA ---------------- */
   function normalizeTopic(s) { return (s || "").toLowerCase().replace(/[^a-z0-9]/g, ""); }
   function statusFor(scores) {
-    const latest = scores[scores.length - 1];
+    // Phase 14.1: a topic materialised from an application recommendation has no
+    // interview score yet — it is an area to PREPARE, not a demonstrated weakness,
+    // so it must never render as red "Needs work". Neutral "To start" instead.
+    const latest = Array.isArray(scores) && scores.length ? scores[scores.length - 1] : null;
+    if (latest == null) return { label: "To start", color: "var(--text-faint)", bg: "var(--highlight)" };
     if (latest >= 85) return { label: "Mastered", color: "var(--good)", bg: "#E7F8F1" };
     if (latest >= 70) return { label: "Improving", color: "var(--blue)", bg: "var(--highlight)" };
     if (latest >= 50) return { label: "Learning", color: "var(--warn)", bg: "#FEF3E2" };
@@ -2902,6 +2934,36 @@ Rules: mini study guide, not an essay. core_knowledge 3-5 points, key_points 3-5
       learning_guide: row.learning_guide && typeof row.learning_guide === "object" ? row.learning_guide : {},
       learning_items: arr(row.learning_items),
     };
+  }
+
+  // Phase 14.1: "Start learning" on a Phase 13B application recommendation.
+  //   1-2. reuse an existing APPLICATION-AWARE classroom topic if one matches;
+  //   3.   otherwise materialise one from the recommendation (no AI call);
+  //   4.   hand the real topic to the SAME openDevelopmentModule flow.
+  // The recommendation carries its own application_id + gap wording, so a
+  // "preparation" area is never presented as a demonstrated weakness and
+  // company-specific context never crosses applications.
+  async function startLearningFromRecommendation(rec, app) {
+    if (!rec || !rec.label || !user || !app) return;
+    const m = normalizeTopic(rec.label);
+    const existing = classroom.find((t) => {
+      if (t.applicationId && t.applicationId !== app.id) return false; // never reuse another application's topic
+      const n = normalizeTopic(t.topic);
+      return n && m && (n === m || n.includes(m) || m.includes(n));
+    });
+    if (existing) { await openDevelopmentModule(existing); return; }
+    const row = await dbCreateRecommendationTopic(user.id, { applicationId: app.id, company: app.company, role: app.role }, rec);
+    if (!row) { setError("Couldn't start this development area. Please try again."); return; }
+    const clientTopic = {
+      id: row.id, topic: row.topic, category: row.category, description: row.description,
+      company: row.company || "", role: row.role || "",
+      scores: Array.isArray(row.scores) ? row.scores : [],
+      lastInterviewId: row.last_interview_id || null,
+      relatedQuestion: row.related_question || "",
+      applicationId: row.application_id || null,
+    };
+    setClassroom((prev) => [...prev, clientTopic]);
+    await openDevelopmentModule(clientTopic);
   }
 
   // The ONE AI call for Phase 14. Reuse first (dbGetDevelopmentModule); generate
@@ -4075,7 +4137,9 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
 
   /* ---------------- DERIVED VALUES ---------------- */
   const showNav = ["landing", "how", "universities", "login", "dashboard", "create", "create_choose", "invitation_paste", "invitation_review", "preview", "progress", "report", "report_view", "classroom", "lesson", "ac_home", "ac_exercise", "ac_scorecard", "ac_attempt_view"].includes(screen);
-  const classroomNeedsWorkCount = classroom.filter((t) => statusFor(t.scores).label !== "Mastered").length;
+  // Only interview-evidenced topics count toward the nav "needs work" badge —
+  // a recommendation-materialised topic (no scores yet) is "to start", not "needs work".
+  const classroomNeedsWorkCount = classroom.filter((t) => (t.scores || []).length > 0 && statusFor(t.scores).label !== "Mastered").length;
   const acReadiness = (() => {
     if (!acAttempts.length) return 0;
     const latestByType = {};
@@ -5620,7 +5684,11 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                     <div key={dim} style={{ marginBottom: 18 }}>
                       <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 8 }}>{dimLabel}</div>
                       {classroomRecs[dim].map((r) => {
+                        // Phase 14.1: application-aware match — reuse a Classroom topic only
+                        // when it belongs to THIS application (or has no application at all).
+                        // Never pull in another application's topic/context.
                         const match = classroom.find((t) => {
+                          if (t.applicationId && activeClassroomApp && t.applicationId !== activeClassroomApp.id) return false;
                           const n = normalizeTopic(t.topic), m = normalizeTopic(r.label);
                           return n && m && (n === m || n.includes(m) || m.includes(n));
                         });
@@ -5641,8 +5709,8 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                             <div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.55, marginBottom: 10 }}>
                               <strong style={{ color: "var(--navy)" }}>Next step:</strong> {r.nextStep}
                             </div>
-                            <Btn variant={match ? "accent" : "secondary"} onClick={() => guarded(() => match ? openDevelopmentModule(match) : startCreateFlow(false))}>
-                              <BookOpen size={14} /> {match ? "Start learning" : "Practise in an interview"}
+                            <Btn variant="accent" onClick={() => guarded(() => match ? openDevelopmentModule(match) : startLearningFromRecommendation(r, activeClassroomApp))}>
+                              <BookOpen size={14} /> Start learning
                             </Btn>
                           </Card>
                         );
@@ -5669,7 +5737,12 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
             </div>
           )}
 
-          {classroom.length === 0 ? (
+          {/* Phase 14.1: this section is explicitly "from your interviews" — only
+              topics with real interview/AC evidence. A recommendation-materialised
+              topic (no score yet) is represented by the "Recommended" cards above,
+              not here, so it is never shown with a red "Needs work" badge. */}
+          {(() => { const interviewClassroom = classroom.filter((t) => ((t.scores || []).length > 0) || t.lastInterviewId); return (
+          interviewClassroom.length === 0 ? (
             <Card style={{ padding: 40, textAlign: "center" }}>
               <BookOpen size={28} color="var(--text-faint)" style={{ margin: "0 auto 14px" }} />
               <div style={{ fontSize: 15, fontWeight: 600, color: "var(--navy)", marginBottom: 6 }}>No interview lessons yet</div>
@@ -5681,7 +5754,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
               <div style={{ fontSize: 15, fontWeight: 700, color: "var(--navy)", marginBottom: 12 }}>From your interviews</div>
               <Card style={{ padding: 18, marginBottom: 22 }}>
                 <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", marginBottom: 12 }}>My interviews</div>
-                {Object.entries(classroom.reduce((acc, t) => { const key = t.company + " — " + t.role; acc[key] = acc[key] || []; acc[key].push(t); return acc; }, {})).map(([key, topics]) => (
+                {Object.entries(interviewClassroom.reduce((acc, t) => { const key = t.company + " — " + t.role; acc[key] = acc[key] || []; acc[key].push(t); return acc; }, {})).map(([key, topics]) => (
                   <div key={key} className="flex items-center justify-between" style={{ padding: "8px 0", borderBottom: "1px solid var(--border)" }}>
                     <span style={{ fontSize: 13.5, color: "var(--navy)", fontWeight: 500 }}>{key}</span>
                     <div className="flex items-center gap-2">
@@ -5692,7 +5765,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
               </Card>
 
               <div style={{ fontSize: 15, fontWeight: 700, color: "var(--navy)", marginBottom: 12 }}>Your learning areas</div>
-              {[...classroom].sort((a, b) => a.scores[a.scores.length - 1] - b.scores[b.scores.length - 1]).map((t) => {
+              {[...interviewClassroom].sort((a, b) => (a.scores[a.scores.length - 1] ?? 0) - (b.scores[b.scores.length - 1] ?? 0)).map((t) => {
                 const st = statusFor(t.scores);
                 return (
                   <Card key={t.id} style={{ padding: 20, marginBottom: 14 }}>
@@ -5710,7 +5783,8 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                 );
               })}
             </>
-          )}
+          )
+          ); })()}
         </div>
       )}
 

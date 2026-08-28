@@ -146,9 +146,11 @@ describe("redo question stays connected to source; scheduler untouched", () => {
 
 /* ============================== entry points rewired, old lesson untouched ============================== */
 describe("Classroom entry points route to the Development Module", () => {
-  it("the learning-area card and the Phase 13B recommendation both call openDevelopmentModule", () => {
+  it("the learning-area card calls openDevelopmentModule directly", () => {
     expect(SRC).toMatch(/onClick=\{\(\) => guarded\(\(\) => openDevelopmentModule\(t\)\)\}/);
-    expect(SRC).toMatch(/match \? openDevelopmentModule\(match\) : startCreateFlow\(false\)/);
+  });
+  it("the Phase 13B recommendation enters the module system (reuse match, else materialise via 14.1)", () => {
+    expect(SRC).toMatch(/match \? openDevelopmentModule\(match\) : startLearningFromRecommendation\(r, activeClassroomApp\)/);
   });
   it("the legacy openLesson function and lesson screen still exist (not deleted)", () => {
     expect(SRC).toMatch(/async function openLesson\(topic\)/);
