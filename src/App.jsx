@@ -1199,10 +1199,22 @@ async function dbCreateApplication(userId, fields) {
   if (error) throw new Error("Couldn't save your application details. Please try again.");
   return data;
 }
+// Returns { ok, error }. NON-throwing by design: most callers are best-effort
+// metadata touches (e.g. a company/role rename) where a transient failure must
+// not break the flow. Callers for which this write is REQUIRED — analyseAndPlan
+// persisting jd_profile / jd_profile_hash / application_intelligence — MUST
+// inspect `ok` and fail loudly themselves. Regression this guards: a missing
+// `application_intelligence` column once let every write no-op silently, so the
+// feature looked implemented while nothing persisted (the error was only
+// console.error'd and the return value was undefined, so no caller could tell).
 async function dbUpdateApplication(applicationId, fields) {
   const supabase = await getSupabase();
   const { error } = await supabase.from("applications").update(fields).eq("id", applicationId);
-  if (error) console.error("application update failed:", error.message);
+  if (error) {
+    console.error("application update failed:", error.message, "— fields:", Object.keys(fields || {}).join(", "));
+    return { ok: false, error: error.message };
+  }
+  return { ok: true, error: null };
 }
 async function dbInsertDocument(userId, applicationId, doc) {
   const supabase = await getSupabase();
@@ -3103,14 +3115,22 @@ Rules: "basis" must honestly mark whether each competency is explicitly stated i
         result.opening_question.category = clampedOpeningCategory;
       }
 
-      await dbUpdateApplication(applicationId, {
+      // REQUIRED write: this row now carries the analysed JD profile + Application
+      // Intelligence that this interview AND the Classroom read back later. If it
+      // fails (schema mismatch, RLS, transient), stop here — do not proceed to
+      // build an interview on analysis that was never persisted. analyseAndPlan's
+      // catch surfaces the message and returns the user to setup.
+      // application_intelligence is an additive JSONB column (see
+      // supabase/migrations/20260828120000_baseline_schema.sql); readers still
+      // treat null as "not analysed yet", so a legacy row remains safe to load.
+      const appUpdate = await dbUpdateApplication(applicationId, {
         job_description: cleanJd, interview_stage: stageLabel, interview_type: formatLabel, interview_length: length, status: "active",
         jd_profile: jdProfile, jd_profile_hash: hashText(cleanJd),
-        // Phase 13A: additive JSONB column on `applications`. dbUpdateApplication swallows
-        // errors, so an older DB without this column simply keeps null here (legacy-safe) —
-        // downstream treats null as "not analysed yet" and degrades gracefully.
         application_intelligence: applicationIntelligence,
       });
+      if (!appUpdate || !appUpdate.ok) {
+        throw new Error("Couldn't save the analysed role details. Please try again.");
+      }
       // Phase 4 (returning-user continuity): mirror the same fields onto local `applications`
       // state so this application's card reflects "active" + its stage/JD immediately, without
       // waiting for a reload — same rationale as confirmCompanyRole's own update above.

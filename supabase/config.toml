@@ -1,0 +1,9 @@
+# Minimal Supabase CLI config. Present so `supabase link` / `supabase db push`
+# have a project to attach migrations to. Local-dev services (studio, realtime,
+# inbucket, etc.) are intentionally not configured here — this repo uses Supabase
+# only as a remote backend, not a local stack.
+
+project_id = "job-ready"
+
+[db]
+major_version = 17
