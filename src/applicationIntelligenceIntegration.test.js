@@ -21,6 +21,10 @@ function fn(startMarker, endMarker) {
   return SOURCE.slice(s, e);
 }
 const ANALYSE_SRC = fn("async function analyseAndPlan() {", "function beginInterview()");
+// Phase 16A: the SECOND — and only other — explicit, user-triggered call site.
+// Standalone "Analyse this application" reuses the exact same interview_profile
+// call + buildApplicationIntelligence + buildJdProfile, but builds NO interview.
+const ANALYSE_APP_ONLY_SRC = fn("async function analyseApplicationOnly(app) {", "function buildInterviewFromApplication(");
 const OPEN_LESSON_SRC = fn("async function openLesson(topic) {", "async function recordQuizAnswer(");
 const LOAD_STATE_SRC = fn("async function loadFullUserState(userId) {", "async function dbCreateApplication(");
 
@@ -167,11 +171,20 @@ describe("persistence survives reload and is legacy-safe", () => {
     expect(validateApplicationIntelligence(undefined)).toBeNull();
     expect(validateApplicationIntelligence(null)).toBeNull();
   });
-  it("nothing re-runs the analysis on render — buildApplicationIntelligence is only called inside analyseAndPlan", () => {
+  it("nothing re-runs the analysis on render — buildApplicationIntelligence is only called inside the two explicit analyse handlers", () => {
+    // Phase 16A: exactly TWO call sites now — analyseAndPlan (interview creation)
+    // and analyseApplicationOnly (standalone "Analyse this application"). Both are
+    // explicit async user-triggered handlers; neither is a render path or a
+    // question generator. Any third occurrence would be the regression this guards.
     const calls = (SOURCE.match(/buildApplicationIntelligence\(/g) || []).length;
-    expect(calls).toBe(1);
-    // and it is inside analyseAndPlan, not in any render path / question generator
+    expect(calls).toBe(2);
     expect(ANALYSE_SRC).toMatch(/buildApplicationIntelligence\(/);
+    expect(ANALYSE_APP_ONLY_SRC).toMatch(/buildApplicationIntelligence\(/);
+    // analyseApplicationOnly is a genuine handler, not something that runs on render
+    expect(SOURCE).toMatch(/async function analyseApplicationOnly\(app\) \{/);
+    // it makes exactly one AI call, and it is the existing interview_profile type
+    expect((ANALYSE_APP_ONLY_SRC.match(/await callClaude\(/g) || []).length).toBe(1);
+    expect(ANALYSE_APP_ONLY_SRC).toMatch(/requestType: "interview_profile"/);
   });
 });
 

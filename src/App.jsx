@@ -3,7 +3,7 @@ import {
   ChevronRight, Loader2, TrendingDown, CheckCircle2, ArrowLeft, ArrowRight, Sparkles,
   Target, BarChart3, AlertCircle, Upload, Mic, Menu, X,
   GraduationCap, BookOpen, Globe, HelpCircle, XCircle,
-  Users, Briefcase, Mail, FileText, History, Clock
+  Users, Briefcase, Mail, FileText, History, Clock, Plus, CalendarClock
 } from "lucide-react";
 // Phase 2A/2B: canonical taxonomy / anchor-source / stage-methodology
 // engine. A companion layer to the Phase 4A INTERVIEW_STAGES/
@@ -45,6 +45,7 @@ import {
 import {
   buildApplicationIntelligence, validateApplicationIntelligence, applicationIntelligenceLessonContext,
   classroomRecommendationGroups, experiencesToExplore,
+  hashApplicationSources, applicationIntelligenceIsStale,
 } from "./applicationIntelligence";
 // Phase 2C.3: the live adaptive interview's deterministic scheduler wiring.
 // submitAnswer/regenerateNextQuestion never compute a category, turn type,
@@ -88,6 +89,9 @@ import { markWrittenQuiz, coverageVerdict } from "./writtenQuiz";
 // deterministic "Continue preparing" pick, and the concept union a redo answer
 // is marked against. No AI, no DB, no React.
 import { classroomTopicMatch, pickContinuePreparing, redoConceptUnion } from "./continuePreparing";
+// Phase 16A: pure interview-date helpers for the Applications pillar (countdown
+// text, nearest-upcoming ordering). No AI, no DB, no reminders — status only.
+import { interviewCountdown, sortApplicationsByUpcoming, partitionApplications, nearestUpcomingApplication } from "./applicationSchedule";
 
 /* ================================================================== *
  * JOB.READY — DESIGN SYSTEM (unchanged from previous build)
@@ -326,6 +330,37 @@ function validateReport(r) {
     })).filter((t) => t.topic),
   };
 }
+// Phase 16A: hoisted so BOTH interview creation (analyseAndPlan) and a
+// standalone "Analyse this application" (analyseApplicationOnly) use the exact
+// same prompt / response contract — one Application Intelligence source of truth,
+// not a parallel engine. Fully static (no interpolation); everything dynamic
+// goes in the userText instead.
+const INTERVIEW_PROFILE_SYSTEM = `You are an expert interview coach and recruiter. You analyse a job description and a CV together and produce a single strict JSON object (no prose, no markdown fences) with this exact shape:
+{
+  "interview_profile": {
+    "company": "", "role": "", "division": "", "seniority": "",
+    "responsibilities": [""], "required_skills": [""], "preferred_skills": [""],
+    "competencies": [{"name": "", "basis": "explicit|inferred|general"}],
+    "technical_topics": [""], "behavioural_topics": [""], "commercial_topics": [""],
+    "question_mix": {"motivation_fit": 30, "cv_behavioural": 25, "role_specific": 20, "technical": 15, "commercial_awareness": 10},
+    "jd_requirements": [{"requirement": "", "evidence_quote": "", "confidence": "explicit|inferred|general", "category": "motivation_fit|behavioural_competency|situational_judgement|technical_functional|commercial_awareness", "occurrences": 1}]
+  },
+  "candidate_profile": {
+    "education": [""], "experience": [""], "leadership": [""], "achievements": [""],
+    "skills": [""], "behavioural_examples": [""],
+    "potential_probe_areas": [{"claim": "", "why": ""}]
+  },
+  "application_intelligence": {
+    "company_themes": [{"theme": "", "evidence": ""}],
+    "role_themes": [{"theme": "", "evidence": ""}],
+    "company_context_strength": "strong|moderate|weak",
+    "role_context_strength": "strong|moderate|weak"
+  },
+  "opening_question": { "text": "", "category": "motivation_fit|cv_behavioural|role_specific|technical|commercial_awareness", "competency": "" }
+}
+Rules: "basis" must honestly mark whether each competency is explicitly stated in the JD, reasonably inferred, or just generally expected for this role type. question_mix percentages sum to 100 and reflect the actual role type. potential_probe_areas should point at specific claims worth challenging. opening_question must be natural and specific, not generic. jd_requirements should list distinct requirements actually evidenced in the job description — "evidence_quote" must be an exact short quote copied verbatim from the job description text (not a paraphrase or summary), "confidence" follows the same explicit/inferred/general distinction as competencies' basis, and "occurrences" is how many times this requirement (or a clear restatement of it) appears in the job description text.
+"application_intelligence" captures what THIS specific application appears to prioritise, using ONLY the company/role/job-description-and-application-context/invitation material provided above — never outside knowledge, never assumed company values. "company_themes" = themes, culture, values or programme characteristics the material EXPLICITLY states about this company; each "evidence" MUST be an exact verbatim quote from the provided text. If the material gives nothing company-specific beyond the name, return "company_themes": [] and "company_context_strength": "weak" — do NOT invent plausible-sounding values. "role_themes" = what the role itself is about (responsibilities, focus areas) with verbatim "evidence" where possible. "*_context_strength" is your honest read of how much genuine company-/role-specific detail the material contains.`;
+
 // Exported (like validateQuestionBatch) so it's directly unit-testable —
 // see src/App.validators.test.js.
 export function validateProfile(p) {
@@ -1171,6 +1206,9 @@ async function loadFullUserState(userId) {
     createdAt: a.created_at || null, updatedAt: a.updated_at || null,
     jobDescription: a.job_description || "",
     stageLabel: a.interview_stage || null, formatLabel: a.interview_type || null,
+    // Phase 16A: optional interview date for this opportunity. Reuses the existing
+    // (previously unused) applications.interview_date column — no migration.
+    interviewDate: a.interview_date || null,
     // Phase 13A: survives reload for returning users. validateApplicationIntelligence returns
     // null for a legacy application that has nothing stored (or a DB without the column) —
     // every downstream reader treats null as "no intelligence yet".
@@ -2305,7 +2343,7 @@ function NavBar({ screen, setScreen, user, classroomNeedsWorkCount, onSignOut })
   useEffect(() => { setMenuOpen(false); }, [screen]);
 
   const links = user
-    ? [{ label: "Dashboard", to: "dashboard" }, { label: "Classroom", to: "classroom" }, { label: "Assessment Centre", to: "ac_home" }, { label: "Progress", to: "progress" }]
+    ? [{ label: "Dashboard", to: "dashboard" }, { label: "Applications", to: "applications" }, { label: "Classroom", to: "classroom" }, { label: "Assessment Centre", to: "ac_home" }, { label: "Progress", to: "progress" }]
     : [{ label: "How it works", to: "how" }, { label: "For universities", to: "universities" }];
 
   return (
@@ -2427,6 +2465,12 @@ function App() {
   const [focusWeaknesses, setFocusWeaknesses] = useState(false);
   const [fileBusy, setFileBusy] = useState(null); // "jd" | "cv" | null
   const [applicationId, setApplicationId] = useState(null);
+  // Phase 16A: Applications pillar. appView = the id of the open Application
+  // workspace; appForm = { id|null, company, role, jd, date } while the add/edit
+  // form is on screen. No parallel Application model — these just drive UI over
+  // the existing `applications` state + persistence.
+  const [appView, setAppView] = useState(null);
+  const [appForm, setAppForm] = useState(null);
   // Phase 7: Interview Invitation Scanner — a second INPUT METHOD into this SAME wizard, never
   // a parallel one. buildMethod tracks which entry the candidate took ("jdcv" is the default/
   // existing behaviour, applied even for entry points that skip the choice screen entirely —
@@ -2686,6 +2730,7 @@ function App() {
     setDevModule(null); setDevTopic(null); setDevProgress(null); setDevView("hub");
     setQuizOrder([]); setQuizResults([]); setQuizDraft(""); setRedoDraft(""); setRedoResult(null); setFlashIdx(0); setFlashRevealed(false);
     setDevelopmentModules([]); setModuleProgress([]); setPendingReportSave(null); setPendingModuleSave(null);
+    setAppView(null); setAppForm(null);
     // Phase 7: same ownership-hygiene reasoning — a signed-out session must never leave a
     // previous user's pasted invitation email (which may contain personal information — §17)
     // sitting in memory.
@@ -3301,6 +3346,114 @@ Rules: EXACTLY 4 learning_items, each ONE atomic idea — do not exceed 4. Keep 
     setWizardStep(app.jobDescription ? 3 : 2); setScreen("create");
   }
 
+  /* ---------------- PHASE 16A: APPLICATIONS PILLAR ---------------- */
+  function openApplicationsList() { setError(""); setAppForm(null); setScreen("applications"); }
+  function openApplication(app) { if (!app) return; setError(""); setAppView(app.id); setScreen("application"); }
+  function openApplicationForm(app) {
+    setError("");
+    setAppForm(app
+      ? { id: app.id, company: app.company || "", role: app.role || "", jd: app.jobDescription || "", date: app.interviewDate ? String(app.interviewDate).slice(0, 10) : "" }
+      : { id: null, company: "", role: "", jd: "", date: "" });
+    setScreen("application_form");
+  }
+
+  // CREATE / EDIT an Application. Persistence only — NEVER an AI call (Phase 16A §4/§18).
+  async function saveApplicationForm() {
+    const f = appForm;
+    if (!f || !user) return;
+    const company = sanitizeText(f.company).trim();
+    const role = sanitizeText(f.role).trim();
+    if (!company || !role) { setError("Enter a company and a role."); return; }
+    const jd = sanitizeText(f.jd);
+    // interview_date is a timestamptz column (baseline). Anchor a date-only pick
+    // at 12:00Z so the calendar day is stable across every real timezone on
+    // read-back (a bare "YYYY-MM-DD" becomes 00:00Z and shifts to the previous
+    // day west of UTC). null stays null — the field is optional & legacy-safe.
+    const dateIso = f.date ? `${f.date}T12:00:00Z` : null;
+    try {
+      if (!f.id) {
+        const row = await dbCreateApplication(user.id, { company, role, job_description: jd || null, interview_date: dateIso, status: "draft" });
+        const clientApp = { id: row.id, company, role, status: "draft", date: Date.now(), createdAt: row.created_at || null, updatedAt: row.updated_at || null, jobDescription: jd, stageLabel: null, formatLabel: null, interviewDate: dateIso, applicationIntelligence: null };
+        setApplications((prev) => [clientApp, ...prev]);
+        setAppView(row.id);
+      } else {
+        const r = await dbUpdateApplication(f.id, { company, role, job_description: jd || null, interview_date: dateIso });
+        if (r && r.ok === false) { setError("Couldn't save your changes. Please try again."); return; }
+        setApplications((prev) => prev.map((a) => (a.id === f.id ? { ...a, company, role, jobDescription: jd, interviewDate: dateIso } : a)));
+        setAppView(f.id);
+      }
+      setAppForm(null);
+      setScreen("application");
+    } catch (e) {
+      setError(e.message || "Couldn't save your application. Please try again.");
+    }
+  }
+
+  // EXPLICIT, user-triggered Application Intelligence analysis. Reuses the EXACT
+  // same interview_profile call + buildApplicationIntelligence + buildJdProfile as
+  // analyseAndPlan (one source of truth) — but creates NO interview. Persists the
+  // intelligence + jd_profile_hash so reopening reuses it with zero AI calls.
+  async function analyseApplicationOnly(app) {
+    if (!app || !user) return;
+    setError("");
+    const cleanCompany = sanitizeText(app.company);
+    const cleanRole = sanitizeText(app.role);
+    const cleanJd = sanitizeText(app.jobDescription || "");
+    setScreen("application_analyzing");
+    try {
+      const userText = `This candidate is preparing for an interview. Analyse the application to identify what they should prepare for. There is no CV and no live interview transcript — populate candidate_profile as best you can from the role (it may be sparse) and focus on interview_profile + application_intelligence.\n\nCompany: ${cleanCompany}\nRole: ${cleanRole}\nInterview stage: ${app.stageLabel || "not specified yet"}\n\n${cleanJd ? `Job description / application context:\n${cleanJd}` : "Job description: none provided. Rely on general knowledge of this role type; keep application_intelligence company context weak."}\n\nCandidate CV:\nnone provided.`;
+      const result = validateProfile(await callClaude(INTERVIEW_PROFILE_SYSTEM, userText, 3000, false, { requestType: "interview_profile", applicationId: app.id }));
+      const jdProfile = buildJdProfile(result.interview_profile.jd_requirements, cleanJd);
+      let applicationIntelligence = null;
+      try {
+        applicationIntelligence = buildApplicationIntelligence({
+          applicationId: app.id, company: cleanCompany, role: cleanRole, jdText: cleanJd,
+          interviewProfile: result.interview_profile, aiBlock: result.application_intelligence, invitationDraft: null,
+        });
+      } catch (e) { console.error("application intelligence build failed:", e.message); }
+      const upd = await dbUpdateApplication(app.id, {
+        job_description: cleanJd, jd_profile: jdProfile, jd_profile_hash: hashText(cleanJd),
+        application_intelligence: applicationIntelligence,
+        status: app.status === "draft" ? "active" : app.status,
+      });
+      if (!upd || upd.ok === false) {
+        setError("The analysis ran but couldn't be saved. Please try again — you won't be re-charged if it's already stored.");
+        setScreen("application");
+        return;
+      }
+      setApplications((prev) => prev.map((a) => (a.id === app.id
+        ? { ...a, jobDescription: cleanJd, applicationIntelligence, status: a.status === "draft" ? "active" : a.status }
+        : a)));
+      // best-effort: seed CV probe claims the SAME way analyseAndPlan does (no new AI call)
+      try {
+        const newClaims = dedupeNewClaims(candidateClaims, result.candidate_profile.potential_probe_areas);
+        if (newClaims.length) {
+          const inserted = await dbInsertClaims(user.id, app.id, null, newClaims);
+          if (inserted.length) setCandidateClaims([...candidateClaims, ...inserted]);
+        }
+      } catch (e) { /* best-effort — intelligence already persisted */ }
+      setAppView(app.id);
+      setScreen("application");
+    } catch (e) {
+      setError(e.message || "Couldn't analyse this application. Please try again.");
+      setScreen("application");
+    }
+  }
+
+  // Build an interview from inside an Application — carry the stored context so
+  // the user never re-types it. Question Mix stays a MANUAL choice at wizard
+  // step 4 (Phase 11 / §9): reset it here so nothing is silently pre-selected.
+  function buildInterviewFromApplication(app) {
+    if (!app) return;
+    setError("");
+    setCompany(app.company || ""); setRole(app.role || ""); setApplicationId(app.id); setBuildMethod("jdcv");
+    setFocusWeaknesses(false); setTargetTopic(null);
+    setJdText(app.jobDescription || ""); setCvText("");
+    setQuestionMix({ technical: false, behavioural: false, motivational: false });
+    setInvitationText(""); setInvitationDraft(null); setInvitationOriginal(null);
+    setWizardStep(app.jobDescription ? 3 : 2); setScreen("create");
+  }
+
   /* ---------------- PHASE 7: INTERVIEW INVITATION SCANNER ---------------- */
   // §4/§19: the ONE AI call this whole feature makes. No web search. Client-side length/empty
   // checks run BEFORE the call so an obviously-unusable paste never reaches the AI at all.
@@ -3452,31 +3605,7 @@ Rules: EXACTLY 4 learning_items, each ONE atomic idea — do not exceed 4. Keep 
         ? "The candidate's known weaknesses from previous interviews are: " + perf.weaknesses.join("; ") + (focusWeaknesses ? ". The candidate has specifically asked to focus this interview on these weaknesses — weight the question plan heavily toward re-testing them." : ". Where relevant to this role, include at least one question that specifically re-tests one of these weaknesses.")
         : "This candidate has no prior interview history.";
 
-      const system = `You are an expert interview coach and recruiter. You analyse a job description and a CV together and produce a single strict JSON object (no prose, no markdown fences) with this exact shape:
-{
-  "interview_profile": {
-    "company": "", "role": "", "division": "", "seniority": "",
-    "responsibilities": [""], "required_skills": [""], "preferred_skills": [""],
-    "competencies": [{"name": "", "basis": "explicit|inferred|general"}],
-    "technical_topics": [""], "behavioural_topics": [""], "commercial_topics": [""],
-    "question_mix": {"motivation_fit": 30, "cv_behavioural": 25, "role_specific": 20, "technical": 15, "commercial_awareness": 10},
-    "jd_requirements": [{"requirement": "", "evidence_quote": "", "confidence": "explicit|inferred|general", "category": "motivation_fit|behavioural_competency|situational_judgement|technical_functional|commercial_awareness", "occurrences": 1}]
-  },
-  "candidate_profile": {
-    "education": [""], "experience": [""], "leadership": [""], "achievements": [""],
-    "skills": [""], "behavioural_examples": [""],
-    "potential_probe_areas": [{"claim": "", "why": ""}]
-  },
-  "application_intelligence": {
-    "company_themes": [{"theme": "", "evidence": ""}],
-    "role_themes": [{"theme": "", "evidence": ""}],
-    "company_context_strength": "strong|moderate|weak",
-    "role_context_strength": "strong|moderate|weak"
-  },
-  "opening_question": { "text": "", "category": "motivation_fit|cv_behavioural|role_specific|technical|commercial_awareness", "competency": "" }
-}
-Rules: "basis" must honestly mark whether each competency is explicitly stated in the JD, reasonably inferred, or just generally expected for this role type. question_mix percentages sum to 100 and reflect the actual role type. potential_probe_areas should point at specific claims worth challenging. opening_question must be natural and specific, not generic. jd_requirements should list distinct requirements actually evidenced in the job description — "evidence_quote" must be an exact short quote copied verbatim from the job description text (not a paraphrase or summary), "confidence" follows the same explicit/inferred/general distinction as competencies' basis, and "occurrences" is how many times this requirement (or a clear restatement of it) appears in the job description text.
-"application_intelligence" captures what THIS specific application appears to prioritise, using ONLY the company/role/job-description-and-application-context/invitation material provided above — never outside knowledge, never assumed company values. "company_themes" = themes, culture, values or programme characteristics the material EXPLICITLY states about this company; each "evidence" MUST be an exact verbatim quote from the provided text. If the material gives nothing company-specific beyond the name, return "company_themes": [] and "company_context_strength": "weak" — do NOT invent plausible-sounding values. "role_themes" = what the role itself is about (responsibilities, focus areas) with verbatim "evidence" where possible. "*_context_strength" is your honest read of how much genuine company-/role-specific detail the material contains.`;
+      const system = INTERVIEW_PROFILE_SYSTEM;
 
       const stageLabel = stageByKey(ivConfig.stage).label;
       const formatLabel = INTERVIEW_FORMATS[ivConfig.format].label;
@@ -4244,7 +4373,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
   }
 
   /* ---------------- DERIVED VALUES ---------------- */
-  const showNav = ["landing", "how", "universities", "login", "dashboard", "create", "create_choose", "invitation_paste", "invitation_review", "preview", "progress", "report", "report_view", "classroom", "lesson", "ac_home", "ac_exercise", "ac_scorecard", "ac_attempt_view"].includes(screen);
+  const showNav = ["landing", "how", "universities", "login", "dashboard", "applications", "application", "application_form", "create", "create_choose", "invitation_paste", "invitation_review", "preview", "progress", "report", "report_view", "classroom", "lesson", "ac_home", "ac_exercise", "ac_scorecard", "ac_attempt_view"].includes(screen);
   // Only interview-evidenced topics count toward the nav "needs work" badge —
   // a recommendation-materialised topic (no scores yet) is "to start", not "needs work".
   const classroomNeedsWorkCount = classroom.filter((t) => (t.scores || []).length > 0 && statusFor(t.scores).label !== "Mastered").length;
@@ -4362,6 +4491,28 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
       }, { limit: 1 })[0] || null;
     } catch (e) { console.error("continue-preparing pick failed:", e.message); return null; }
   })();
+
+  // Phase 16A: Applications-pillar derived data — pure, no AI, no query. Ordering
+  // + countdown from applicationSchedule.js; the per-application "one best next
+  // action" reuses pickContinuePreparing scoped to that application.
+  const { upcoming: applicationsUpcoming, other: applicationsOther } = partitionApplications(applicationsWithInterviews);
+  const nearestUpcomingApp = nearestUpcomingApplication(applicationsWithInterviews);
+  function nextActionForApplication(app) {
+    const appTopics = classroom.filter((t) => t.applicationId === app.id);
+    const topicIds = new Set(appTopics.map((t) => t.id));
+    const appModules = developmentModules.filter((m) => topicIds.has(m.topic_id));
+    let cont = null;
+    try {
+      cont = pickContinuePreparing({ developmentModules: appModules, moduleProgress, classroomTopics: appTopics, applications: [app], candidateState: globalCandidateState }, { limit: 1 })[0] || null;
+    } catch (e) { cont = null; }
+    if (cont) {
+      const verb = cont.kind === "resume_module" ? "Continue" : cont.kind === "develop_demonstrated" ? "Develop" : "Prepare";
+      return { kind: "prep", label: `${verb} ${cont.title}`, cont };
+    }
+    if (!app.applicationIntelligence && (app.jobDescription || "").trim().length < 40) return { kind: "details", label: "Add application details" };
+    if (!app.applicationIntelligence) return { kind: "analyse", label: "Analyse this application" };
+    return { kind: "interview", label: "Practise an interview" };
+  }
 
   // Phase 13B (Classroom "Recommended for your application"): a pure regroup of
   // applicationIntelligence.js's applicationDevelopmentPriorities — the ONE source
@@ -4867,6 +5018,349 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
           )}
         </div>
       )}
+
+      {/* ================================================================== *
+       * PHASE 16A — APPLICATIONS PILLAR
+       * A persistent per-application preparation workspace. No parallel
+       * engines: ordering/countdown = applicationSchedule.js; recommendations
+       * = applicationIntelligence.js (classroomRecommendationGroups) +
+       * continuePreparing.js; learning = the Phase 14/14.1 Development Module
+       * path. Creating / editing an Application and adding a date make ZERO
+       * AI calls; only an explicit "Analyse" / "Re-analyse" click does.
+       * ================================================================== */}
+
+      {/* State: mid-analysis loader (explicit user action only) */}
+      {screen === "application_analyzing" && <LoadingScreen messages={["Reading the role and requirements...", "Identifying what to prepare for...", "Mapping the company and role themes...", "Personalising your preparation..."]} />}
+
+      {/* ---------------- APPLICATIONS LIST ---------------- */}
+      {screen === "applications" && user && (
+        <div className="jr-fade" style={{ maxWidth: 820, margin: "0 auto", padding: "44px 24px" }}>
+          <div className="flex justify-between items-start mb-6">
+            <div>
+              <h2 style={{ fontSize: 25, fontWeight: 800, color: "var(--navy)" }}>My Applications</h2>
+              <div style={{ fontSize: 14, color: "var(--text-dim)", marginTop: 4 }}>One workspace per company and role — what to prepare, and what to do first.</div>
+            </div>
+            <Btn variant="accent" onClick={() => openApplicationForm(null)}><Plus size={16} /> Add Application</Btn>
+          </div>
+
+          {applicationsWithInterviews.length === 0 ? (
+            <Card style={{ padding: 40, textAlign: "center" }}>
+              <Briefcase size={26} color="var(--text-faint)" style={{ margin: "0 auto 14px" }} />
+              <div style={{ fontSize: 15, fontWeight: 700, color: "var(--navy)", marginBottom: 6 }}>No applications yet</div>
+              <div style={{ fontSize: 13.5, color: "var(--text-dim)", marginBottom: 18 }}>Add a company and role you're preparing for. You can analyse it and start practising whenever you're ready.</div>
+              <Btn variant="accent" onClick={() => openApplicationForm(null)}><Plus size={15} /> Add Application</Btn>
+            </Card>
+          ) : (
+            [["Upcoming interviews", applicationsUpcoming], ["Other applications", applicationsOther]].map(([heading, list]) => (
+              list.length > 0 && (
+                <div key={heading} style={{ marginBottom: 24 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 10 }}>{heading}</div>
+                  <div className="grid grid-cols-1 gap-3">
+                    {list.map((app) => {
+                      const cd = interviewCountdown(app.interviewDate);
+                      const next = nextActionForApplication(app);
+                      return (
+                        <Card key={app.id} style={{ padding: 18 }}>
+                          <div className="flex justify-between items-start gap-3 mb-1">
+                            <div>
+                              <div style={{ fontSize: 15.5, fontWeight: 700, color: "var(--navy)" }}>{app.company}</div>
+                              <div style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 2 }}>{app.role}</div>
+                            </div>
+                            {cd.status !== "none" && (
+                              <span style={{ fontSize: 12.5, fontWeight: 700, color: cd.isUpcoming ? "var(--blue)" : "var(--text-faint)", whiteSpace: "nowrap" }}>
+                                <Clock size={12} style={{ verticalAlign: "-2px", marginRight: 4 }} />{cd.label}
+                              </span>
+                            )}
+                          </div>
+                          <div style={{ fontSize: 12.5, color: "var(--text-dim)", margin: "8px 0 12px" }}>
+                            <strong style={{ color: "var(--navy)" }}>Next:</strong> {next.label}
+                          </div>
+                          <Btn variant="secondary" onClick={() => openApplication(app)} style={{ padding: "6px 12px" }}>Open application <ArrowRight size={13} /></Btn>
+                        </Card>
+                      );
+                    })}
+                  </div>
+                </div>
+              )
+            ))
+          )}
+        </div>
+      )}
+
+      {/* ---------------- ADD / EDIT APPLICATION (no AI) ---------------- */}
+      {screen === "application_form" && user && appForm && (
+        <div className="jr-fade" style={{ maxWidth: 620, margin: "0 auto", padding: "44px 24px" }}>
+          <Btn variant="ghost" onClick={() => { setAppForm(null); setScreen(appForm.id ? "application" : "applications"); }} style={{ marginBottom: 16, padding: "6px 4px" }}><ArrowLeft size={14} /> Back</Btn>
+          <h2 style={{ fontSize: 23, fontWeight: 800, color: "var(--navy)", marginBottom: 4 }}>{appForm.id ? "Edit application details" : "Add Application"}</h2>
+          <p style={{ fontSize: 13.5, color: "var(--text-dim)", marginBottom: 22 }}>Saving this does not run any AI. You can analyse the application from its workspace whenever you're ready.</p>
+
+          {error && <Card style={{ padding: 12, marginBottom: 16, borderLeft: "4px solid var(--bad)", background: "#FEF2F2", fontSize: 13, color: "var(--bad)" }}>{error}</Card>}
+
+          <Card style={{ padding: 22 }}>
+            <label htmlFor="app-company" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Company <span style={{ color: "var(--bad)" }}>*</span></label>
+            <input id="app-company" value={appForm.company} onChange={(e) => setAppForm({ ...appForm, company: e.target.value })} placeholder="e.g. JPMorgan" style={{ ...inputStyle, marginTop: 6, marginBottom: 16 }} />
+
+            <label htmlFor="app-role" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Role <span style={{ color: "var(--bad)" }}>*</span></label>
+            <input id="app-role" value={appForm.role} onChange={(e) => setAppForm({ ...appForm, role: e.target.value })} placeholder="e.g. Investment Banking Analyst" style={{ ...inputStyle, marginTop: 6, marginBottom: 16 }} />
+
+            <label htmlFor="app-jd" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Job description / application details</label>
+            <textarea id="app-jd" aria-describedby="app-jd-help" value={appForm.jd} onChange={(e) => setAppForm({ ...appForm, jd: e.target.value })}
+              placeholder="Paste the job description and any other relevant information about the company, role, programme or requirements..."
+              style={{ width: "100%", height: 200, padding: 13, marginTop: 6, border: "1.5px solid var(--border)", borderRadius: "var(--radius-sm)", fontSize: 13.5, lineHeight: 1.5, fontFamily: "var(--font)" }} />
+            <p id="app-jd-help" style={{ fontSize: 12.5, color: "var(--text-dim)", margin: "8px 0 16px", lineHeight: 1.5 }}>
+              Include as much detail as possible about the company, role and requirements. This helps JOB.READY personalise your interview questions and development recommendations.
+            </p>
+
+            <label htmlFor="app-date" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Interview date <span style={{ color: "var(--text-faint)", fontWeight: 400 }}>(optional)</span></label>
+            <input id="app-date" type="date" value={appForm.date} onChange={(e) => setAppForm({ ...appForm, date: e.target.value })} style={{ ...inputStyle, marginTop: 6, marginBottom: 6 }} />
+            <p style={{ fontSize: 12, color: "var(--text-faint)", lineHeight: 1.5, margin: 0 }}>Used to order your applications and show a countdown. JOB.READY does not send reminders.</p>
+          </Card>
+
+          <div className="flex gap-3" style={{ marginTop: 18 }}>
+            <Btn variant="accent" onClick={() => guarded(saveApplicationForm)} disabled={!sanitizeText(appForm.company).trim() || !sanitizeText(appForm.role).trim()}>{appForm.id ? "Save changes" : "Create application"}</Btn>
+            <Btn variant="ghost" onClick={() => { setAppForm(null); setScreen(appForm.id ? "application" : "applications"); }}>Cancel</Btn>
+          </div>
+        </div>
+      )}
+
+      {/* ---------------- APPLICATION OVERVIEW (workspace) ---------------- */}
+      {screen === "application" && user && (() => {
+        const app = applicationsWithInterviews.find((a) => a.id === appView);
+        if (!app) {
+          return (
+            <div className="jr-fade" style={{ maxWidth: 720, margin: "0 auto", padding: "44px 24px" }}>
+              <Btn variant="ghost" onClick={openApplicationsList} style={{ marginBottom: 16, padding: "6px 4px" }}><ArrowLeft size={14} /> My Applications</Btn>
+              <Card style={{ padding: 32, textAlign: "center", color: "var(--text-dim)" }}>This application is no longer available.</Card>
+            </div>
+          );
+        }
+        const cd = interviewCountdown(app.interviewDate);
+        const intel = app.applicationIntelligence || null;
+        const jdLen = (app.jobDescription || "").trim().length;
+        let stale = false;
+        try {
+          stale = !!intel && applicationIntelligenceIsStale(intel, hashApplicationSources({ company: app.company, role: app.role, jdText: app.jobDescription || "" }));
+        } catch (e) { stale = false; }
+
+        // App-scoped derived data — pure, no AI, no query. Every array is
+        // pre-filtered to THIS application so nothing leaks across applications.
+        const appTopics = classroom.filter((t) => t.applicationId === app.id);
+        const appTopicIds = new Set(appTopics.map((t) => t.id));
+        const appModules = developmentModules.filter((m) => appTopicIds.has(m.topic_id));
+        const appModuleIds = new Set(appModules.map((m) => m.id));
+        const appProgress = moduleProgress.filter((p) => appModuleIds.has(p.module_id));
+        let appContinue = null;
+        try {
+          appContinue = pickContinuePreparing({ developmentModules: appModules, moduleProgress: appProgress, classroomTopics: appTopics, applications: [app], candidateState: globalCandidateState }, { limit: 1 })[0] || null;
+        } catch (e) { appContinue = null; }
+        let recs = { technical: [], behavioural: [], motivational: [], all: [], limitedContext: false, hasAny: false };
+        try {
+          if (intel) recs = classroomRecommendationGroups(intel, globalCandidateState, { limit: 9 });
+        } catch (e) { /* keep empty */ }
+        const preparationRecs = recs.all.filter((r) => !r.tested);
+        const interviewRecs = recs.all.filter((r) => r.tested);
+        const appInterviews = app.interviews || [];
+        const progress = {
+          interviewsCompleted: appInterviews.filter((iv) => iv.report || typeof iv.overall_score === "number").length,
+          areasStarted: appTopics.length,
+          modulesCompleted: appProgress.filter((p) => num(p.best_coverage, 0) >= 0.85).length,
+        };
+        const matchTopicFor = (label) => classroom.find((t) => {
+          if (t.applicationId && t.applicationId !== app.id) return false; // never another application's topic
+          const n = normalizeTopic(t.topic), m = normalizeTopic(label);
+          return n && m && (n === m || n.includes(m) || m.includes(n));
+        });
+
+        return (
+          <div className="jr-fade" style={{ maxWidth: 820, margin: "0 auto", padding: "44px 24px" }}>
+            <Btn variant="ghost" onClick={openApplicationsList} style={{ marginBottom: 16, padding: "6px 4px" }}><ArrowLeft size={14} /> My Applications</Btn>
+
+            <div className="flex justify-between items-start gap-3 mb-2">
+              <div>
+                <h2 style={{ fontSize: 24, fontWeight: 800, color: "var(--navy)" }}>{app.company}</h2>
+                <div style={{ fontSize: 14.5, color: "var(--text-dim)", marginTop: 2 }}>{app.role}</div>
+              </div>
+              <Btn variant="secondary" onClick={() => buildInterviewFromApplication(app)} style={{ padding: "7px 12px" }}><Plus size={14} /> Build interview</Btn>
+            </div>
+            {cd.status !== "none" && (
+              <div style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 13.5, fontWeight: 700, color: cd.isUpcoming ? "var(--blue)" : "var(--text-faint)", background: cd.isUpcoming ? "var(--highlight)" : "#F1F5F9", borderRadius: 8, padding: "6px 12px", marginBottom: 20 }}>
+                <CalendarClock size={15} />{cd.label}
+                {cd.status === "past" && <span style={{ fontWeight: 400, color: "var(--text-faint)" }}>— update it below if the date changed</span>}
+              </div>
+            )}
+
+            {error && <Card style={{ padding: 12, marginBottom: 16, borderLeft: "4px solid var(--bad)", background: "#FEF2F2", fontSize: 13, color: "var(--bad)" }}>{error}</Card>}
+
+            {/* ---- YOUR PREPARATION (centre of the workspace) ---- */}
+            <h3 style={{ fontSize: 17, fontWeight: 800, color: "var(--navy)", margin: "8px 0 12px" }}>Your preparation</h3>
+
+            {/* State A — not enough context to analyse yet */}
+            {!intel && jdLen < 40 && (
+              <Card style={{ padding: 22, marginBottom: 28 }}>
+                <div style={{ fontSize: 14, color: "var(--text-dim)", lineHeight: 1.6, marginBottom: 14 }}>
+                  Add more information about the role and requirements to help JOB.READY personalise your preparation.
+                </div>
+                <Btn variant="accent" onClick={() => openApplicationForm(app)}>Add application details <ArrowRight size={15} /></Btn>
+              </Card>
+            )}
+
+            {/* State B — context present, no analysis yet */}
+            {!intel && jdLen >= 40 && (
+              <Card style={{ padding: 22, marginBottom: 28, borderLeft: "4px solid var(--blue)" }}>
+                <div style={{ fontSize: 15, fontWeight: 700, color: "var(--navy)", marginBottom: 6 }}>Ready to personalise your preparation?</div>
+                <div style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.6, marginBottom: 14 }}>
+                  JOB.READY will read the role and requirements and lay out what to prepare for this application. This is the only step here that uses AI.
+                </div>
+                <Btn variant="accent" onClick={() => guarded(() => analyseApplicationOnly(app))}><Sparkles size={15} /> Analyse this application</Btn>
+              </Card>
+            )}
+
+            {/* State D — analysis exists but the details changed since */}
+            {intel && stale && (
+              <Card style={{ padding: 18, marginBottom: 18, borderLeft: "4px solid var(--warn)", background: "#FFFBEB" }}>
+                <div style={{ fontSize: 13.5, fontWeight: 700, color: "var(--navy)", marginBottom: 6 }}>Your application details have changed.</div>
+                <div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.6, marginBottom: 12 }}>Re-analyse to update your personalised preparation. The recommendations below still reflect the previous details.</div>
+                <Btn variant="accent" onClick={() => guarded(() => analyseApplicationOnly(app))}><Sparkles size={14} /> Re-analyse application</Btn>
+              </Card>
+            )}
+
+            {/* State C — analysis exists: preparation, all through existing systems */}
+            {intel && (
+              <div style={{ marginBottom: 28 }}>
+                {recs.limitedContext && (
+                  <Card style={{ padding: 14, marginBottom: 14, background: "var(--highlight)" }}>
+                    <div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.5 }}>
+                      JOB.READY only has thin information about this company and role, so these lean on general expectations for the role type. Add more detail and re-analyse to sharpen them.
+                    </div>
+                  </Card>
+                )}
+
+                {/* (A) Continue preparing — work already started */}
+                {appContinue && (
+                  <Card style={{ padding: 18, marginBottom: 12, borderLeft: `4px solid ${appContinue.evidenceType === "demonstrated" ? "var(--bad)" : "var(--blue)"}` }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 6 }}>Continue preparing</div>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: "var(--navy)" }}>{appContinue.title}</div>
+                    <div style={{ fontSize: 12.5, color: "var(--text-dim)", marginTop: 6, lineHeight: 1.5 }}>{appContinue.sublabel}</div>
+                    <Btn variant="accent" style={{ marginTop: 12 }} onClick={() => guarded(() => {
+                      if (appContinue.kind === "prepare_recommendation") {
+                        startLearningFromRecommendation(appContinue.recommendation, app);
+                      } else {
+                        const t = classroom.find((x) => x.id === appContinue.topicId);
+                        if (t) openDevelopmentModule(t);
+                      }
+                    })}>{appContinue.kind === "resume_module" ? "Continue learning" : "Start learning"} <ArrowRight size={14} /></Btn>
+                  </Card>
+                )}
+
+                {/* (B) Recommended preparation — areas to prepare, NOT weaknesses */}
+                {preparationRecs.length > 0 && (
+                  <div style={{ marginBottom: 12 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>Prepare for this application</div>
+                    {preparationRecs.map((r) => {
+                      const match = matchTopicFor(r.label);
+                      return (
+                        <Card key={"prep-" + r.label} style={{ padding: 16, marginBottom: 10 }}>
+                          <div className="flex items-center justify-between gap-2 mb-1" style={{ flexWrap: "wrap" }}>
+                            <span style={{ fontSize: 12, fontWeight: 700, color: r.level === "high" ? "var(--warn)" : "var(--text-faint)" }}>{r.level === "high" ? "High priority" : "Worth preparing"}</span>
+                            <Pill color="var(--blue)" bg="var(--highlight)">{r.dimension}</Pill>
+                          </div>
+                          <div style={{ fontSize: 15.5, fontWeight: 700, color: "var(--navy)", margin: "2px 0 5px" }}>{r.label}</div>
+                          <div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.55, marginBottom: 5 }}>{r.level === "high" ? "Important to prepare for this role." : "Useful to prepare for this role."}</div>
+                          <div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.55, marginBottom: 10 }}>This is an area to prepare for this application — not a demonstrated weakness.</div>
+                          <Btn variant="accent" onClick={() => guarded(() => match ? openDevelopmentModule(match) : startLearningFromRecommendation(r, app))}><BookOpen size={14} /> Start learning</Btn>
+                        </Card>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* (C) From your interviews — demonstrated evidence */}
+                {interviewRecs.length > 0 && (
+                  <div style={{ marginBottom: 4 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>From your interviews</div>
+                    {interviewRecs.map((r) => {
+                      const match = matchTopicFor(r.label);
+                      return (
+                        <Card key={"iv-" + r.label} style={{ padding: 16, marginBottom: 10, borderLeft: "4px solid var(--bad)" }}>
+                          <div className="flex items-center justify-between gap-2 mb-1" style={{ flexWrap: "wrap" }}>
+                            <span style={{ fontSize: 12, fontWeight: 700, color: "var(--bad)" }}>{r.levelIcon} {r.levelLabel}</span>
+                            <Pill color="var(--blue)" bg="var(--highlight)">{r.dimension}</Pill>
+                          </div>
+                          <div style={{ fontSize: 15.5, fontWeight: 700, color: "var(--navy)", margin: "2px 0 5px" }}>{r.label}</div>
+                          <div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.55, marginBottom: 5 }}>Based on your interview performance.</div>
+                          <div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.55, marginBottom: 10 }}>{r.gapSummary}</div>
+                          <Btn variant="accent" onClick={() => guarded(() => match ? openDevelopmentModule(match) : startLearningFromRecommendation(r, app))}><BookOpen size={14} /> Develop this area</Btn>
+                        </Card>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {!appContinue && !recs.hasAny && (
+                  <Card style={{ padding: 20, fontSize: 13, color: "var(--text-dim)", lineHeight: 1.6 }}>
+                    The analysis didn't surface specific preparation areas for this role yet. Add more detail to the application and re-analyse, or build an interview to generate interview-based recommendations.
+                  </Card>
+                )}
+              </div>
+            )}
+
+            {/* ---- INTERVIEWS ---- */}
+            <h3 style={{ fontSize: 17, fontWeight: 800, color: "var(--navy)", margin: "8px 0 12px" }}>Interviews</h3>
+            <Card style={{ padding: 18, marginBottom: 28 }}>
+              {appInterviews.length === 0 ? (
+                <div style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.6, marginBottom: 14 }}>
+                  No interviews for this application yet. Build one and it will carry this company, role and job description — you choose the question mix.
+                </div>
+              ) : (
+                appInterviews.map((iv, i) => (
+                  <div key={iv.id} className="flex items-center justify-between gap-3" style={{ padding: "10px 0", borderTop: i ? "1px solid var(--border)" : "none" }}>
+                    <div>
+                      <div style={{ fontSize: 13.5, fontWeight: 600, color: "var(--navy)" }}>{iv.stageLabel || "Interview"}{typeof iv.overall_score === "number" ? ` · ${iv.overall_score}/100` : ""}</div>
+                      <div style={{ fontSize: 12, color: "var(--text-faint)", marginTop: 2 }}>{iv.date ? new Date(iv.date).toLocaleDateString() : ""}</div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {iv.report && <Btn variant="ghost" onClick={() => openInterviewReport(iv, "application")} style={{ padding: "6px 10px" }}>View report</Btn>}
+                      <Btn variant="secondary" onClick={() => guarded(() => practiseApplicationAgain(app))} style={{ padding: "6px 10px" }}>Practise again</Btn>
+                    </div>
+                  </div>
+                ))
+              )}
+              <Btn variant="accent" onClick={() => buildInterviewFromApplication(app)} style={{ marginTop: 14 }}><Plus size={14} /> Build interview</Btn>
+            </Card>
+
+            {/* ---- APPLICATION DETAILS ---- */}
+            <h3 style={{ fontSize: 17, fontWeight: 800, color: "var(--navy)", margin: "8px 0 12px" }}>Application details</h3>
+            <Card style={{ padding: 18, marginBottom: 28 }}>
+              {[["Company", app.company], ["Role", app.role], ["Interview date", app.interviewDate ? new Date(app.interviewDate).toLocaleDateString() : "Not set"]].map(([k, v]) => (
+                <div key={k} className="flex justify-between gap-3" style={{ padding: "7px 0", borderBottom: "1px solid var(--border)", fontSize: 13 }}>
+                  <span style={{ color: "var(--text-faint)", fontWeight: 600 }}>{k}</span>
+                  <span style={{ color: "var(--navy)", fontWeight: 600, textAlign: "right" }}>{v}</span>
+                </div>
+              ))}
+              <div style={{ padding: "10px 0", fontSize: 13 }}>
+                <div style={{ color: "var(--text-faint)", fontWeight: 600, marginBottom: 4 }}>Job description / application details</div>
+                <div style={{ color: "var(--text-dim)", lineHeight: 1.5, whiteSpace: "pre-wrap" }}>
+                  {(app.jobDescription || "").trim()
+                    ? (app.jobDescription.trim().length > 600 ? app.jobDescription.trim().slice(0, 600) + "…" : app.jobDescription.trim())
+                    : <span style={{ fontStyle: "italic" }}>None added yet.</span>}
+                </div>
+              </div>
+              <Btn variant="secondary" onClick={() => openApplicationForm(app)} style={{ marginTop: 12 }}>Edit application details</Btn>
+            </Card>
+
+            {/* ---- PROGRESS (real data only) ---- */}
+            <h3 style={{ fontSize: 17, fontWeight: 800, color: "var(--navy)", margin: "8px 0 12px" }}>Progress</h3>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {[["Interviews completed", progress.interviewsCompleted], ["Development areas started", progress.areasStarted], ["Modules completed", progress.modulesCompleted]].map(([k, v]) => (
+                <Card key={k} style={{ padding: 18 }}>
+                  <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 8 }}>{k}</div>
+                  <div style={{ fontSize: 26, fontWeight: 800, color: "var(--navy)" }}>{v}</div>
+                </Card>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ---------------- CREATE (progressive wizard) ---------------- */}
       {screen === "create" && (

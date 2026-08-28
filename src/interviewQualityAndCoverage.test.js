@@ -125,7 +125,7 @@ describe("acAttempts carries applicationId through, closing the AC-feels-disconn
   });
 
   it("Dashboard shows an Assessment Centre badge on an application card only when it actually has AC attempts", () => {
-    const DASHBOARD_SRC = extractFunctionSource('screen === "dashboard" && user && (', '{/* ---------------- CREATE');
+    const DASHBOARD_SRC = extractFunctionSource('screen === "dashboard" && user && (', 'PHASE 16A — APPLICATIONS PILLAR');
     expect(DASHBOARD_SRC).toMatch(/\{app\.acAttempts\.length > 0 && <Pill/);
   });
 });

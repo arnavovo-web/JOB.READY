@@ -151,7 +151,7 @@ describe("dashboard/progress/ac_home wire clicks to the history views (STRUCTURA
     // (applicationsWithInterviews) — the report-opening click now lives on that card's "View
     // latest report" button, gated on latest?.report existing at all (an application with no
     // completed interview, or one whose report insert itself failed, renders no such button).
-    const dashboardSrc = extractFunctionSource('screen === "dashboard" && user && (', '{/* ---------------- CREATE');
+    const dashboardSrc = extractFunctionSource('screen === "dashboard" && user && (', 'PHASE 16A — APPLICATIONS PILLAR');
     expect(dashboardSrc).toMatch(/\{latest\?\.report && <Btn variant="ghost" onClick=\{\(\) => openInterviewReport\(latest, "dashboard"\)\}/);
   });
 

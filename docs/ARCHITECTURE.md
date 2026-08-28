@@ -1,6 +1,6 @@
 # JOB.READY — Architecture
 
-*Describes the current product. Updated Phase 15A (2026-08).*
+*Describes the current product. Updated Phase 16A (2026-08).*
 
 ## System shape
 
@@ -23,19 +23,43 @@ lives in small pure modules imported by `App.jsx` (no AI, no DB, no React):
 `methodology.js`, `adaptiveEngine.js`, `questionMix.js`, `interviewKnowledge.js`
 (+ `knowledgeCatalogue.js`), `candidateState.js`, `candidateIntelligence.js`,
 `interviewStrategy.js`, `applicationIntelligence.js`, `invitationScannerResolve.js`
-(+ `invitationScannerEvaluation.js`), `writtenQuiz.js`, `continuePreparing.js`.
+(+ `invitationScannerEvaluation.js`), `writtenQuiz.js`, `continuePreparing.js`,
+`applicationSchedule.js` (Phase 16A — interview-date countdown text +
+nearest-upcoming ordering; no timers, no reminders).
 
 ## The product loop
 
 ```text
+APPLICATIONS PILLAR  (Phase 16A — top-level nav "Applications")
+   My Applications list: one card per opportunity (company, role, plain-text
+        interview countdown, one best next action), ordered nearest future
+        interview first (applicationSchedule.js). Past date != upcoming.
+   + Add Application: company + role (required), optional JD/context, optional
+        interview date  ->  ZERO AI calls.
+   Application workspace (per applications row):
+     - Your preparation:  Continue preparing (pickContinuePreparing, app-scoped)
+          / Prepare for this application (classroomRecommendationGroups — AREA
+          TO PREPARE, never a weakness) / From your interviews (demonstrated).
+          State A no context -> add details;  State B context, no analysis ->
+          [Analyse this application];  State C analysed -> reuse (no regen);
+          State D details changed (hashApplicationSources / …IsStale) ->
+          [Re-analyse].  Analyse/Re-analyse is the ONLY AI on this screen.
+     - Interviews:  this application's interviews + [+ Build interview]
+          (carries company/role/JD; RESETS the Question Mix).
+     - Application Details:  [Edit application details] -> same applications row.
+     - Progress:  interviews completed / areas started / modules completed.
+        |
 APPLICATION / INTERVIEW OPPORTUNITY
         |
         +-- manual: Build Interview wizard (company/role -> JD & context -> CV ->
         |           round + QUESTION MIX) -> "Build my interview"
         +-- offer email: paste invitation -> AI extraction -> review/complete ->
-                    converges into the SAME wizard at the final step
+        |           converges into the SAME wizard at the final step
+        +-- from an Application workspace: [+ Build interview] pre-fills
+                    company/role/JD, Question Mix stays a manual choice
         v
-ANALYSE & PLAN  (one AI call: interview_profile)
+ANALYSE & PLAN  (one AI call: interview_profile — same call as the standalone
+                 "Analyse this application"; shared INTERVIEW_PROFILE_SYSTEM prompt)
    -> jd_profile + jd_profile_hash               (applications)
    -> Application Intelligence                    (applications.application_intelligence)
    -> methodology distribution (scheduler-owned), clamped to the Question Mix
@@ -113,7 +137,9 @@ a preparation area into a "weakness".
 | Whether the Technical Knowledge Layer may operate | `isTechnicalMixEnabled(config.question_mix)` — only when Technical is selected |
 | Canonical concept taxonomy (what to test) | `knowledgeCatalogue.js` (no teaching prose) |
 | "What matters for this application" | `applicationIntelligence.js` |
-| Application-specific development priority | `applicationDevelopmentPriorities` (one engine; Classroom + "Continue preparing" both consume it) |
+| Application-specific development priority | `applicationDevelopmentPriorities` (one engine; Classroom, the Application workspace's "Your preparation", and "Continue preparing" all consume it via `classroomRecommendationGroups`) |
+| Interview-date countdown text + nearest-upcoming ordering | `applicationSchedule.js` — pure; status only, **no reminder/notification** |
+| One preparation opportunity (company + role + optional JD + optional interview date) | the `applications` row — the Application workspace is UI over it, **not** a second model |
 | Diagnosed development need | `classroom_topics` (from interview/AC report only) |
 | Reusable learning content | `development_modules` (one per `classroom_topics` row) |
 | Written-quiz marking | `writtenQuiz.js` — deterministic, no AI |
@@ -124,8 +150,9 @@ a preparation area into a "weakness".
 | Data | Table(s) | Durability |
 |---|---|---|
 | Applications | `applications` | hard |
-| Application Intelligence | `applications.application_intelligence` (jsonb) | hard (checked write) |
-| JD profile | `applications.jd_profile`, `jd_profile_hash` | hard (checked write) |
+| Interview date (optional) | `applications.interview_date` (timestamptz, nullable) — Phase 16A; baseline column, no migration needed. Ordering + countdown only; **no reminder mechanism** | hard (checked write on edit) |
+| Application Intelligence | `applications.application_intelligence` (jsonb) | hard (checked write) — written only by `analyseAndPlan` or the explicit `analyseApplicationOnly` (Phase 16A); never on render, never silently on edit |
+| JD profile | `applications.jd_profile`, `jd_profile_hash` | hard (checked write); `jd_profile_hash` + `hashApplicationSources` also drive stale-analysis detection |
 | Interviews / questions / answers / evaluations | `interviews`, `interview_questions`, `answers`, `evaluations` | hard (throw) |
 | Interview report (feedback + diagnosis) | `interview_reports` | **hard** — `dbCompleteInterview` reports `{ok}`, failure is surfaced with a persist-only retry (Phase 15A) |
 | Candidate DNA / competency history | `candidate_dna`, `competency_history` | best-effort |
@@ -151,6 +178,14 @@ are no longer written by the UI — scheduled for a separate cleanup phase.
 **AI generates knowledge once; the app then transforms it deterministically.**
 Learn, Flashcards, Written Quiz, quiz marking, quiz retakes, "redo" marking and
 the "Continue preparing" pick make **no AI call**. No web search anywhere.
+
+Phase 16A adds **no new request type**. `interview_profile` now has two explicit
+call sites — `analyseAndPlan` (interview creation) and `analyseApplicationOnly`
+(standalone "Analyse this application", which builds no interview) — sharing one
+hoisted system prompt (`INTERVIEW_PROFILE_SYSTEM`). Creating or editing an
+application, adding/editing the interview date, opening the Applications list,
+and opening / reopening an application make **zero** AI calls; a reopened
+analysed application reuses its stored intelligence.
 
 ## Migrations
 

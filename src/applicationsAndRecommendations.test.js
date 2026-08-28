@@ -100,9 +100,11 @@ describe("continueApplication (STRUCTURAL)", () => {
 describe("practiseApplicationAgain (STRUCTURAL)", () => {
   // Tight boundary — practiseApplicationAgain's own body only. The old "STEP 1: JD + CV
   // ANALYSIS" end marker used to be immediately after this function; Phase 7 inserted the
-  // invitation-scanner helpers (which DO call callClaude/DB functions) in between, so that
-  // marker would now sweep unrelated code into this function's own "no AI/DB call" check.
-  const FN_SRC = extractFunctionSource("function practiseApplicationAgain(app) {", "/* ---------------- PHASE 7: INTERVIEW INVITATION SCANNER");
+  // invitation-scanner helpers (which DO call callClaude/DB functions) in between, and
+  // Phase 16A then inserted the Applications-pillar helpers (analyseApplicationOnly DOES
+  // call callClaude) immediately after this function — so the end marker must be the very
+  // next block, otherwise it sweeps unrelated code into this "no AI/DB call" check.
+  const FN_SRC = extractFunctionSource("function practiseApplicationAgain(app) {", "/* ---------------- PHASE 16A: APPLICATIONS PILLAR");
 
   it("reuses the existing application id — deliberately different from startCreateFlow's always-new one", () => {
     expect(FN_SRC).toMatch(/setApplicationId\(app\.id\)/);
@@ -177,7 +179,9 @@ describe("Progress screen renders the recommendations/coverage sections, gated t
 
 /* ============================== Dashboard applications grouping (STRUCTURAL) ============================== */
 describe("Dashboard groups interviews by application instead of a flat list (STRUCTURAL)", () => {
-  const DASHBOARD_SRC = extractFunctionSource('screen === "dashboard" && user && (', '{/* ---------------- CREATE');
+  // End marker is the Phase 16A block (inserted between the Dashboard screen and
+  // CREATE) so this slice stays the Dashboard's own JSX only.
+  const DASHBOARD_SRC = extractFunctionSource('screen === "dashboard" && user && (', 'PHASE 16A — APPLICATIONS PILLAR');
 
   it("renders applicationsWithInterviews, not the old flat interviewList map", () => {
     expect(DASHBOARD_SRC).toMatch(/applicationsWithInterviews\.map\(\(app\) => \{/);
