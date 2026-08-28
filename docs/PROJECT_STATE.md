@@ -1,90 +1,79 @@
 # JOB.READY — Project State
 
-**Last updated:** 2026-08-20
+**Last updated:** 2026-08 (Phase 15A)
 
-## Current phase
+For the system shape, ownership map and persisted-state table see
+`docs/ARCHITECTURE.md`. This file is a short status snapshot.
 
-**Phase 1 — Stabilisation:** completed in the Claude development pass, subject to the remaining browser/live-service limitations documented below.
+## What the product does today
 
-**Phase 2B — Productionisation:** next major engineering phase. Supabase is connected to the project and the existing application is being migrated from demo/local persistence to real authentication, database persistence, private document storage, and secure server-side AI access.
+JOB.READY takes a user from an interview opportunity to measurable improvement:
 
-## Product currently present
+1. **Build an interview** — manually (company/role, JD & context, CV, interview
+   round, and a mandatory **Question Mix**: Technical / Behavioural / Motivational),
+   or by pasting an **offer/invitation email** which is AI-extracted, reviewed and
+   completed by the user, then converges into the same wizard.
+2. **Analyse & plan** — one AI call extracts the interview profile, builds
+   **Application Intelligence** ("what matters for this application", from
+   user-provided info only — no web search), and computes the scheduler's
+   methodology distribution, clamped to the chosen Question Mix.
+3. **Practice** — an adaptive interview (deterministic scheduler owns category /
+   turn type / anchor; AI only evaluates an answer and phrases the next question),
+   or an independent/batch "HireVue-style" interview (isolated pipeline).
+4. **Diagnosis** — one AI call produces the report: per-question feedback,
+   weakest areas, and `classroom_topics` (diagnosed development needs). Candidate
+   DNA and Candidate State are updated.
+5. **Classroom** — per-application **recommendations** (Application Intelligence ×
+   Candidate State), each clearly a *demonstrated weakness* or an *area to
+   prepare*; plus interview-diagnosed topics.
+6. **Development Module** — generated **once** per topic (one AI call), then
+   reused with **zero** further AI calls to power:
+   - 📚 **Learn** (structured learning guide),
+   - 🗂️ **Flashcards** (from persisted items),
+   - ✍️ **Written Quiz** (free-response, marked **deterministically** by concept
+     coverage — no AI; feedback shows covered ✓ / still-to-include ○ / review /
+     try again; never says "wrong"),
+   - 🎤 **Redo the original interview question** (also deterministically marked),
+   - **What Next** hub — the student is never forced back to the start.
+7. **Improvement** — retaking updates scores / Candidate State and the Dashboard
+   **"Continue preparing"** card (deterministic: in-progress module > demonstrated
+   need not yet developed > high-priority preparation recommendation).
 
-- Landing page
-- Authentication/demo login flow (being replaced by Supabase Auth)
-- Dashboard
-- Interview setup and generation
-- CV/JD document input
-- TXT/DOCX/PDF processing
-- Interview simulation
-- AI answer evaluation
-- Interview reports
-- Classroom lessons and quizzes
-- Candidate DNA
-- Interview Memory
-- Progress
-- Assessment Centre section
-- Responsive/mobile UI
-- AI-output validation
-- Duplicate-submit protection
-- Persistent Classroom quiz state in the current implementation
+## Recently done
 
-## Phase 1 stabilisation work reported by Claude
+- **Phase 13A/B** — Application Intelligence + per-application Classroom
+  recommendations, with the demonstrated-vs-prepare distinction.
+- **Phase 14 / 14.1** — Development Modules (learning guide + flashcards + written
+  quiz + deterministic marking); recommendations with no pre-existing topic can
+  materialise one (no AI) and enter the same module.
+- **Migration baseline** — `supabase/migrations/` established; the previously
+  ad-hoc schema is now a tracked idempotent baseline plus incrementals.
+- **Phase 15 audit** — full end-to-end integration audit.
+- **Phase 15A** — critical integration fixes:
+  - interview report and Development Module persistence made **hard durability
+    boundaries** — a failed save is now visible with a persist-only retry (never
+    re-runs the AI evaluation / generation);
+  - classroom-topic de-duplication is **application-scoped** (no cross-application
+    contamination);
+  - Dashboard **"Continue preparing"** re-entry into the learning loop;
+  - the "redo original question" exercise now gives real deterministic
+    concept-coverage feedback instead of a silent save.
 
-- Removed dead import.
-- Added AI-output validation/coercion.
-- Added duplicate-submission protection.
-- Added Classroom quiz persistence.
-- Added PDF extraction wiring through pdf.js.
-- Added mobile navigation/hamburger behaviour.
-- Converted grids/button rows to mobile-friendly layouts.
-- Improved Interview Memory matching.
-- Fixed raw upstream error leakage.
-- Restored landing-page sections lost during an earlier rewrite.
-- Test harnesses reported passing core and edge-case logic tests.
+## Known deferred (not in Phase 15A)
 
-### Phase 1 limitations
+- **Standalone application creation** — you still add an application only via the
+  interview wizard; a "prepare for a role without a mock interview" journey is
+  deferred for separate design.
+- **Legacy MCQ lesson subsystem** (`openLesson`, `classroom_lessons`,
+  `classroom_quiz_results`) — unreachable from the UI; removal is its own phase.
+- **`interview_profile` regeneration** — "Practise again" with an unchanged JD
+  re-runs the extraction; a hash-keyed reuse is a future cost optimisation.
+- **AI-scored original-vs-retry comparison** for the redo answer.
 
-Claude reported that it could not perform full real-browser rendering, live Anthropic API testing, or real PDF/DOCX browser tests in its environment. A subsequent manual test found that file uploads were not working in the live application, so file upload remains a confirmed item to verify/fix before productionisation is considered complete.
+## Invariants (must not regress)
 
-## Current architecture direction
-
-```text
-JOB.READY frontend
-        |
-        +--> Supabase Auth
-        |
-        +--> Supabase Database
-        |
-        +--> private Supabase Storage
-        |
-        +--> authenticated Supabase Edge Function
-                    |
-                    +--> Anthropic API
-```
-
-## Source of truth rules
-
-- Supabase Auth is the canonical user identity.
-- Persistent business data belongs in Supabase, not localStorage.
-- RLS must enforce per-user data isolation.
-- CVs/JDs/documents must remain private.
-- Anthropic credentials must remain server-side.
-- Database changes use migrations.
-
-## Current development priorities
-
-1. Verify the current repository contains the latest stable JOB.READY code.
-2. Complete/fix real TXT/DOCX/PDF upload behaviour in the live browser environment.
-3. Execute Phase 2B Supabase frontend/backend integration.
-4. Establish real sign-up/sign-in/session/logout/password reset.
-5. Migrate persistent application/interview/report/Classroom/DNA/Memory data to Supabase.
-6. Move Anthropic calls behind an authenticated Supabase Edge Function.
-7. Verify RLS and cross-account isolation.
-8. Regression test the entire product.
-
-## Deferred
-
-Assessment Centre expansion, including multiplayer/group mock assessments, is deliberately on hold until the rest of the product is solid.
-
-Voice/audio answering is also deferred for now.
+Question Mix ownership · scheduler / methodology ownership · Technical Knowledge
+Layer gating (Technical selected only) · HireVue/batch isolation · Candidate State
+semantics · application isolation · demonstrated weakness vs area to prepare ·
+"AI creates knowledge once, the app transforms it deterministically" · no web
+search · tracked migrations only (never an untracked live-only schema change).

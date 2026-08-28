@@ -53,9 +53,21 @@ describe("openDevelopmentModule — generate once, then reuse", () => {
   });
 
   it("persists via dbInsertDevelopmentModule and snapshots the source question / interview for retry", () => {
-    expect(OPEN_FN).toMatch(/dbInsertDevelopmentModule\(topic\.id, user\.id, \{/);
+    expect(OPEN_FN).toMatch(/dbInsertDevelopmentModule\(topic\.id, user\.id, moduleFields\)/);
     expect(OPEN_FN).toMatch(/source_question: topic\.relatedQuestion/);
     expect(OPEN_FN).toMatch(/source_interview_id: topic\.lastInterviewId/);
+  });
+
+  it("Phase 15A: a failed persist does NOT fake an id:null module and does NOT auto-regenerate", () => {
+    // on !saved: keep the generated content for a persist-only retry, return to Classroom
+    expect(OPEN_FN).toMatch(/if \(!saved\) \{[\s\S]*?setPendingModuleSave\(\{ topicId: topic\.id[\s\S]*?setScreen\("classroom"\);\s*\n?\s*return;/);
+    // the id:null fake-module fallback is gone
+    expect(OPEN_FN).not.toMatch(/hydrateDevModuleRow\(saved \|\| \{/);
+    expect(OPEN_FN).not.toMatch(/id: null, dimension/);
+    // the retry path re-attempts the SAME fields — never callClaude
+    const RETRY = SRC.slice(SRC.indexOf("async function retrySaveModule()"), SRC.indexOf("async function retrySaveModule()") + 900);
+    expect(RETRY).toMatch(/dbInsertDevelopmentModule\(pendingModuleSave\.topicId, user\.id, pendingModuleSave\.fields\)/);
+    expect(RETRY).not.toMatch(/callClaude/);
   });
 
   it("knowledge-layer grounding is read-only (findConceptsByText), technical dimension only", () => {
@@ -80,8 +92,9 @@ describe("deterministic sub-activities make NO AI call", () => {
     expect(SRC).toMatch(/import \{ markWrittenQuiz, coverageVerdict \} from "\.\/writtenQuiz"/);
   });
   it("retake reshuffles the persisted item pool — no regeneration", () => {
-    expect(DETERMINISTIC).toMatch(/function startWrittenQuiz\(\) \{[\s\S]*?learning_items[\s\S]*?Math\.random\(\)[\s\S]*?setDevView\("quiz"\)/);
-    expect(DETERMINISTIC).not.toMatch(/dbInsertDevelopmentModule|generate/i);
+    const START_QUIZ = DETERMINISTIC.slice(DETERMINISTIC.indexOf("function startWrittenQuiz()"), DETERMINISTIC.indexOf("async function saveFlashProgress"));
+    expect(START_QUIZ).toMatch(/learning_items[\s\S]*?Math\.random\(\)[\s\S]*?setDevView\("quiz"\)/);
+    expect(START_QUIZ).not.toMatch(/dbInsertDevelopmentModule|callClaude|generate/i);
   });
   it("dev_module render block contains no callClaude", () => {
     expect(DEV_SCREEN).not.toMatch(/callClaude/);
@@ -131,9 +144,15 @@ describe("redo question stays connected to source; scheduler untouched", () => {
     expect(DEV_SCREEN).toMatch(/devModule\.source_question \|\| devTopic\.relatedQuestion/);
     expect(DEV_SCREEN).toMatch(/practiseThisWeakness\(devTopic\)/);
   });
-  it("saveRedoAnswer persists the retry answer with its source question, no score, no AI", () => {
-    expect(DETERMINISTIC).toMatch(/retry_answers: \[\.\.\.prev, \{ answered_at:[\s\S]*?source_question:/);
-    expect(DETERMINISTIC).not.toMatch(/overall_score|score:/);
+  it("saveRedoAnswer persists the retry answer with its source question + deterministic coverage, no AI", () => {
+    const REDO = DETERMINISTIC.slice(DETERMINISTIC.indexOf("async function saveRedoAnswer()"), DETERMINISTIC.indexOf("async function retrySaveReport()"));
+    // Phase 15A: marked deterministically via markWrittenQuiz over the module's own concept union
+    expect(REDO).toMatch(/redoConceptUnion\(devModule\)/);
+    expect(REDO).toMatch(/markWrittenQuiz\(redoDraft, concepts\)/);
+    expect(REDO).toMatch(/retry_answers: \[\.\.\.prev, entry\]/);
+    expect(REDO).toMatch(/source_question: devModule\.source_question \|\| devTopic\?\.relatedQuestion/);
+    // no AI, no graded "overall_score"
+    expect(REDO).not.toMatch(/callClaude|overall_score|interview_report/);
   });
   it("no Phase 14 code assigns a scheduler-owned field", () => {
     const all = OPEN_FN + DETERMINISTIC + DEV_SCREEN;

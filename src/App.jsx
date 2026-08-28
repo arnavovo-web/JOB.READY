@@ -84,6 +84,10 @@ import { resolveKnowledgeDomain, buildKnowledgeGuidance, findConceptsByText } fr
 // offline, no AI — marks a free-response answer by concept coverage against the
 // machine-readable expected_concepts the ONE module-generation call produced.
 import { markWrittenQuiz, coverageVerdict } from "./writtenQuiz";
+// Phase 15A: pure returning-user helpers — application-scoped topic identity,
+// deterministic "Continue preparing" pick, and the concept union a redo answer
+// is marked against. No AI, no DB, no React.
+import { classroomTopicMatch, pickContinuePreparing, redoConceptUnion } from "./continuePreparing";
 
 /* ================================================================== *
  * JOB.READY — DESIGN SYSTEM (unchanged from previous build)
@@ -1129,7 +1133,7 @@ async function dbSelect(table, build) {
 async function loadFullUserState(userId) {
   const supabase = await getSupabase();
 
-  const [{ data: profile }, { data: dna }, apps, interviewsRaw, competencyRows, classroomTopicsRaw, memoryRows, comparisonRows, acAttemptsRaw, claimRows] = await Promise.all([
+  const [{ data: profile }, { data: dna }, apps, interviewsRaw, competencyRows, classroomTopicsRaw, memoryRows, comparisonRows, acAttemptsRaw, claimRows, devModulesRaw, moduleProgressRaw] = await Promise.all([
     supabase.from("profiles").select("*").eq("id", userId).maybeSingle(),
     supabase.from("candidate_dna").select("*").eq("user_id", userId).maybeSingle(),
     dbSelect("applications", (q) => q.eq("user_id", userId).order("created_at", { ascending: false })),
@@ -1140,6 +1144,10 @@ async function loadFullUserState(userId) {
     dbSelect("memory_comparisons", (q) => q.eq("user_id", userId).order("created_at", { ascending: false })),
     dbSelect("assessment_attempts", (q) => q.eq("user_id", userId).order("created_at", { ascending: true })),
     dbSelect("candidate_claims", (q) => q.eq("user_id", userId).order("created_at", { ascending: true })),
+    // Phase 15A: lightweight — powers the Dashboard "Continue preparing" pick.
+    // Best-effort reads (dbSelect returns [] on error); nothing hard depends on them.
+    dbSelect("development_modules", (q) => q.eq("user_id", userId)),
+    dbSelect("development_module_progress", (q) => q.eq("user_id", userId)),
   ]);
 
   // interviewList needs each completed interview's report summary (company/role live on the application)
@@ -1228,6 +1236,8 @@ async function loadFullUserState(userId) {
     perf: { strengths: dna?.strengths || [], weaknesses: dna?.weaknesses || [], competency_history, style_notes: dna?.style_notes || [], common_issues: dna?.common_issues || [] },
     interviewList, classroom, questionHistory, memoryLog, acAttempts, applications,
     candidateClaims: claimRows, candidateIntelligence,
+    developmentModules: Array.isArray(devModulesRaw) ? devModulesRaw : [],
+    moduleProgress: Array.isArray(moduleProgressRaw) ? moduleProgressRaw : [],
   };
 }
 
@@ -1379,16 +1389,27 @@ async function dbInsertEvaluationForAnswer(answerId, evaluation, decision) {
   if (error) console.error("evaluation insert failed:", error.message);
 }
 
+// HARD DURABILITY BOUNDARY (Phase 15A). The interview report is the deliverable
+// of a completed interview and the AI evaluation behind it is expensive and
+// non-repeatable. Returns { ok, updateOk, reportOk, error } — NON-throwing so
+// finishInterview can keep the already-generated report on screen and offer a
+// persistence-only retry (never a re-evaluation). Uses upsert on the report so
+// a retry after a lost response is idempotent (interview_reports has UNIQUE
+// (interview_id)); the status update is naturally idempotent.
 async function dbCompleteInterview(interviewId, report) {
   const supabase = await getSupabase();
-  await supabase.from("interviews").update({ status: "completed", completed_at: new Date().toISOString(), overall_score: report.overall_score, readiness: report.readiness }).eq("id", interviewId);
-  const { error } = await supabase.from("interview_reports").insert({
+  const { error: updErr } = await supabase.from("interviews")
+    .update({ status: "completed", completed_at: new Date().toISOString(), overall_score: report.overall_score, readiness: report.readiness })
+    .eq("id", interviewId);
+  if (updErr) console.error("interview status update failed:", updErr.message);
+  const { error: repErr } = await supabase.from("interview_reports").upsert({
     interview_id: interviewId, overall_score: report.overall_score, readiness: report.readiness, breakdown: report.breakdown,
     strongest_areas: report.strongest_areas, weakest_areas: report.weakest_areas, per_question_feedback: report.per_question_feedback,
     next_practice_focus: report.next_practice_focus, updated_candidate_weaknesses: report.updated_candidate_weaknesses,
     updated_candidate_strengths: report.updated_candidate_strengths, interview_style_notes: report.interview_style_notes, classroom_topics: report.classroom_topics,
-  });
-  if (error) console.error("report insert failed:", error.message);
+  }, { onConflict: "interview_id" });
+  if (repErr) console.error("interview report persist failed:", repErr.message);
+  return { ok: !updErr && !repErr, updateOk: !updErr, reportOk: !repErr, error: (repErr && repErr.message) || (updErr && updErr.message) || null };
 }
 async function dbInsertMemory(userId, interviewId, entry) {
   const supabase = await getSupabase();
@@ -2465,7 +2486,19 @@ function App() {
   const [quizDraft, setQuizDraft] = useState("");
   const [quizResults, setQuizResults] = useState([]);
   const [redoDraft, setRedoDraft] = useState("");
+  // Phase 15A: deterministic concept-coverage result for a "redo the original
+  // question" answer (markWrittenQuiz over redoConceptUnion — no AI).
+  const [redoResult, setRedoResult] = useState(null);
   const devGenRef = useRef(false);
+  // Phase 15A: prefetched (best-effort) — power the Dashboard "Continue preparing"
+  // pick and keep it fresh as the user learns, without a reload.
+  const [developmentModules, setDevelopmentModules] = useState([]);
+  const [moduleProgress, setModuleProgress] = useState([]);
+  // Phase 15A: hard-durability retry state. Set only when generation/evaluation
+  // SUCCEEDED but the persist FAILED — holds the already-produced content for a
+  // persist-only retry. Never triggers a re-generation / re-evaluation.
+  const [pendingReportSave, setPendingReportSave] = useState(null);   // { interviewId, result }
+  const [pendingModuleSave, setPendingModuleSave] = useState(null);   // { topicId, topic, fields }
   const [lesson, setLesson] = useState(null);
   const [targetTopic, setTargetTopic] = useState(null);
   const [quizAnswers, setQuizAnswers] = useState({});
@@ -2618,6 +2651,8 @@ function App() {
       setAcAttempts(state.acAttempts);
       setCandidateClaims(state.candidateClaims);
       setCandidateIntelligence(state.candidateIntelligence);
+      setDevelopmentModules(state.developmentModules || []);
+      setModuleProgress(state.moduleProgress || []);
       setScreen((s) => (["landing", "how", "universities", "login"].includes(s) ? "dashboard" : s));
     } catch (e) {
       setError("Signed in, but couldn't load your data. Please refresh.");
@@ -2643,7 +2678,8 @@ function App() {
     // Phase 14: Development Module learning state is per-user — clear it on sign-out
     // (same shared/kiosk-browser hygiene reasoning as the fields above).
     setDevModule(null); setDevTopic(null); setDevProgress(null); setDevView("hub");
-    setQuizOrder([]); setQuizResults([]); setQuizDraft(""); setRedoDraft(""); setFlashIdx(0); setFlashRevealed(false);
+    setQuizOrder([]); setQuizResults([]); setQuizDraft(""); setRedoDraft(""); setRedoResult(null); setFlashIdx(0); setFlashRevealed(false);
+    setDevelopmentModules([]); setModuleProgress([]); setPendingReportSave(null); setPendingModuleSave(null);
     // Phase 7: same ownership-hygiene reasoning — a signed-out session must never leave a
     // previous user's pasted invitation email (which may contain personal information — §17)
     // sitting in memory.
@@ -2807,21 +2843,23 @@ function App() {
   async function pushClassroomTopics(topics, ctx) {
     if (!topics || !topics.length || !user) return;
     let list = [...classroom];
+    // Phase 15A: topic identity = normalised name + application context. A weakness
+    // diagnosed for one application must never merge into another's topic. An
+    // interview always carries an application_id; an assessment-centre exercise
+    // that matched no application passes null and joins the single "unscoped
+    // practice" bucket (see classroomTopicMatch).
+    const effectiveAppId = ctx.applicationId || applicationId || null;
     for (const t of topics) {
       if (!t.topic) continue;
-      const norm = normalizeTopic(t.topic);
-      const existing = list.find((x) => {
-        const xn = normalizeTopic(x.topic);
-        return xn === norm || xn.includes(norm) || norm.includes(xn);
-      });
-      const newId = await dbUpsertClassroomTopic(user.id, ctx.applicationId || applicationId, ctx.isInterview ? ctx.id : null, existing?.id || null, { topic: t.topic, category: t.category, description: t.description, related_question: t.related_question, initial_score: t.initial_score, company: ctx.company, role: ctx.role });
+      const existing = classroomTopicMatch(list, t.topic, effectiveAppId);
+      const newId = await dbUpsertClassroomTopic(user.id, effectiveAppId, ctx.isInterview ? ctx.id : null, existing?.id || null, { topic: t.topic, category: t.category, description: t.description, related_question: t.related_question, initial_score: t.initial_score, company: ctx.company, role: ctx.role });
       if (existing) {
         existing.scores = [...existing.scores, t.initial_score || 0];
         existing.lastInterviewId = ctx.id;
         existing.description = t.description || existing.description;
         existing.relatedQuestion = t.related_question || existing.relatedQuestion;
       } else if (newId) {
-        list.push({ id: newId, topic: t.topic, category: t.category || "general", description: t.description || "", company: ctx.company, role: ctx.role, scores: [t.initial_score || 0], lastInterviewId: ctx.id, relatedQuestion: t.related_question || "" });
+        list.push({ id: newId, topic: t.topic, category: t.category || "general", description: t.description || "", company: ctx.company, role: ctx.role, scores: [t.initial_score || 0], lastInterviewId: ctx.id, relatedQuestion: t.related_question || "", applicationId: effectiveAppId });
       }
     }
     setClassroom(list);
@@ -2973,13 +3011,17 @@ Rules: mini study guide, not an essay. core_knowledge 3-5 points, key_points 3-5
     if (!topic || !user || devGenRef.current) return;
     setDevTopic(topic); setDevView("hub");
     setFlashIdx(0); setFlashRevealed(false);
-    setQuizIdx(0); setQuizDraft(""); setQuizResults([]); setRedoDraft(""); setError("");
+    setQuizIdx(0); setQuizDraft(""); setQuizResults([]); setRedoDraft(""); setRedoResult(null); setError("");
 
+    // COST INVARIANT (Phase 15A): a persisted module is reused — ZERO AI calls.
     const existing = await dbGetDevelopmentModule(topic.id);
     if (existing) {
       const mod = hydrateDevModuleRow(existing);
       setDevModule(mod);
-      setDevProgress(await dbGetModuleProgress(existing.id, user.id));
+      const prog = await dbGetModuleProgress(existing.id, user.id);
+      setDevProgress(prog);
+      setDevelopmentModules((prev) => [...prev.filter((m) => m.topic_id !== topic.id), existing]);
+      if (prog) setModuleProgress((prev) => [...prev.filter((p) => p.module_id !== existing.id), prog]);
       setQuizOrder([...Array(mod.learning_items.length).keys()]);
       setScreen("dev_module");
       return;
@@ -3025,7 +3067,7 @@ Rules: EXACTLY 4 learning_items, each ONE atomic idea — do not exceed 4. Keep 
       const validated = validateDevelopmentModule(raw);
       if (!validated.learning_items.length) throw new Error("The learning module came back incomplete. Please try again.");
 
-      const saved = await dbInsertDevelopmentModule(topic.id, user.id, {
+      const moduleFields = {
         dimension,
         topic: validated.topic || topic.topic,
         why_it_matters: validated.why_it_matters,
@@ -3037,10 +3079,23 @@ Rules: EXACTLY 4 learning_items, each ONE atomic idea — do not exceed 4. Keep 
         learning_guide: validated.learning_guide,
         learning_items: validated.learning_items,
         generation_meta: { generated_at: new Date().toISOString(), grounded_from: [groundConcepts.length ? "knowledge_layer" : null, motivationGrounding ? "application_intelligence" : null].filter(Boolean) },
-      });
-      const mod = hydrateDevModuleRow(saved || { ...validated, id: null, dimension, source_question: topic.relatedQuestion || "" });
+      };
+      const saved = await dbInsertDevelopmentModule(topic.id, user.id, moduleFields);
+      if (!saved) {
+        // HARD DURABILITY BOUNDARY (Phase 15A): generation SUCCEEDED, the persist
+        // FAILED. Do NOT proceed with a fake (id:null) module, do NOT mark it
+        // persisted, and do NOT auto-regenerate. Keep the generated content for a
+        // persist-only retry from the Classroom, and return there.
+        setPendingModuleSave({ topicId: topic.id, topic: topic.topic, fields: moduleFields });
+        setError("Your learning module was created but couldn't be saved. Retry from the Classroom — you won't be charged to generate it again.");
+        setScreen("classroom");
+        return;
+      }
+      setPendingModuleSave(null);
+      const mod = hydrateDevModuleRow(saved);
       setDevModule(mod);
-      setDevProgress(saved ? await dbGetModuleProgress(saved.id, user.id) : null);
+      setDevProgress(await dbGetModuleProgress(saved.id, user.id));
+      setDevelopmentModules((prev) => [...prev.filter((m) => m.topic_id !== topic.id), saved]);
       setQuizOrder([...Array(mod.learning_items.length).keys()]);
       setScreen("dev_module");
     } catch (e) {
@@ -3052,10 +3107,18 @@ Rules: EXACTLY 4 learning_items, each ONE atomic idea — do not exceed 4. Keep 
   }
 
   // ---- deterministic sub-activities (NO AI calls below this line) ----
+  // Keep devProgress AND the prefetched moduleProgress list (Dashboard "Continue
+  // preparing") in sync after any progress write. Pure state plumbing, no AI/DB.
+  function syncModuleProgress(saved) {
+    if (!saved) return;
+    setDevProgress(saved);
+    setModuleProgress((prev) => [...prev.filter((p) => p.module_id !== saved.module_id), saved]);
+  }
   function goToDevView(v) {
     setError("");
     if (v === "flashcards") { setFlashRevealed(false); setDevView("flashcards"); return; }
     if (v === "quiz") { startWrittenQuiz(); return; }
+    if (v === "redo") { setRedoResult(null); setRedoDraft(""); setDevView("redo"); return; }
     setDevView(v);
   }
   function startWrittenQuiz() {
@@ -3073,7 +3136,7 @@ Rules: EXACTLY 4 learning_items, each ONE atomic idea — do not exceed 4. Keep 
     const seen = Math.max(prev, idx + 1);
     if (seen === prev) return;
     const saved = await dbUpsertModuleProgress(devModule.id, user.id, { flashcards_seen: seen });
-    if (saved) setDevProgress(saved);
+    syncModuleProgress(saved);
   }
   async function submitWrittenAnswer() {
     if (!devModule) return;
@@ -3094,21 +3157,50 @@ Rules: EXACTLY 4 learning_items, each ONE atomic idea — do not exceed 4. Keep 
         best_coverage: Math.max(num(devProgress?.best_coverage, 0), ratio),
         attempts: num(devProgress?.attempts, 0) + 1,
       });
-      if (saved) setDevProgress(saved);
+      syncModuleProgress(saved);
     }
     setDevView("quiz_review");
   }
+  // Phase 15A: the "redo the ORIGINAL interview question" answer is now marked
+  // DETERMINISTICALLY (markWrittenQuiz over redoConceptUnion — the module's own
+  // concept set, no AI) so the student gets real concept-coverage feedback
+  // instead of a silent save. It stays clearly framed as practice, not a graded
+  // exam.
   async function saveRedoAnswer() {
     if (!devModule || !redoDraft.trim()) return;
+    const concepts = redoConceptUnion(devModule);
+    const mark = markWrittenQuiz(redoDraft, concepts); // pure, deterministic, NO AI
+    const entry = { answered_at: new Date().toISOString(), text: redoDraft.trim(), source_question: devModule.source_question || devTopic?.relatedQuestion || "", covered: mark.covered, missing: mark.missing, coverage: mark.coverage };
+    setRedoResult(entry);
     if (devModule.id && user) {
       const prev = arr(devProgress?.retry_answers);
-      const saved = await dbUpsertModuleProgress(devModule.id, user.id, {
-        retry_answers: [...prev, { answered_at: new Date().toISOString(), text: redoDraft.trim(), source_question: devModule.source_question || devTopic?.relatedQuestion || "" }],
-      });
-      if (saved) setDevProgress(saved);
+      const saved = await dbUpsertModuleProgress(devModule.id, user.id, { retry_answers: [...prev, entry] });
+      syncModuleProgress(saved);
     }
     setRedoDraft("");
+  }
+
+  // Phase 15A HARD-DURABILITY RETRIES — persistence only. Neither re-runs any AI
+  // call; both reuse the already-produced content.
+  async function retrySaveReport() {
+    if (!pendingReportSave) return;
+    const r = await dbCompleteInterview(pendingReportSave.interviewId, pendingReportSave.result);
+    if (r.ok) setPendingReportSave(null);
+    else setError("Still couldn't save your report. Check your connection and try again.");
+  }
+  async function retrySaveModule() {
+    if (!pendingModuleSave || !user) return;
+    const saved = await dbInsertDevelopmentModule(pendingModuleSave.topicId, user.id, pendingModuleSave.fields);
+    if (!saved) { setError("Still couldn't save the module. Please try again shortly."); return; }
+    setPendingModuleSave(null);
+    const mod = hydrateDevModuleRow(saved);
+    setDevModule(mod);
+    setDevTopic((cur) => cur && cur.id === saved.topic_id ? cur : (classroom.find((t) => t.id === saved.topic_id) || cur));
+    setDevProgress(await dbGetModuleProgress(saved.id, user.id));
+    setDevelopmentModules((prev) => [...prev.filter((m) => m.topic_id !== saved.topic_id), saved]);
+    setQuizOrder([...Array(mod.learning_items.length).keys()]);
     setDevView("hub");
+    setScreen("dev_module");
   }
 
   // BUG FIX (stale state): neither this function nor startCreateFlow below ever cleared
@@ -3949,7 +4041,17 @@ Rules: scores computed honestly from the transcript's evaluations. Never fabrica
 
       await pushClassroomTopics(result.classroom_topics, { company: finalInterview.company, role: finalInterview.role, id: finalInterview.id, applicationId: finalInterview.applicationId, isInterview: true });
 
-      await dbCompleteInterview(finalInterview.id, result);
+      const reportSave = await dbCompleteInterview(finalInterview.id, result);
+      if (!reportSave.ok) {
+        // HARD DURABILITY BOUNDARY (Phase 15A): the AI evaluation already
+        // succeeded and `result` is in memory — only the persist failed. Flag it
+        // so the report screen shows an inline error + a persist-only retry.
+        // Never regenerate the evaluation. The rest of this flow still runs so
+        // the user sees their report this session.
+        setPendingReportSave({ interviewId: finalInterview.id, result });
+      } else {
+        setPendingReportSave(null);
+      }
       // report: result (Phase 3, interview history) — same shape dbCompleteInterview just
       // persisted to interview_reports (overall_score/readiness/breakdown/strongest_areas/
       // weakest_areas/per_question_feedback/next_practice_focus/interview_style_notes/
@@ -4239,6 +4341,21 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
         return { type: p.type, label: p.type === "category" ? p.key.replace(/_/g, " ") : p.key, reason: p.reason };
       }).filter(Boolean)
     : [];
+
+  // Phase 15A: the ONE thing a returning user should resume, from already-
+  // persisted data only. Deterministic priority: (1) an in-progress Development
+  // Module, (2) a demonstrated development need not yet developed, (3) a
+  // high-priority application PREPARATION recommendation. Never labels a
+  // preparation area a "weakness" — see continuePreparing.js. Pure, no AI.
+  const continuePreparing = (() => {
+    try {
+      return pickContinuePreparing({
+        developmentModules, moduleProgress,
+        classroomTopics: classroom, applications,
+        candidateState: globalCandidateState,
+      }, { limit: 1 })[0] || null;
+    } catch (e) { console.error("continue-preparing pick failed:", e.message); return null; }
+  })();
 
   // Phase 13B (Classroom "Recommended for your application"): a pure regroup of
   // applicationIntelligence.js's applicationDevelopmentPriorities — the ONE source
@@ -4624,6 +4741,33 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
               </div>
             </Card>
           </div>
+
+          {/* Phase 15A: returning-user re-entry into the learning loop. One item,
+              deterministic priority (in-progress module > demonstrated need not
+              yet developed > high-priority application preparation). The evidence
+              type is NEVER blurred: interview evidence -> "Based on your interview
+              performance"; preparation -> "Important to prepare for this
+              application. You have not been tested on this yet." No AI call. */}
+          {continuePreparing && (
+            <Card style={{ padding: 22, marginBottom: 20, borderLeft: `4px solid ${continuePreparing.evidenceType === "demonstrated" ? "var(--bad)" : "var(--blue)"}` }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>Continue preparing</div>
+              <div style={{ fontSize: 15.5, fontWeight: 700, color: "var(--navy)" }}>
+                {continuePreparing.evidenceType === "demonstrated" ? "🔴 " : "📚 "}{continuePreparing.title}
+              </div>
+              {(continuePreparing.company || continuePreparing.role) && (
+                <div style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 2 }}>{[continuePreparing.company, continuePreparing.role].filter(Boolean).join(" — ")}</div>
+              )}
+              <div style={{ fontSize: 12.5, color: "var(--text-dim)", marginTop: 8, lineHeight: 1.5 }}>{continuePreparing.sublabel}</div>
+              <Btn variant="accent" style={{ marginTop: 12 }} onClick={() => guarded(() => {
+                if (continuePreparing.kind === "prepare_recommendation") {
+                  startLearningFromRecommendation(continuePreparing.recommendation, applications.find((a) => a.id === continuePreparing.applicationId));
+                } else {
+                  const t = classroom.find((x) => x.id === continuePreparing.topicId);
+                  if (t) openDevelopmentModule(t);
+                }
+              })}>{continuePreparing.kind === "resume_module" ? "Continue learning" : "Start learning"} <ArrowRight size={15} /></Btn>
+            </Card>
+          )}
 
           {perf?.weaknesses?.length > 0 && (
             <Card style={{ padding: 22, marginBottom: 20, borderLeft: "4px solid var(--blue)" }}>
@@ -5370,6 +5514,13 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
       {/* ---------------- REPORT ---------------- */}
       {screen === "report" && report && (
         <div className="jr-fade" style={{ maxWidth: 720, margin: "0 auto", padding: "44px 24px" }}>
+          {pendingReportSave && (
+            <Card style={{ padding: 16, marginBottom: 16, borderLeft: "4px solid var(--bad)", background: "#FEF2F2" }}>
+              <div style={{ fontSize: 13.5, fontWeight: 700, color: "var(--bad)", marginBottom: 4 }}>Your report couldn't be saved</div>
+              <div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.5, marginBottom: 10 }}>It's shown below, but it isn't stored yet — it may not be here when you come back. Your answers are safe and nothing needs to be re-done; this just retries saving.</div>
+              <Btn variant="accent" onClick={() => guarded(retrySaveReport)}>Retry saving</Btn>
+            </Card>
+          )}
           <ReportBody
             report={report} company={company} role={role} badge="Interview complete"
             stageLabel={interview?.stageLabel} formatLabel={interview?.formatLabel}
@@ -5638,6 +5789,14 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
             <h2 style={{ fontSize: 25, fontWeight: 800, color: "var(--navy)" }}>Classroom</h2>
           </div>
           <p style={{ fontSize: 14, color: "var(--text-dim)", marginBottom: 24 }}>Personalised recommendations for a specific application, plus lessons built from real weaknesses spotted in your interviews and assessment-centre exercises. Study, then retest.</p>
+
+          {pendingModuleSave && (
+            <Card style={{ padding: 14, marginBottom: 16, borderLeft: "4px solid var(--bad)", background: "#FEF2F2" }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "var(--bad)", marginBottom: 3 }}>"{pendingModuleSave.topic}" was generated but not saved</div>
+              <div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.5, marginBottom: 10 }}>Retry saving it — you won't be charged to generate it again.</div>
+              <Btn variant="accent" onClick={() => guarded(retrySaveModule)}>Retry saving</Btn>
+            </Card>
+          )}
 
           {/* Phase 13B: application-specific development recommendations. Reads the
               persisted Phase 13A intelligence + the already-computed candidate
@@ -6024,15 +6183,40 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                   <div style={{ fontSize: 12, fontWeight: 700, color: "var(--blue)", textTransform: "uppercase", marginBottom: 8 }}>The original interview question</div>
                   <div style={{ fontSize: 15.5, fontWeight: 600, color: "var(--navy)", lineHeight: 1.5 }}>{devModule.source_question || devTopic.relatedQuestion || "The question that led to this development area."}</div>
                 </Card>
-                <Card style={{ padding: 22, marginBottom: 14 }}>
-                  <div style={{ fontSize: 13, color: "var(--text-dim)", marginBottom: 10 }}>Answer it again in your own words. This is saved so you can compare it with your original attempt — it is not scored here.</div>
-                  <textarea value={redoDraft} onChange={(e) => setRedoDraft(e.target.value)} placeholder="Type your answer..." rows={7}
-                    style={{ width: "100%", fontSize: 14, fontFamily: "var(--font)", color: "var(--text)", background: "var(--card)", border: "1px solid var(--border)", borderRadius: 10, padding: 12, lineHeight: 1.55, resize: "vertical" }} />
-                  <div className="flex justify-between items-center gap-2" style={{ marginTop: 12, flexWrap: "wrap" }}>
-                    <Btn variant="secondary" onClick={() => practiseThisWeakness(devTopic)}>Practise as a full interview instead</Btn>
-                    <Btn variant="accent" disabled={!redoDraft.trim()} onClick={() => guarded(saveRedoAnswer)}>Save my answer</Btn>
-                  </div>
-                </Card>
+                {redoResult ? (
+                  <Card style={{ padding: 20, marginBottom: 14 }}>
+                    <div style={{ fontSize: 15, fontWeight: 800, color: "var(--navy)", marginBottom: 4 }}>{coverageVerdict(redoResult.coverage).label}</div>
+                    <div style={{ fontSize: 12, color: "var(--text-faint)", lineHeight: 1.5, marginBottom: 10 }}>Checked against the key concepts for this development area — the same deterministic check as the quiz, no AI. This is practice, not a graded exam.</div>
+                    <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", marginBottom: 3 }}>Your answer</div>
+                    <div style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.5, marginBottom: 12, whiteSpace: "pre-wrap" }}>{redoResult.text}</div>
+                    {redoResult.covered.length > 0 && (
+                      <div style={{ marginBottom: 8 }}>
+                        <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--good)", textTransform: "uppercase", marginBottom: 4 }}>Key points covered</div>
+                        {redoResult.covered.map((c, j) => <div key={j} style={{ fontSize: 13, color: "var(--text)", lineHeight: 1.5 }}><span style={{ color: "var(--good)", fontWeight: 700 }}>✓</span> {c}</div>)}
+                      </div>
+                    )}
+                    {redoResult.missing.length > 0 && (
+                      <div style={{ marginBottom: 8 }}>
+                        <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", marginBottom: 4 }}>Still to include</div>
+                        {redoResult.missing.map((c, j) => <div key={j} style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.5 }}><span style={{ fontWeight: 700 }}>○</span> {c}</div>)}
+                      </div>
+                    )}
+                    <div className="flex gap-2" style={{ flexWrap: "wrap", marginTop: 6 }}>
+                      <Btn variant="accent" onClick={() => { setRedoResult(null); setRedoDraft(""); }}>Answer again</Btn>
+                      <Btn variant="secondary" onClick={() => goToDevView("learn")}>Review learning guide</Btn>
+                    </div>
+                  </Card>
+                ) : (
+                  <Card style={{ padding: 22, marginBottom: 14 }}>
+                    <div style={{ fontSize: 13, color: "var(--text-dim)", marginBottom: 10 }}>Answer it again in your own words. We'll check which key concepts for this area your answer covers — deterministic, no AI — so you can see your progress across attempts. This is practice, not a graded exam.</div>
+                    <textarea value={redoDraft} onChange={(e) => setRedoDraft(e.target.value)} placeholder="Type your answer..." rows={7}
+                      style={{ width: "100%", fontSize: 14, fontFamily: "var(--font)", color: "var(--text)", background: "var(--card)", border: "1px solid var(--border)", borderRadius: 10, padding: 12, lineHeight: 1.55, resize: "vertical" }} />
+                    <div className="flex justify-between items-center gap-2" style={{ marginTop: 12, flexWrap: "wrap" }}>
+                      <Btn variant="secondary" onClick={() => practiseThisWeakness(devTopic)}>Practise as a full interview instead</Btn>
+                      <Btn variant="accent" disabled={!redoDraft.trim()} onClick={() => guarded(saveRedoAnswer)}>Check my answer</Btn>
+                    </div>
+                  </Card>
+                )}
                 {arr(devProgress?.retry_answers).length > 0 && (
                   <div style={{ fontSize: 12, color: "var(--text-faint)" }}>{arr(devProgress.retry_answers).length} previous redo answer{arr(devProgress.retry_answers).length !== 1 ? "s" : ""} saved.</div>
                 )}
