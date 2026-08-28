@@ -44,6 +44,7 @@ import {
 // Layer gate (see the module's own docstring).
 import {
   buildApplicationIntelligence, validateApplicationIntelligence, applicationIntelligenceLessonContext,
+  classroomRecommendationGroups, experiencesToExplore,
 } from "./applicationIntelligence";
 // Phase 2C.3: the live adaptive interview's deterministic scheduler wiring.
 // submitAnswer/regenerateNextQuestion never compute a category, turn type,
@@ -2331,6 +2332,9 @@ function App() {
   // Classroom
   const [classroom, setClassroom] = useState([]);
   const [classroomTopic, setClassroomTopic] = useState(null);
+  // Phase 13B: which application the Classroom's "Recommended for your application"
+  // section is currently showing. null -> default to the most recent eligible one.
+  const [classroomAppId, setClassroomAppId] = useState(null);
   const [lesson, setLesson] = useState(null);
   const [targetTopic, setTargetTopic] = useState(null);
   const [quizAnswers, setQuizAnswers] = useState({});
@@ -3886,6 +3890,29 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
       }).filter(Boolean)
     : [];
 
+  // Phase 13B (Classroom "Recommended for your application"): a pure regroup of
+  // applicationIntelligence.js's applicationDevelopmentPriorities — the ONE source
+  // of truth for application-specific development priority — against the SAME
+  // globalCandidateState computed just above. No new AI call, no new query, no
+  // second priority engine; recomputed cheaply on render like every sibling value
+  // in this block. Only applications that carry a persisted Phase 13A profile are
+  // eligible; a legacy application simply never appears in the picker.
+  const classroomApps = applicationsWithInterviews.filter((a) => a.applicationIntelligence);
+  const activeClassroomApp = classroomApps.find((a) => a.id === classroomAppId) || classroomApps[0] || null;
+  let classroomRecs = { technical: [], behavioural: [], motivational: [], all: [], limitedContext: false, hasAny: false };
+  try {
+    if (activeClassroomApp) classroomRecs = classroomRecommendationGroups(activeClassroomApp.applicationIntelligence, globalCandidateState, { limit: 9 });
+  } catch (e) { console.error("classroom recommendations build failed:", e.message); }
+  // Cautious CV cross-reference for the top recommendations — Fact vs Suggestion,
+  // possibility framing only (see experiencesToExplore's contract).
+  let classroomExperienceHints = [];
+  try {
+    classroomExperienceHints = experiencesToExplore(
+      { candidateProfile: profile?.candidate_profile, claims: candidateClaims },
+      classroomRecs.all, { limit: 3 }
+    );
+  } catch (e) { console.error("classroom experience hints build failed:", e.message); }
+
   if (!authChecked) {
     return (
       <div style={{ fontFamily: "var(--font)", background: "var(--bg)", minHeight: "100vh" }}>
@@ -5260,17 +5287,112 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
             <div style={{ width: 34, height: 34, borderRadius: 9, background: "#F1E9FE", display: "flex", alignItems: "center", justifyContent: "center" }}><GraduationCap size={18} color="var(--violet)" /></div>
             <h2 style={{ fontSize: 25, fontWeight: 800, color: "var(--navy)" }}>Classroom</h2>
           </div>
-          <p style={{ fontSize: 14, color: "var(--text-dim)", marginBottom: 28 }}>Every lesson here comes from a real weakness spotted in one of your interviews or assessment-centre exercises. Study it, then retest.</p>
+          <p style={{ fontSize: 14, color: "var(--text-dim)", marginBottom: 24 }}>Personalised recommendations for a specific application, plus lessons built from real weaknesses spotted in your interviews and assessment-centre exercises. Study, then retest.</p>
+
+          {/* Phase 13B: application-specific development recommendations. Reads the
+              persisted Phase 13A intelligence + the already-computed candidate
+              state — no AI call is made when this screen renders. */}
+          {classroomApps.length > 0 && (
+            <div style={{ marginBottom: 36 }}>
+              <h3 style={{ fontSize: 16.5, fontWeight: 800, color: "var(--navy)", marginBottom: 4 }}>🎯 Recommended for your application</h3>
+              <p style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.5, marginBottom: 12 }}>
+                Ranked by how much the role emphasises each area and how much you have shown so far. Areas you have not been asked about yet are marked as preparation — not weaknesses.
+              </p>
+
+              <div className="flex items-center gap-2" style={{ flexWrap: "wrap", marginBottom: 16 }}>
+                <span style={{ fontSize: 13, color: "var(--text-faint)", fontWeight: 600 }}>Development for:</span>
+                <select
+                  aria-label="Choose which application to see recommendations for"
+                  value={activeClassroomApp?.id || ""}
+                  onChange={(e) => setClassroomAppId(e.target.value)}
+                  style={{ fontSize: 13.5, fontWeight: 600, color: "var(--navy)", background: "var(--card)", border: "1px solid var(--border)", borderRadius: 8, padding: "7px 10px" }}
+                >
+                  {classroomApps.map((a) => (
+                    <option key={a.id} value={a.id}>{(a.company || "Untitled") + " — " + (a.role || "role")}</option>
+                  ))}
+                </select>
+              </div>
+
+              {classroomRecs.limitedContext && (
+                <Card style={{ padding: 14, marginBottom: 14, background: "var(--highlight)" }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "var(--navy)", marginBottom: 3 }}>Limited context for this application</div>
+                  <div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.5 }}>
+                    JOB.READY only has thin information about this company and role, so these recommendations lean on general expectations for the role type. Add the job description or more application detail to sharpen them.
+                  </div>
+                </Card>
+              )}
+
+              {!classroomRecs.hasAny ? (
+                <Card style={{ padding: 20 }}>
+                  <div style={{ fontSize: 13.5, color: "var(--text-dim)", lineHeight: 1.5 }}>
+                    Add an application with a job description or application context to receive recommendations tailored to a specific role. Completing an interview for it will sharpen them further.
+                  </div>
+                </Card>
+              ) : (
+                [["technical", "Technical"], ["behavioural", "Behavioural"], ["motivational", "Motivational"]].map(([dim, dimLabel]) => (
+                  classroomRecs[dim].length > 0 && (
+                    <div key={dim} style={{ marginBottom: 18 }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 8 }}>{dimLabel}</div>
+                      {classroomRecs[dim].map((r) => {
+                        const match = classroom.find((t) => {
+                          const n = normalizeTopic(t.topic), m = normalizeTopic(r.label);
+                          return n && m && (n === m || n.includes(m) || m.includes(n));
+                        });
+                        const lvColor = r.level === "high" ? "var(--bad)" : r.level === "recommended" ? "var(--warn)" : "var(--good)";
+                        return (
+                          <Card key={dim + r.label} style={{ padding: 18, marginBottom: 10 }}>
+                            <div className="flex items-center justify-between gap-2 mb-2" style={{ flexWrap: "wrap" }}>
+                              <span style={{ fontSize: 12.5, fontWeight: 700, color: lvColor }}>{r.levelIcon} {r.levelLabel}</span>
+                              <Pill color="var(--blue)" bg="var(--highlight)">{dimLabel}</Pill>
+                            </div>
+                            <div style={{ fontSize: 16, fontWeight: 700, color: "var(--navy)", margin: "2px 0 6px" }}>{r.label}</div>
+                            <div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.55, marginBottom: 6 }}>
+                              <strong style={{ color: "var(--navy)" }}>Why for {activeClassroomApp.company || "this role"}:</strong> {r.why}
+                            </div>
+                            <div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.55, marginBottom: 6 }}>
+                              <strong style={{ color: "var(--navy)" }}>Where you stand:</strong> {r.gapSummary}
+                            </div>
+                            <div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.55, marginBottom: 10 }}>
+                              <strong style={{ color: "var(--navy)" }}>Next step:</strong> {r.nextStep}
+                            </div>
+                            <Btn variant={match ? "accent" : "secondary"} onClick={() => guarded(() => match ? openLesson(match) : startCreateFlow(false))}>
+                              <BookOpen size={14} /> {match ? "Open the matching lesson" : "Practise in an interview"}
+                            </Btn>
+                          </Card>
+                        );
+                      })}
+                    </div>
+                  )
+                ))
+              )}
+
+              {classroomExperienceHints.length > 0 && (
+                <Card style={{ padding: 16, marginTop: 4 }}>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: "var(--navy)", marginBottom: 3 }}>Experiences to explore</div>
+                  <div style={{ fontSize: 12, color: "var(--text-faint)", lineHeight: 1.5, marginBottom: 10 }}>Possible connections from your CV — prompts, not conclusions. Check each one honestly before you rely on it.</div>
+                  {classroomExperienceHints.map((h, i) => (
+                    <div key={i} style={{ padding: "8px 0", borderTop: i ? "1px solid var(--border)" : "none" }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.03em", marginBottom: 2 }}>Fact</div>
+                      <div style={{ fontSize: 12.5, color: "var(--navy)", fontStyle: "italic", marginBottom: 5 }}>{h.fact}</div>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.03em", marginBottom: 2 }}>Suggestion</div>
+                      <div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.5 }}>{h.suggestion}</div>
+                    </div>
+                  ))}
+                </Card>
+              )}
+            </div>
+          )}
 
           {classroom.length === 0 ? (
             <Card style={{ padding: 40, textAlign: "center" }}>
               <BookOpen size={28} color="var(--text-faint)" style={{ margin: "0 auto 14px" }} />
-              <div style={{ fontSize: 15, fontWeight: 600, color: "var(--navy)", marginBottom: 6 }}>Nothing here yet</div>
+              <div style={{ fontSize: 15, fontWeight: 600, color: "var(--navy)", marginBottom: 6 }}>No interview lessons yet</div>
               <div style={{ fontSize: 13.5, color: "var(--text-dim)", marginBottom: 18 }}>Complete an interview and any real weaknesses we find will show up here as lessons.</div>
               <Btn variant="accent" onClick={() => startCreateFlow(false)}><Sparkles size={15} /> Start an interview</Btn>
             </Card>
           ) : (
             <>
+              <div style={{ fontSize: 15, fontWeight: 700, color: "var(--navy)", marginBottom: 12 }}>From your interviews</div>
               <Card style={{ padding: 18, marginBottom: 22 }}>
                 <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", marginBottom: 12 }}>My interviews</div>
                 {Object.entries(classroom.reduce((acc, t) => { const key = t.company + " — " + t.role; acc[key] = acc[key] || []; acc[key].push(t); return acc; }, {})).map(([key, topics]) => (

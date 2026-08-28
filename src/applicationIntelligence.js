@@ -403,35 +403,82 @@ export function canConfidentlyPersonalise(profile, area) {
   return c === "strong" || c === "moderate";
 }
 
-// ---- 13A.6 APPLICATION IMPORTANCE × CANDIDATE GAP = DEVELOPMENT PRIORITY --
+// ---- 13A.6 / 13B APPLICATION IMPORTANCE × CANDIDATE GAP = DEVELOPMENT PRIORITY --
 /**
  * applicationDevelopmentPriorities(intelligence, candidateState, { limit } = {})
- *   -> [{ label, dimension, applicationImportance, candidateGap, priority, why }]
+ *   -> [{ label, dimension, applicationImportance, candidateGap, priority, why,
+ *         tested, gapKind, gapSummary, level, levelLabel, levelIcon, nextStep,
+ *         evidence, source }]
  *
- * The deterministic foundation the NEXT phase's Classroom recommendations
- * will consume. It combines:
+ * The ONE deterministic source of truth for application-specific development
+ * priority. Phase 13B's Classroom recommendations CONSUME this — they do not
+ * re-derive it. It combines:
  *   - applicationImportance: how much THIS application seems to care about a
  *     theme (from `intelligence`), and
- *   - candidateGap: how weak the candidate's evidence for that theme is
- *     (from candidateState.js's OWN already-computed per-competency data —
+ *   - candidateGap: how weak / unproven the candidate's evidence for that theme
+ *     is (from candidateState.js's OWN already-computed per-competency data —
  *     never recomputed here).
- * priority = importance * gap. Sorted desc, bounded. This function does not
- * touch the scheduler, does not choose interview categories, and produces
- * DATA only.
+ * priority = importance * gap. Sorted desc, bounded.
+ *
+ * Phase 13B distinction — NEVER conflate these:
+ *   - gapKind "demonstrated" : the candidate HAS been assessed on this and the
+ *       evidence was weak / contradictory / declining -> a real, shown gap (Case A).
+ *   - gapKind "preparation"  : NO evidence either way yet -> an area to prepare,
+ *       explicitly NOT "you are weak at this" (Case B).
+ *   - gapKind "developing"   : already shown well -> keep it warm.
+ *   - gapKind "mixed"        : partial / unclear evidence.
+ *
+ * DATA only. Never touches the scheduler, never selects interview categories,
+ * never assigns a turn type or anchor source.
  */
 const IMPORTANCE_WEIGHT = { high: 1, medium: 0.6, low: 0.3 };
+
+// per-competency evidence (candidateState.js shape) -> gap magnitude + kind.
+// A competency with no `tests` has never been assessed: maximum gap, but the
+// kind is "preparation", NOT a demonstrated weakness.
+function candidateGapDetail(info) {
+  if (!info || !info.tests) return { score: 1, tested: false, kind: "preparation" };
+  const strength = info.mostRecentEvidence?.strength;
+  if (strength === "strong" || info.trend === "improving") return { score: 0.15, tested: true, kind: "developing" };
+  if (strength === "weak" || strength === "contradictory" || info.trend === "declining") return { score: 0.85, tested: true, kind: "demonstrated" };
+  return { score: 0.5, tested: true, kind: "mixed" };
+}
+
+function gapSummaryFor(kind, label) {
+  const q = `"${label}"`;
+  if (kind === "demonstrated") return `You have been asked about ${q} in an interview and the answers came out weak or inconsistent — this is a demonstrated gap with concrete room to improve.`;
+  if (kind === "developing") return `You have already answered well on ${q} in an interview — keep it warm rather than treating it as a gap.`;
+  if (kind === "mixed") return `Your interview evidence for ${q} is partial or mixed so far.`;
+  return `You have not been asked about ${q} in an interview yet, so this is an area to prepare for this role — not a demonstrated weakness.`;
+}
+
+// priority level for the UI. Text label carries the meaning (accessibility:
+// never colour alone); "Developing well" is reserved for genuinely-shown
+// strengths, never for a low-priority preparation area.
+function levelFor(priority, kind) {
+  if (kind === "developing") return { level: "strength", levelLabel: "Developing well", levelIcon: "\u{1F7E2}" };
+  // >0.6 so a medium-importance area the candidate simply has not been tested on
+  // (weight 0.6 x gap 1 = 0.6) reads as "Recommended", not "High priority" —
+  // only a high-importance area, or a genuine demonstrated gap, reaches red.
+  if (priority > 0.6) return { level: "high", levelLabel: "High priority", levelIcon: "\u{1F534}" };
+  if (priority >= 0.33) return { level: "recommended", levelLabel: "Recommended", levelIcon: "\u{1F7E0}" };
+  return { level: "low", levelLabel: "Lower priority for now", levelIcon: "\u{1F7E2}" };
+}
+
+function nextStepFor(kind, dimension) {
+  const area = dimension === "technical"
+    ? "Study the underlying concept, then retest it in a practice interview."
+    : dimension === "motivational"
+      ? "Draft your 'why this role / why this firm' answer from your own materials, then practise it aloud."
+      : "Prepare a concrete STAR example, then practise delivering it in an interview.";
+  if (kind === "demonstrated") return `Open the matching lesson (or start a focused practice interview) and re-answer. ${area}`;
+  if (kind === "developing") return `Light touch only — a quick refresher before the interview. ${area}`;
+  return area;
+}
+
 export function applicationDevelopmentPriorities(intelligence, candidateState, { limit = 8 } = {}) {
   const prof = intelligence && typeof intelligence === "object" ? intelligence : {};
   const competencies = candidateState && typeof candidateState === "object" ? candidateState.competencies || {} : {};
-
-  const candidateGapFor = (label) => {
-    const info = competencies[label] || competencies[str(label)];
-    if (!info || !info.tests) return 1; // never demonstrated -> maximum gap
-    const strength = info.mostRecentEvidence?.strength;
-    if (strength === "strong" || info.trend === "improving") return 0.15;
-    if (strength === "weak" || strength === "contradictory" || info.trend === "declining") return 0.85;
-    return 0.5; // moderate / unclear
-  };
 
   const all = [
     ...arr(prof.technicalPriorities), ...arr(prof.behaviouralPriorities), ...arr(prof.motivationalPriorities),
@@ -448,18 +495,123 @@ export function applicationDevelopmentPriorities(intelligence, candidateState, {
 
   const out = [];
   for (const s of byLabel.values()) {
-    const gap = candidateGapFor(s.label);
-    const priority = Math.round(s._w * gap * 100) / 100;
+    const info = competencies[s.label] || competencies[str(s.label)];
+    const gd = candidateGapDetail(info);
+    const priority = Math.round(s._w * gd.score * 100) / 100;
+    const lv = levelFor(priority, gd.kind);
     out.push({
       label: s.label,
       dimension: s.dimension,
       applicationImportance: s.importance,
-      candidateGap: gap >= 0.7 ? "high" : gap >= 0.4 ? "moderate" : "low",
+      candidateGap: gd.score >= 0.7 ? "high" : gd.score >= 0.4 ? "moderate" : "low",
       priority,
-      why: `The application ${s.importance === "high" ? "clearly emphasises" : s.importance === "medium" ? "points to" : "touches on"} "${s.label}"${s.evidence ? ` ("${s.evidence.slice(0, 90)}")` : ""}; ${gap >= 0.7 ? "you have little or no demonstrated evidence for it yet" : gap >= 0.4 ? "your evidence for it is mixed" : "you have already shown this well"}.`,
+      tested: gd.tested,
+      gapKind: gd.kind,
+      gapSummary: gapSummaryFor(gd.kind, s.label),
+      level: lv.level,
+      levelLabel: lv.levelLabel,
+      levelIcon: lv.levelIcon,
+      nextStep: nextStepFor(gd.kind, s.dimension),
+      evidence: str(s.evidence).slice(0, 200),
+      source: s.source || "job_description",
+      why: `The application ${s.importance === "high" ? "clearly emphasises" : s.importance === "medium" ? "points to" : "touches on"} "${s.label}"${s.evidence ? ` ("${s.evidence.slice(0, 90)}")` : ""}; ${gd.kind === "demonstrated" ? "your interview answers on it have been weak or inconsistent" : gd.kind === "developing" ? "you have already shown this well" : gd.kind === "mixed" ? "your evidence for it is mixed" : "you have no interview evidence for it yet"}.`,
     });
   }
   return out.sort((a, b) => b.priority - a.priority).slice(0, Math.max(1, num(limit, 8)));
+}
+
+// ---- 13B.1 Classroom grouping (dumb wrapper; the UI stays presentational) ----
+/**
+ * classroomRecommendationGroups(intelligence, candidateState, { limit } = {})
+ *   -> { technical:[rec], behavioural:[rec], motivational:[rec],
+ *        all:[rec], limitedContext:boolean, hasAny:boolean }
+ *
+ * Pure regrouping of applicationDevelopmentPriorities() by question-type
+ * dimension, so the Classroom UI never re-implements ranking or the
+ * demonstrated-gap / preparation-area distinction. `limitedContext` is true
+ * when the application's OWN coverage model says company/role context is thin —
+ * it does NOT suppress recommendations, it only lets the UI say so.
+ */
+export function classroomRecommendationGroups(intelligence, candidateState, { limit = 9 } = {}) {
+  const all = applicationDevelopmentPriorities(intelligence, candidateState, { limit });
+  const groups = { technical: [], behavioural: [], motivational: [] };
+  for (const r of all) (groups[r.dimension] || groups.behavioural).push(r);
+  const cov = intelligence && typeof intelligence === "object" ? intelligence.coverage || {} : {};
+  const thin = (v) => v === "weak" || v === "none" || v == null;
+  const limitedContext = !intelligence || typeof intelligence !== "object"
+    || (thin(cov.technical) && thin(cov.behavioural) && thin(cov.motivationalRole) && thin(cov.motivationalCompany));
+  return { ...groups, all, limitedContext, hasAny: all.length > 0 };
+}
+
+// ---- 13B.2 cautious CV "experiences to explore" (Fact vs Suggestion) --------
+const EXPLORE_STOPWORDS = new Set(
+  ("the a an and or of to for in on at by with from your you our we able strong good great "
+  + "excellent experience experiences skill skills ability abilities team teams work working "
+  + "role about into as is are be been being this that these those there their them they it its "
+  + "will can could would should may might have has had using used use across within very more most")
+  .split(/\s+/)
+);
+function exploreTokens(text) {
+  return str(text).toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/)
+    .filter((t) => t.length >= 4 && !EXPLORE_STOPWORDS.has(t));
+}
+
+/**
+ * experiencesToExplore({ candidateProfile, claims }, recommendations, { limit } = {})
+ *   -> [{ recommendationLabel, dimension, fact, suggestion, sourceKind }]
+ *
+ * A DELIBERATELY cautious layer. For each top recommendation, look for a CV
+ * line or extracted claim that shares real vocabulary with it and — if found —
+ * surface it as a SUGGESTION to consider, never as proof.
+ *   fact       : always `Your CV mentions: "<verbatim text>"`
+ *   suggestion : always begins `Consider whether ...`
+ * Fact and Suggestion are separate fields. The function never emits assertion
+ * language ("this proves", "you are strong at", "demonstrates"). Returns [] when
+ * there is no CV / claim material at all — it never says "you have no experience".
+ */
+export function experiencesToExplore({ candidateProfile, claims } = {}, recommendations, { limit = 4 } = {}) {
+  const cp = candidateProfile && typeof candidateProfile === "object" ? candidateProfile : {};
+  const entries = [];
+  const addAll = (list, kind) => {
+    for (const s of arr(list)) { const t = str(s).trim(); if (t) entries.push({ text: t, kind }); }
+  };
+  addAll(cp.experience, "experience");
+  addAll(cp.leadership, "leadership");
+  addAll(cp.achievements, "achievement");
+  addAll(cp.behavioural_examples, "example");
+  for (const c of arr(claims)) {
+    const t = str(c?.claim_text ?? c?.claim).trim();
+    if (t) entries.push({ text: t, kind: "claim" });
+  }
+  if (!entries.length) return [];
+  const entryTok = entries.map((e) => ({ ...e, toks: new Set(exploreTokens(e.text)) }));
+
+  const out = [];
+  const usedEntry = new Set();
+  for (const r of arr(recommendations)) {
+    if (!r || !r.label) continue;
+    const rToks = exploreTokens(`${r.label} ${r.evidence || ""}`);
+    if (!rToks.length) continue;
+    let best = null, bestScore = 0;
+    for (let i = 0; i < entryTok.length; i++) {
+      if (usedEntry.has(i)) continue;
+      let shared = 0, longShared = false;
+      for (const t of rToks) if (entryTok[i].toks.has(t)) { shared++; if (t.length >= 6) longShared = true; }
+      if ((longShared || shared >= 2) && shared > bestScore) { best = i; bestScore = shared; }
+    }
+    if (best == null) continue;
+    usedEntry.add(best);
+    const e = entries[best];
+    out.push({
+      recommendationLabel: r.label,
+      dimension: r.dimension || "behavioural",
+      fact: `Your CV mentions: "${e.text.slice(0, 200)}"`,
+      suggestion: `Consider whether this gives you a concrete, honest example you could draw on when preparing "${r.label}". Only use it if it genuinely fits.`,
+      sourceKind: e.kind,
+    });
+    if (out.length >= Math.max(1, num(limit, 4))) break;
+  }
+  return out;
 }
 
 // ---- 13A.7 grounded lesson context (minimal Classroom integration) ----
