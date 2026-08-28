@@ -123,6 +123,42 @@ export function getConceptById(id) {
   return hit ? hit.concept : null;
 }
 
+/**
+ * findConceptsByText(text, limit = 2) -> [concept, ...]
+ *
+ * Phase 14 GROUNDING ONLY. A deterministic, context-free lookup of catalogue
+ * concepts whose label or keywords overlap a free-text development-need title
+ * (e.g. a classroom_topics.topic like "Modified vs Macaulay duration"). It is
+ * NOT the scheduler's concept selector (selectKnowledgeConcepts) — it applies
+ * no interview context, no Question-Mix gate, no candidate evidence, and never
+ * decides a turn. It only lets the ONE Development Module generation call be
+ * seeded with the catalogue's own `misconceptions` / question `archetypes` for
+ * a concept the user is already being taught. Returns [] when nothing overlaps
+ * meaningfully. Never throws.
+ */
+export function findConceptsByText(text, limit = 2) {
+  const q = norm(text);
+  if (!q) return [];
+  const qTokens = new Set(q.split(" ").filter((t) => t.length >= 4));
+  if (!qTokens.size) return [];
+  const scored = [];
+  for (const c of KNOWLEDGE_CONCEPTS) {
+    const label = norm(c.label);
+    let score = 0;
+    if (label && (q.includes(label) || label.includes(q))) score += 5;
+    for (const t of label.split(" ")) if (t.length >= 4 && qTokens.has(t)) score += 2;
+    for (const kw of arr(c.keywords)) {
+      const k = norm(kw);
+      if (!k) continue;
+      if (q.includes(k)) score += 3;
+      else for (const t of k.split(" ")) if (t.length >= 4 && qTokens.has(t)) score += 1;
+    }
+    if (score >= 4) scored.push({ c, score });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, Math.max(1, limit)).map((s) => s.c);
+}
+
 /** basePriorityFor(concept) — importance -> base priority, defensive default "important". */
 function basePriorityFor(concept) {
   const level = IMPORTANCE_LEVELS.includes(concept?.importance) ? concept.importance : "important";

@@ -82,9 +82,13 @@ describe("supabase/migrations — a tracked, idempotent baseline", () => {
 
 /* ============================== (2) baseline covers what the code actually uses ============================== */
 describe("baseline migration covers every client-referenced table + the ad-hoc columns", () => {
-  const files = readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith(".sql"));
-  // collapse the column-alignment whitespace so `includes` checks are stable
-  const SQL = readFileSync(join(MIGRATIONS_DIR, files[0]), "utf8").toLowerCase().replace(/[ \t]+/g, " ");
+  const files = readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith(".sql")).sort();
+  const norm = (s) => s.toLowerCase().replace(/[ \t]+/g, " ");
+  // baseline only — for the baseline-specific assertions below
+  const SQL = norm(readFileSync(join(MIGRATIONS_DIR, files.find((f) => /baseline/.test(f))), "utf8"));
+  // every migration concatenated — the repo's migrations COLLECTIVELY must cover
+  // the schema the code uses (a table added in a later migration counts).
+  const ALL_SQL = norm(files.map((f) => readFileSync(join(MIGRATIONS_DIR, f), "utf8")).join("\n"));
 
   // every distinct table name the browser client reads or writes
   const referenced = new Set();
@@ -94,9 +98,9 @@ describe("baseline migration covers every client-referenced table + the ad-hoc c
     expect(referenced.size).toBeGreaterThanOrEqual(15);
   });
 
-  it("every referenced table has a `create table if not exists public.<t>` in the baseline", () => {
-    const missing = [...referenced].filter((t) => !SQL.includes(`create table if not exists public.${t} (`)
-      && !SQL.includes(`create table if not exists public.${t}(`));
+  it("every referenced table has a `create table if not exists public.<t>` across the migrations", () => {
+    const missing = [...referenced].filter((t) => !ALL_SQL.includes(`create table if not exists public.${t} (`)
+      && !ALL_SQL.includes(`create table if not exists public.${t}(`));
     expect(missing).toEqual([]);
   });
 
@@ -110,7 +114,7 @@ describe("baseline migration covers every client-referenced table + the ad-hoc c
   });
 
   it("RLS is explicitly enabled on every referenced table (does not rely on the superuser event trigger)", () => {
-    const missing = [...referenced].filter((t) => !SQL.includes(`alter table public.${t} enable row level security`));
+    const missing = [...referenced].filter((t) => !ALL_SQL.includes(`alter table public.${t} enable row level security`));
     expect(missing).toEqual([]);
   });
 
