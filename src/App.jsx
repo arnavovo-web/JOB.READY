@@ -1146,8 +1146,10 @@ async function loadFullUserState(userId) {
     dbSelect("candidate_claims", (q) => q.eq("user_id", userId).order("created_at", { ascending: true })),
     // Phase 15A: lightweight — powers the Dashboard "Continue preparing" pick.
     // Best-effort reads (dbSelect returns [] on error); nothing hard depends on them.
-    dbSelect("development_modules", (q) => q.eq("user_id", userId)),
-    dbSelect("development_module_progress", (q) => q.eq("user_id", userId)),
+    // Phase 15B: explicit `.order("id")` — pickContinuePreparing's ranking is already
+    // a total order, this just makes the "no query-order dependence" guarantee obvious.
+    dbSelect("development_modules", (q) => q.eq("user_id", userId).order("id", { ascending: true })),
+    dbSelect("development_module_progress", (q) => q.eq("user_id", userId).order("id", { ascending: true })),
   ]);
 
   // interviewList needs each completed interview's report summary (company/role live on the application)
@@ -1163,6 +1165,10 @@ async function loadFullUserState(userId) {
   const applications = apps.map((a) => ({
     id: a.id, company: a.company || "", role: a.role || "", status: a.status || "draft",
     date: new Date(a.created_at).getTime(),
+    // Phase 15B: raw timestamps for the deterministic "Continue preparing" P3
+    // cross-application tie-break (see continuePreparing.js). Existing consumers
+    // keep using `date`.
+    createdAt: a.created_at || null, updatedAt: a.updated_at || null,
     jobDescription: a.job_description || "",
     stageLabel: a.interview_stage || null, formatLabel: a.interview_type || null,
     // Phase 13A: survives reload for returning users. validateApplicationIntelligence returns

@@ -164,3 +164,127 @@ describe("redoConceptUnion — de-duplicated concept set for redo marking", () =
     expect(redoConceptUnion({ learning_items: [{}, { expected_concepts: [{}] }] })).toEqual([]);
   });
 });
+
+/* ============================== PHASE 15B — deterministic within-tier ranking ============================== */
+const topic = (over) => ({ id: "t", topic: "DCF", company: "JPMorgan", role: "IB Analyst", scores: [40], lastInterviewId: "iv1", applicationId: "app-jpm", updated_at: "2026-08-20T00:00:00.000Z", ...over });
+const mod = (over) => ({ id: "m", topic_id: "t", dimension: "technical", topic: "DCF", source_interview_id: "iv1", ...over });
+const prog = (over) => ({ module_id: "m", attempts: 0, best_coverage: 0, flashcards_seen: 0, retry_answers: [], updated_at: "2026-08-20T00:00:00.000Z", ...over });
+const runP1 = ({ modules, progress }) => pickContinuePreparing({ developmentModules: modules, moduleProgress: progress, classroomTopics: [], applications: [], candidateState: {} })[0];
+
+describe("P1 — depth of progress ranks before recency", () => {
+  it("A: 80% coverage / 1 attempt beats 10% coverage / 5 attempts, even when the latter is more recent", () => {
+    const modules = [mod({ id: "m-lo", topic_id: "t-lo" }), mod({ id: "m-hi", topic_id: "t-hi" })];
+    const progress = [
+      prog({ module_id: "m-lo", best_coverage: 0.10, attempts: 5, updated_at: "2026-08-30T00:00:00.000Z" }), // more recent
+      prog({ module_id: "m-hi", best_coverage: 0.80, attempts: 1, updated_at: "2026-08-20T00:00:00.000Z" }),
+    ];
+    const topics = [topic({ id: "t-lo" }), topic({ id: "t-hi" })];
+    const winner = pickContinuePreparing({ developmentModules: modules, moduleProgress: progress, classroomTopics: topics, applications: [], candidateState: {} })[0];
+    expect(winner.topicId).toBe("t-hi");
+  });
+
+  it("B: equal coverage -> more completed quiz attempts wins", () => {
+    const winner = runP1({
+      modules: [mod({ id: "m1", topic_id: "t1" }), mod({ id: "m2", topic_id: "t2" })],
+      progress: [prog({ module_id: "m1", best_coverage: 0.5, attempts: 1 }), prog({ module_id: "m2", best_coverage: 0.5, attempts: 3 })],
+    });
+    expect(winner.topicId).toBe("t2");
+  });
+
+  it("C: equal coverage + attempts -> more flashcard progress wins", () => {
+    const winner = runP1({
+      modules: [mod({ id: "m1", topic_id: "t1" }), mod({ id: "m2", topic_id: "t2" })],
+      progress: [
+        prog({ module_id: "m1", best_coverage: 0.5, attempts: 2, flashcards_seen: 1 }),
+        prog({ module_id: "m2", best_coverage: 0.5, attempts: 2, flashcards_seen: 4 }),
+      ],
+    });
+    expect(winner.topicId).toBe("t2");
+  });
+
+  it("D: equal coverage + attempts + flashcards -> more redo practice wins", () => {
+    const winner = runP1({
+      modules: [mod({ id: "m1", topic_id: "t1" }), mod({ id: "m2", topic_id: "t2" })],
+      progress: [
+        prog({ module_id: "m1", best_coverage: 0.5, attempts: 2, flashcards_seen: 3, retry_answers: [{}] }),
+        prog({ module_id: "m2", best_coverage: 0.5, attempts: 2, flashcards_seen: 3, retry_answers: [{}, {}, {}] }),
+      ],
+    });
+    expect(winner.topicId).toBe("t2");
+  });
+
+  it("E: all progress fields equal -> newer updated_at wins", () => {
+    const winner = runP1({
+      modules: [mod({ id: "m1", topic_id: "t1" }), mod({ id: "m2", topic_id: "t2" })],
+      progress: [
+        prog({ module_id: "m1", best_coverage: 0.5, attempts: 2, flashcards_seen: 3, retry_answers: [{}], updated_at: "2026-08-20T00:00:00.000Z" }),
+        prog({ module_id: "m2", best_coverage: 0.5, attempts: 2, flashcards_seen: 3, retry_answers: [{}], updated_at: "2026-08-29T00:00:00.000Z" }),
+      ],
+    });
+    expect(winner.topicId).toBe("t2");
+  });
+
+  it("F: everything equal incl. timestamp -> stable module.id ASC decides, independent of array order", () => {
+    const p = (id) => prog({ module_id: id, best_coverage: 0.5, attempts: 2, flashcards_seen: 3, retry_answers: [{}], updated_at: "2026-08-20T00:00:00.000Z" });
+    const forward = pickContinuePreparing({
+      developmentModules: [mod({ id: "m-bbb", topic_id: "t-bbb" }), mod({ id: "m-aaa", topic_id: "t-aaa" })],
+      moduleProgress: [p("m-bbb"), p("m-aaa")], classroomTopics: [], applications: [], candidateState: {},
+    })[0];
+    const reversed = pickContinuePreparing({
+      developmentModules: [mod({ id: "m-aaa", topic_id: "t-aaa" }), mod({ id: "m-bbb", topic_id: "t-bbb" })],
+      moduleProgress: [p("m-aaa"), p("m-bbb")], classroomTopics: [], applications: [], candidateState: {},
+    })[0];
+    expect(forward.topicId).toBe("t-aaa"); // "m-aaa" < "m-bbb"
+    expect(reversed.topicId).toBe("t-aaa"); // same regardless of input order
+  });
+});
+
+describe("P2 — final tie-break is a stable topic id, not array order", () => {
+  const t = (id, over) => topic({ id, scores: [45], updated_at: "2026-08-20T00:00:00.000Z", lastInterviewId: "iv", applicationId: "app", ...over });
+  it("equal latest score + equal updated_at -> topic.id ASC decides, same in both array orders", () => {
+    const forward = pickContinuePreparing({ developmentModules: [], moduleProgress: [], classroomTopics: [t("t-zzz"), t("t-aaa")], applications: [], candidateState: {} })[0];
+    const reversed = pickContinuePreparing({ developmentModules: [], moduleProgress: [], classroomTopics: [t("t-aaa"), t("t-zzz")], applications: [], candidateState: {} })[0];
+    expect(forward.topicId).toBe("t-aaa");
+    expect(reversed.topicId).toBe("t-aaa");
+  });
+});
+
+describe("tier short-circuit is preserved", () => {
+  const p1State = {
+    developmentModules: [mod({ id: "m1", topic_id: "t1" })],
+    moduleProgress: [prog({ module_id: "m1", attempts: 1, best_coverage: 0.3 })],
+    classroomTopics: [
+      topic({ id: "t1" }),
+      topic({ id: "t2", topic: "Something demonstrated", scores: [20], lastInterviewId: "ivX", applicationId: "app-jpm" }), // P2 candidate
+    ],
+    applications: [], candidateState: {},
+  };
+  it("P1 + P2 (+ would-be P3) -> always returns the P1 item", () => {
+    const r = pickContinuePreparing(p1State)[0];
+    expect(r.kind).toBe("resume_module");
+    expect(r.topicId).toBe("t1");
+  });
+  it("no P1 + P2 present -> returns the P2 item", () => {
+    const r = pickContinuePreparing({ ...p1State, developmentModules: [], moduleProgress: [] })[0];
+    expect(r.kind).toBe("develop_demonstrated");
+    expect(r.topicId).toBe("t2");
+  });
+});
+
+describe("input array order never changes the result", () => {
+  it("reversing every input array yields the identical pick", () => {
+    const state = {
+      developmentModules: [mod({ id: "m1", topic_id: "t1" }), mod({ id: "m2", topic_id: "t2" })],
+      moduleProgress: [prog({ module_id: "m1", attempts: 1, best_coverage: 0.2 }), prog({ module_id: "m2", attempts: 3, best_coverage: 0.2 })],
+      classroomTopics: [topic({ id: "t1" }), topic({ id: "t2" })],
+      applications: [], candidateState: {},
+    };
+    const rev = {
+      developmentModules: [...state.developmentModules].reverse(),
+      moduleProgress: [...state.moduleProgress].reverse(),
+      classroomTopics: [...state.classroomTopics].reverse(),
+      applications: [], candidateState: {},
+    };
+    expect(pickContinuePreparing(state)).toEqual(pickContinuePreparing(rev));
+  });
+});

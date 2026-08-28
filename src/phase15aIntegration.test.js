@@ -111,8 +111,8 @@ describe("classroom-topic identity is application-scoped", () => {
 describe("returning-user Continue preparing surface", () => {
   it("loadFullUserState prefetches development modules + progress (best-effort)", () => {
     const LOAD = fn("async function loadFullUserState(userId)", "async function dbCreateApplication");
-    expect(LOAD).toMatch(/dbSelect\("development_modules", \(q\) => q\.eq\("user_id", userId\)\)/);
-    expect(LOAD).toMatch(/dbSelect\("development_module_progress", \(q\) => q\.eq\("user_id", userId\)\)/);
+    expect(LOAD).toMatch(/dbSelect\("development_modules", \(q\) => q\.eq\("user_id", userId\)\.order\("id"/);
+    expect(LOAD).toMatch(/dbSelect\("development_module_progress", \(q\) => q\.eq\("user_id", userId\)\.order\("id"/);
     expect(LOAD).toMatch(/developmentModules: Array\.isArray\(devModulesRaw\)/);
     expect(LOAD).toMatch(/moduleProgress: Array\.isArray\(moduleProgressRaw\)/);
   });
