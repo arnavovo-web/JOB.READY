@@ -44,9 +44,10 @@ so re-running against a partially-migrated environment is safe.
 
 | Artifact | Why it's out | Where it lives |
 |---|---|---|
-| `ai-generate` Edge Function | separate deploy unit; owns server-side AI calls + `ai_usage` / `api_usage_limits` writes + JWT verification | Supabase Edge Functions (deploy separately; source not yet in this repo) |
+| `ai-generate` Edge Function | separate deploy unit; owns server-side AI calls + `ai_usage` / `api_usage_limits` writes + JWT verification | source now captured at `supabase/functions/ai-generate/` (verbatim mirror of live v5); deploy with `supabase functions deploy ai-generate` — see `supabase/functions/README.md` |
 | `rls_auto_enable` event trigger | superuser-owned Supabase hardening; can't be created from a normal migration. The baseline enables RLS explicitly on every table, so a fresh project is still fully protected. | live project only |
 | `job-ready-documents` storage bucket | legacy; no current code path reads or writes it. `documents` is the bucket in use. | live project only |
 
-If the `ai-generate` function source is added to the repo later, put it under
-`supabase/functions/ai-generate/` so `supabase functions deploy` can manage it.
+The `ai-generate` function source is now under `supabase/functions/ai-generate/`
+(captured 2026-08-30 from live v5, verbatim). `supabase/functions/README.md` is
+its deploy + secrets + recovery runbook.
