@@ -300,7 +300,7 @@ describe("entry points default to buildMethod 'jdcv' — the original JD/CV flow
   it("continueApplication, practiseApplicationAgain and practiseThisWeakness all explicitly set buildMethod to \"jdcv\" — they skip create_choose but must never accidentally relax the JD/CV requirement", () => {
     const continueSrc = extractFunctionSource("async function continueApplication(app) {", "// Phase 4: practise again for an application");
     expect(continueSrc).toMatch(/setBuildMethod\("jdcv"\)/);
-    const againSrc = extractFunctionSource("function practiseApplicationAgain(app) {", "/* ---------------- PHASE 7: INTERVIEW INVITATION SCANNER");
+    const againSrc = extractFunctionSource("function practiseApplicationAgain(app) {", "/* ---------------- PHASE 16A: APPLICATIONS PILLAR");
     expect(againSrc).toMatch(/setBuildMethod\("jdcv"\)/);
     const weaknessSrc = extractFunctionSource("function practiseThisWeakness(topic) {", "function loadDemo()");
     expect(weaknessSrc).toMatch(/setBuildMethod\("jdcv"\)/);

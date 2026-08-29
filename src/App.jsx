@@ -92,6 +92,9 @@ import { classroomTopicMatch, pickContinuePreparing, redoConceptUnion } from "./
 // Phase 16A: pure interview-date helpers for the Applications pillar (countdown
 // text, nearest-upcoming ordering). No AI, no DB, no reminders — status only.
 import { interviewCountdown, sortApplicationsByUpcoming, partitionApplications, nearestUpcomingApplication } from "./applicationSchedule";
+// Phase 18: pure, offline reconstruction of an unfinished interview from its
+// persisted rows. No AI, no DB, no React. Resume = read + deterministic rebuild.
+import { reconstructInterviewState, sortResumableInterviews, summariseResumable } from "./resumeInterview";
 
 /* ================================================================== *
  * JOB.READY — DESIGN SYSTEM (unchanged from previous build)
@@ -1168,7 +1171,7 @@ async function dbSelect(table, build) {
 async function loadFullUserState(userId) {
   const supabase = await getSupabase();
 
-  const [{ data: profile }, { data: dna }, apps, interviewsRaw, competencyRows, classroomTopicsRaw, memoryRows, comparisonRows, acAttemptsRaw, claimRows, devModulesRaw, moduleProgressRaw] = await Promise.all([
+  const [{ data: profile }, { data: dna }, apps, interviewsRaw, competencyRows, classroomTopicsRaw, memoryRows, comparisonRows, acAttemptsRaw, claimRows, devModulesRaw, moduleProgressRaw, inProgressRaw] = await Promise.all([
     supabase.from("profiles").select("*").eq("id", userId).maybeSingle(),
     supabase.from("candidate_dna").select("*").eq("user_id", userId).maybeSingle(),
     dbSelect("applications", (q) => q.eq("user_id", userId).order("created_at", { ascending: false })),
@@ -1185,7 +1188,38 @@ async function loadFullUserState(userId) {
     // a total order, this just makes the "no query-order dependence" guarantee obvious.
     dbSelect("development_modules", (q) => q.eq("user_id", userId).order("id", { ascending: true })),
     dbSelect("development_module_progress", (q) => q.eq("user_id", userId).order("id", { ascending: true })),
+    // Phase 18: unfinished interviews — METADATA ONLY here (row + config, no
+    // transcript). Full question/answer reconstruction happens later, on the
+    // user's explicit "Continue" click (resumeInterviewById). One extra query,
+    // and for the common case (no unfinished interviews) the follow-up count
+    // queries below are skipped entirely.
+    dbSelect("interviews", (q) => q.eq("user_id", userId).eq("status", "in_progress").order("created_at", { ascending: false })),
   ]);
+
+  // Phase 18: cheap per-interview progress counts for the "Continue your
+  // interview" surfaces — two bulk metadata reads (ids + question_number only),
+  // never per-interview (no N+1), and only when unfinished interviews exist.
+  let resumableInterviews = [];
+  if (Array.isArray(inProgressRaw) && inProgressRaw.length) {
+    const ipIds = inProgressRaw.map((i) => i.id);
+    const { data: ipQ } = await supabase.from("interview_questions").select("id, interview_id, question_number").in("interview_id", ipIds);
+    const qList = Array.isArray(ipQ) ? ipQ : [];
+    const qIds = qList.map((r) => r.id);
+    const { data: ipA } = qIds.length
+      ? await supabase.from("answers").select("question_id").in("question_id", qIds)
+      : { data: [] };
+    const answeredQ = new Set((Array.isArray(ipA) ? ipA : []).map((r) => r.question_id));
+    const countsByIv = new Map();
+    for (const r of qList) {
+      const c = countsByIv.get(r.interview_id) || { total: 0, answered: 0 };
+      c.total += 1;
+      if (answeredQ.has(r.id)) c.answered += 1;
+      countsByIv.set(r.interview_id, c);
+    }
+    resumableInterviews = inProgressRaw.map((row) =>
+      summariseResumable(row, countsByIv.get(row.id) || { total: 0, answered: 0 }, apps.find((a) => a.id === row.application_id))
+    );
+  }
 
   // interviewList needs each completed interview's report summary (company/role live on the application)
   const appById = new Map(apps.map((a) => [a.id, a]));
@@ -1282,6 +1316,7 @@ async function loadFullUserState(userId) {
     candidateClaims: claimRows, candidateIntelligence,
     developmentModules: Array.isArray(devModulesRaw) ? devModulesRaw : [],
     moduleProgress: Array.isArray(moduleProgressRaw) ? moduleProgressRaw : [],
+    resumableInterviews,
   };
 }
 
@@ -2519,6 +2554,11 @@ function App() {
   // rotating-message LoadingScreen.
   const [genProgress, setGenProgress] = useState(null);
   const bumpGenStage = (n) => setGenProgress((p) => (p ? { ...p, stage: n } : p));
+  // Phase 18: unfinished interviews the user can resume (metadata only; loaded
+  // at auth, reconstructed on explicit Continue). `resumeChoice` holds the
+  // interview surfaced by the pre-generation duplicate check.
+  const [resumableInterviews, setResumableInterviews] = useState([]);
+  const [resumeChoice, setResumeChoice] = useState(null);
   // Phase 7: Interview Invitation Scanner — a second INPUT METHOD into this SAME wizard, never
   // a parallel one. buildMethod tracks which entry the candidate took ("jdcv" is the default/
   // existing behaviour, applied even for entry points that skip the choice screen entirely —
@@ -2588,6 +2628,10 @@ function App() {
   // question" answer (markWrittenQuiz over redoConceptUnion — no AI).
   const [redoResult, setRedoResult] = useState(null);
   const devGenRef = useRef(false);
+  // Phase 18: single-flight guard for a Continue click; one-shot flag that lets
+  // "Start New Interview" bypass the duplicate check on the immediate re-entry.
+  const resumeRef = useRef(false);
+  const forceNewRef = useRef(false);
   // Phase 15A: prefetched (best-effort) — power the Dashboard "Continue preparing"
   // pick and keep it fresh as the user learns, without a reload.
   const [developmentModules, setDevelopmentModules] = useState([]);
@@ -2751,6 +2795,7 @@ function App() {
       setCandidateIntelligence(state.candidateIntelligence);
       setDevelopmentModules(state.developmentModules || []);
       setModuleProgress(state.moduleProgress || []);
+      setResumableInterviews(state.resumableInterviews || []);
       setScreen((s) => (["landing", "how", "universities", "login"].includes(s) ? "dashboard" : s));
     } catch (e) {
       setError("Signed in, but couldn't load your data. Please refresh.");
@@ -2779,6 +2824,7 @@ function App() {
     setQuizOrder([]); setQuizResults([]); setQuizDraft(""); setRedoDraft(""); setRedoResult(null); setFlashIdx(0); setFlashRevealed(false);
     setDevelopmentModules([]); setModuleProgress([]); setPendingReportSave(null); setPendingModuleSave(null);
     setAppView(null); setAppForm(null); setGenProgress(null);
+    setResumableInterviews([]); setResumeChoice(null);
     // Phase 7: same ownership-hygiene reasoning — a signed-out session must never leave a
     // previous user's pasted invitation email (which may contain personal information — §17)
     // sitting in memory.
@@ -3574,6 +3620,99 @@ Rules: EXACTLY 4 learning_items, each ONE atomic idea — do not exceed 4. Keep 
     setWizardStep(app.jobDescription ? 3 : 2); setScreen("create");
   }
 
+  /* ---------------- PHASE 18: RESUME AN UNFINISHED INTERVIEW ---------------- */
+  // Persistence read + deterministic reconstruction. ZERO AI calls: no
+  // callClaude, no ai-generate, no question regeneration, no profile
+  // regeneration. Full transcript load happens HERE, only on the user's
+  // explicit Continue — never eagerly at startup.
+  async function resumeInterviewById(interviewId) {
+    if (!interviewId || !user || resumeRef.current) return;
+    resumeRef.current = true;
+    setError(""); setResumeChoice(null);
+    try {
+      const supabase = await getSupabase();
+      // One row + one nested read (questions -> their answer -> its evaluation).
+      // RLS scopes both to this user (interviews_self / via-owner chains).
+      const [{ data: row, error: rErr }, { data: qRows, error: qErr }] = await Promise.all([
+        supabase.from("interviews").select("*").eq("id", interviewId).eq("user_id", user.id).maybeSingle(),
+        supabase.from("interview_questions")
+          .select("id, question_number, question_text, category, competency, anchor_source, generation_mode, metadata, prep_seconds, answer_seconds, answers(id, answer_text, time_expired, evaluations(relevance, specificity, structure, evidence, clarity, competency_demonstration, strengths, issues))")
+          .eq("interview_id", interviewId)
+          .order("question_number", { ascending: true }),
+      ]);
+      if (rErr || !row) throw new Error("read");
+      if (qErr) throw new Error("read");
+
+      // Normalise the nested rows into the flat shape reconstructInterviewState expects.
+      const questions = (qRows || []).map((q) => {
+        const a = Array.isArray(q.answers) ? q.answers[0] : q.answers;
+        const ev = a && (Array.isArray(a.evaluations) ? a.evaluations[0] : a.evaluations);
+        return {
+          id: q.id, question_number: q.question_number, question_text: q.question_text,
+          category: q.category, competency: q.competency, anchor_source: q.anchor_source,
+          metadata: q.metadata, prep_seconds: q.prep_seconds, answer_seconds: q.answer_seconds,
+          answered: !!a, answer_text: a ? a.answer_text : undefined, answer_id: a ? a.id : undefined,
+          time_expired: a ? !!a.time_expired : false, evaluation: ev || null,
+        };
+      });
+
+      const appRow = applications.find((x) => x.id === row.application_id) || {};
+      const meta = {
+        company: appRow.company || "", role: appRow.role || "",
+        stageLabel: row.stage ? (stageByKey(row.stage)?.label || null) : null,
+        formatLabel: row.format ? (INTERVIEW_FORMATS[row.format]?.label || null) : null,
+      };
+
+      const recon = reconstructInterviewState({ interviewRow: row, questions, meta });
+      if (!recon.resumable) {
+        setError(
+          recon.reason === "no_profile"
+            ? "This earlier interview can't be resumed — it was saved before resume support existed. Start a new interview for this application."
+            : recon.reason === "already_complete"
+            ? "That interview is already complete — open its report from your applications."
+            : "Couldn't reopen that interview. Please start a new one."
+        );
+        return;
+      }
+
+      const iv = recon.interview;
+      // Phase 18: the adaptive engine's live turn merges cross-interview
+      // persistent claims into the probe-area pool. analyseAndPlan does this
+      // AFTER persisting config.profile, so the stored profile is pre-merge —
+      // re-apply the SAME deterministic merge here (pure, no AI) so a resumed
+      // adaptive interview behaves like one that was never interrupted.
+      if (recon.pipeline !== "independent_batch") {
+        try {
+          const usableSignals = isCandidateIntelligenceUsable(candidateIntelligence) ? candidateIntelligence : null;
+          recon.profile.candidate_profile.potential_probe_areas = mergeProbeAreasForInterview(
+            recon.profile.candidate_profile.potential_probe_areas, usableSignals?.recommendedProbes
+          );
+        } catch (e) { console.error("resume probe merge failed:", e.message); }
+      }
+      setProfile(recon.profile);
+      if (recon.pipeline === "independent_batch") {
+        try { iv.cvBackground = cvBackgroundSummary(recon.profile.candidate_profile); }
+        catch (e) { iv.cvBackground = ""; }
+      }
+      setInterview(iv);
+
+      if (recon.needsFinish) {
+        // Every question is answered but the interview never completed. Reuse the
+        // EXISTING completion path (batch runs its one deferred batch-eval; adaptive
+        // goes straight to the report call) — this is finishing, not resuming, and
+        // is exactly the AI call the interview would have made originally.
+        if (recon.pipeline === "independent_batch") await finishAsyncInterview(iv);
+        else await finishInterview(iv);
+        return;
+      }
+      setScreen(recon.screen);
+    } catch (e) {
+      setError("Couldn't reopen that interview. Please try again.");
+    } finally {
+      resumeRef.current = false;
+    }
+  }
+
   /* ---------------- PHASE 7: INTERVIEW INVITATION SCANNER ---------------- */
   // §4/§19: the ONE AI call this whole feature makes. No web search. Client-side length/empty
   // checks run BEFORE the call so an obviously-unusable paste never reaches the AI at all.
@@ -3686,6 +3825,17 @@ Rules: EXACTLY 4 learning_items, each ONE atomic idea — do not exceed 4. Keep 
   /* ---------------- STEP 1: JD + CV ANALYSIS -> PROFILE ---------------- */
   async function analyseAndPlan() {
     setError("");
+    // Phase 18 — duplicate-generation protection. Before spending an AI call on
+    // a brand-new interview, check whether this application already has a
+    // resumable unfinished one. If so, hand the user the choice (Continue /
+    // Start New) instead of silently forking a duplicate. `forceNewRef` is the
+    // one-shot bypass the "Start New Interview" button sets. This never
+    // deletes, overwrites or mutates the existing interview.
+    if (!forceNewRef.current) {
+      const existing = resumableInterviews.find((r) => r.applicationId === applicationId && r.hasProfile);
+      if (existing) { setResumeChoice(existing); setScreen("resume_choice"); return; }
+    }
+    forceNewRef.current = false;
     const cleanCompany = sanitizeText(company);
     const cleanRole = sanitizeText(role);
     const cleanJd = sanitizeText(jdText);
@@ -3805,6 +3955,22 @@ Rules: EXACTLY 4 learning_items, each ONE atomic idea — do not exceed 4. Keep 
       // Phase 16B: mark the first real milestone done — the interview_profile
       // call above has returned and been validated.
       bumpGenStage(1);
+
+      // Phase 18: persist everything needed to reconstruct this interview after
+      // a refresh, onto the EXISTING interviews.config jsonb (no migration).
+      //  - profile: the interview_profile + candidate_profile the adaptive turn
+      //    engine and BOTH report paths need — currently held only in React
+      //    `profile` state, with no reload path.
+      //  - max_questions: the adaptive completion target (wizard "Length"),
+      //    otherwise lost with the `length` state on reload.
+      // Additive keys; nothing in the live flow reads config.profile /
+      // config.max_questions except the Phase 18 reconstruction layer.
+      ivConfig.profile = {
+        interview_profile: result.interview_profile,
+        candidate_profile: result.candidate_profile,
+        opening_question: result.opening_question,
+      };
+      ivConfig.max_questions = length;
 
       // Phase 16B: these two writes touch DIFFERENT tables with independent data —
       // the `applications` row (analysed JD profile + Application Intelligence that
@@ -4355,6 +4521,9 @@ Rules: scores computed honestly from the transcript's evaluations. Never fabrica
       // applicationsWithInterviews filter matches on it) until the next reload.
       const summary = { id: finalInterview.id, applicationId: finalInterview.applicationId, company: finalInterview.company, role: finalInterview.role, date: Date.now(), overall_score: result.overall_score, readiness: result.readiness, breakdown: result.breakdown, report: result, stageLabel: finalInterview.stageLabel, formatLabel: finalInterview.formatLabel };
       setInterviewList([...interviewList, summary]);
+      // Phase 18: this interview is now completed — drop it from the resumable set
+      // so the "Continue your interview" surfaces stop offering it.
+      setResumableInterviews((prev) => prev.filter((r) => r.id !== finalInterview.id));
 
       await applyPerformanceUpdate({
         weaknesses: result.updated_candidate_weaknesses,
@@ -4529,7 +4698,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
   }
 
   /* ---------------- DERIVED VALUES ---------------- */
-  const showNav = ["landing", "how", "universities", "login", "dashboard", "applications", "application", "application_form", "create", "create_choose", "invitation_paste", "invitation_review", "preview", "progress", "report", "report_view", "classroom", "lesson", "ac_home", "ac_exercise", "ac_scorecard", "ac_attempt_view"].includes(screen);
+  const showNav = ["landing", "how", "universities", "login", "dashboard", "applications", "application", "application_form", "create", "create_choose", "resume_choice", "invitation_paste", "invitation_review", "preview", "progress", "report", "report_view", "classroom", "lesson", "ac_home", "ac_exercise", "ac_scorecard", "ac_attempt_view"].includes(screen);
   // Only interview-evidenced topics count toward the nav "needs work" badge —
   // a recommendation-materialised topic (no scores yet) is "to start", not "needs work".
   const classroomNeedsWorkCount = classroom.filter((t) => (t.scores || []).length > 0 && statusFor(t.scores).label !== "Mastered").length;
@@ -4653,6 +4822,12 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
   // action" reuses pickContinuePreparing scoped to that application.
   const { upcoming: applicationsUpcoming, other: applicationsOther } = partitionApplications(applicationsWithInterviews);
   const nearestUpcomingApp = nearestUpcomingApplication(applicationsWithInterviews);
+  // Phase 18: unfinished interviews, split into genuinely resumable (a persisted
+  // profile exists) vs legacy (pre-resume-support rows — surfaced honestly but
+  // not offered a Continue button). Deterministic ordering: nearest application
+  // interview date first, then newest interview.
+  const resumableReady = sortResumableInterviews(resumableInterviews.filter((r) => r.hasProfile));
+  const resumableLegacy = resumableInterviews.filter((r) => !r.hasProfile);
   function nextActionForApplication(app) {
     const appTopics = classroom.filter((t) => t.applicationId === app.id);
     const topicIds = new Set(appTopics.map((t) => t.id));
@@ -5054,6 +5229,34 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
               </div>
             </Card>
           </div>
+
+          {/* Phase 18: unfinished interviews. Sits above "Continue preparing" —
+              a half-finished interview is the single most time-sensitive thing a
+              returning user has. Continue = 0 AI calls (deterministic
+              reconstruction from persisted rows). Legacy rows with no persisted
+              profile are shown honestly but cannot be resumed. */}
+          {(resumableReady.length > 0 || resumableLegacy.length > 0) && (
+            <div style={{ marginBottom: 20 }}>
+              {resumableReady.map((r) => (
+                <Card key={r.id} style={{ padding: 22, marginBottom: 10, borderLeft: "4px solid var(--violet)" }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>🎤 Continue your interview</div>
+                  <div style={{ fontSize: 15.5, fontWeight: 700, color: "var(--navy)" }}>{r.company || "Interview"}{r.role ? ` — ${r.role}` : ""}</div>
+                  <div style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 4 }}>
+                    {r.answeredCount} of {r.totalQuestions || "?"} question{r.totalQuestions === 1 ? "" : "s"} answered
+                  </div>
+                  <Btn variant="accent" style={{ marginTop: 12 }} onClick={() => guarded(() => resumeInterviewById(r.id))}>Continue interview <ArrowRight size={15} /></Btn>
+                </Card>
+              ))}
+              {resumableLegacy.map((r) => (
+                <Card key={r.id} style={{ padding: 18, marginBottom: 10, borderLeft: "4px solid var(--border)" }}>
+                  <div style={{ fontSize: 13.5, fontWeight: 700, color: "var(--text-dim)" }}>{r.company || "Interview"}{r.role ? ` — ${r.role}` : ""}</div>
+                  <div style={{ fontSize: 12.5, color: "var(--text-faint)", marginTop: 4, lineHeight: 1.5 }}>
+                    An earlier interview here couldn't be saved for resuming. Start a new one from its application when you're ready.
+                  </div>
+                </Card>
+              ))}
+            </div>
+          )}
 
           {/* Phase 15A: returning-user re-entry into the learning loop. One item,
               deterministic priority (in-progress module > demonstrated need not
@@ -5462,6 +5665,20 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
 
             {/* ---- INTERVIEWS ---- */}
             <h3 style={{ fontSize: 17, fontWeight: 800, color: "var(--navy)", margin: "8px 0 12px" }}>Interviews</h3>
+
+            {/* Phase 18: this application's own unfinished interviews. Continue = 0 AI. */}
+            {resumableInterviews.filter((r) => r.applicationId === app.id).map((r) => (
+              <Card key={r.id} style={{ padding: 18, marginBottom: 12, borderLeft: `4px solid ${r.hasProfile ? "var(--violet)" : "var(--border)"}` }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: r.hasProfile ? "var(--navy)" : "var(--text-dim)" }}>🎤 Interview in progress</div>
+                <div style={{ fontSize: 12.5, color: "var(--text-dim)", marginTop: 4 }}>{r.answeredCount} of {r.totalQuestions || "?"} question{r.totalQuestions === 1 ? "" : "s"} answered</div>
+                {r.hasProfile ? (
+                  <Btn variant="accent" onClick={() => guarded(() => resumeInterviewById(r.id))} style={{ marginTop: 10 }}>Continue interview <ArrowRight size={14} /></Btn>
+                ) : (
+                  <div style={{ fontSize: 12, color: "var(--text-faint)", marginTop: 8, lineHeight: 1.5 }}>This one was saved before resume support and can't be reopened — build a new interview below.</div>
+                )}
+              </Card>
+            ))}
+
             <Card style={{ padding: 18, marginBottom: 28 }}>
               {appInterviews.length === 0 ? (
                 <div style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.6, marginBottom: 14 }}>
@@ -5517,6 +5734,33 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
           </div>
         );
       })()}
+
+      {/* ---------------- PHASE 18: RESUME-OR-START-NEW CHOICE ---------------- */}
+      {/* Shown when the user tries to generate a new interview for an application
+          that already has a resumable unfinished one. Primary = Continue (0 AI);
+          Secondary = Start New (proceeds to analyseAndPlan; NEVER deletes or
+          overwrites the existing interview). */}
+      {screen === "resume_choice" && resumeChoice && (
+        <div className="jr-fade" style={{ maxWidth: 560, margin: "0 auto", padding: "44px 24px" }}>
+          <h2 style={{ fontSize: 23, fontWeight: 800, color: "var(--navy)", marginBottom: 6 }}>You have an interview in progress</h2>
+          <p style={{ fontSize: 14, color: "var(--text-dim)", marginBottom: 20 }}>
+            You started an interview for this application and didn't finish it. Nothing was lost — pick up where you left off, or start a fresh one.
+          </p>
+          <Card style={{ padding: 20, marginBottom: 20, borderLeft: "4px solid var(--violet)" }}>
+            <div style={{ fontSize: 15.5, fontWeight: 700, color: "var(--navy)" }}>{resumeChoice.company || "Interview"}{resumeChoice.role ? ` — ${resumeChoice.role}` : ""}</div>
+            <div style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 4 }}>
+              {resumeChoice.answeredCount} of {resumeChoice.totalQuestions || "?"} question{resumeChoice.totalQuestions === 1 ? "" : "s"} answered
+            </div>
+          </Card>
+          <div className="flex flex-wrap gap-3">
+            <Btn variant="accent" onClick={() => guarded(() => resumeInterviewById(resumeChoice.id))}>Continue interview <ArrowRight size={15} /></Btn>
+            <Btn variant="secondary" onClick={() => { forceNewRef.current = true; setResumeChoice(null); guarded(analyseAndPlan); }}>Start a new interview</Btn>
+          </div>
+          <div style={{ marginTop: 16 }}>
+            <LinkBtn onClick={() => { setResumeChoice(null); setScreen("dashboard"); }} style={{ fontSize: 12.5, color: "var(--text-faint)", cursor: "pointer" }}>Cancel</LinkBtn>
+          </div>
+        </div>
+      )}
 
       {/* ---------------- CREATE (progressive wizard) ---------------- */}
       {screen === "create" && (

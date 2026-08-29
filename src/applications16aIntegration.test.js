@@ -35,7 +35,7 @@ function slice(startMarker, endMarker) {
 
 const SAVE_FORM_SRC = slice("async function saveApplicationForm() {", "// EXPLICIT, user-triggered Application Intelligence analysis.");
 const ANALYSE_ONLY_SRC = slice("async function analyseApplicationOnly(app) {", "function buildInterviewFromApplication(");
-const BUILD_IV_SRC = slice("function buildInterviewFromApplication(app) {", "/* ---------------- PHASE 7: INTERVIEW INVITATION SCANNER");
+const BUILD_IV_SRC = slice("function buildInterviewFromApplication(app) {", "/* ---------------- PHASE 18: RESUME AN UNFINISHED INTERVIEW");
 const OPEN_HELPERS_SRC = slice("/* ---------------- PHASE 16A: APPLICATIONS PILLAR ---------------- */", "async function saveApplicationForm() {");
 const APP_SCREEN_SRC = slice("{/* ---------------- APPLICATION OVERVIEW (workspace) ---------------- */}", "{/* ---------------- CREATE (progressive wizard) ---------------- */}");
 const LIST_SCREEN_SRC = slice("{/* ---------------- APPLICATIONS LIST ---------------- */}", "{/* ---------------- ADD / EDIT APPLICATION (no AI) ---------------- */}");

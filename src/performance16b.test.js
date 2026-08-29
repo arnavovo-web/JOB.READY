@@ -224,7 +224,7 @@ describe("Phase 16A guarantees are untouched by the perf work", () => {
     expect(SRC).toMatch(/applicationIntelligenceIsStale\(intel, hashApplicationSources/);
   });
   it("Question Mix is still reset when building an interview from an application", () => {
-    const buildIv = slice("function buildInterviewFromApplication(app) {", "/* ---------------- PHASE 7:");
+    const buildIv = slice("function buildInterviewFromApplication(app) {", "/* ---------------- PHASE 18: RESUME AN UNFINISHED INTERVIEW");
     expect(buildIv).toMatch(/setQuestionMix\(\{ technical: false, behavioural: false, motivational: false \}\)/);
   });
 });
