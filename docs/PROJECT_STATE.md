@@ -1,6 +1,6 @@
 # JOB.READY — Project State
 
-**Last updated:** 2026-08 (Phase 16A)
+**Last updated:** 2026-08 (Phase 16B)
 
 For the system shape, ownership map and persisted-state table see
 `docs/ARCHITECTURE.md`. This file is a short status snapshot.
@@ -56,6 +56,30 @@ JOB.READY takes a user from an interview opportunity to measurable improvement:
 
 ## Recently done
 
+- **Phase 16B** — **core performance & loading optimisation** (no feature
+  change, no new AI call — still 17 `callClaude` sites, same 11 request types):
+  - **Reopening an existing Development Module is instant** — served straight
+    from the `developmentModules` / `moduleProgress` React state that
+    `loadFullUserState` already prefetches (module content is immutable). No
+    `dbGetDevelopmentModule`, no blocking `dbGetModuleProgress`, no loading
+    screen. A DB fallback stays for a legacy/cross-device miss; a fill-in-only
+    background progress read runs (non-blocking) when local state has no record.
+  - **Interview generation** — the `applications`-row write and the new
+    `interviews`-row insert (independent tables) now run via `Promise.all`
+    instead of two serial round-trips; the best-effort CV-claim seed is
+    overlapped with the required opening-question insert / batch generation
+    instead of being its own serial step. The required application write is
+    still checked and still aborts loudly on failure.
+  - **New Development Module** — dropped an always-null `dbGetModuleProgress`
+    round-trip for a module that was just created (same in `retrySaveModule`).
+  - **Honest staged loading** — `LoadingScreen` gained a staged mode: a real
+    checklist whose steps advance only when an awaited milestone completes (no
+    timer-driven fake progress), with the company/role/topic shown so the user
+    knows what they are waiting for. Wired into the interview / development
+    module / application-analysis loaders. The legacy rotating-message mode is
+    unchanged for the other loaders (out of scope).
+  - Flashcards / Written Quiz / answer checking / Learn↔Flashcards↔Quiz
+    switching were already 0-AI, 0-DB pure state — verified and locked in.
 - **Phase 16A** — **Applications as a first-class product pillar**. New
   `applications` / `application` / `application_form` screens + an
   `application_analyzing` loader, all connective tissue over existing systems:

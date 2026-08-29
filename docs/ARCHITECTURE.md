@@ -1,6 +1,6 @@
 # JOB.READY — Architecture
 
-*Describes the current product. Updated Phase 16A (2026-08).*
+*Describes the current product. Updated Phase 16B (2026-08).*
 
 ## System shape
 
@@ -186,6 +186,16 @@ hoisted system prompt (`INTERVIEW_PROFILE_SYSTEM`). Creating or editing an
 application, adding/editing the interview date, opening the Applications list,
 and opening / reopening an application make **zero** AI calls; a reopened
 analysed application reuses its stored intelligence.
+
+Phase 16B changed **no** AI calls (still 17 `callClaude` sites). It removed
+non-AI latency from the critical paths: `openDevelopmentModule` serves an
+existing module straight from prefetched React state (0 blocking DB reads, 0 AI);
+`analyseAndPlan` runs its two independent persistence writes (`applications` row
++ new `interviews` row) via `Promise.all` and overlaps the best-effort CV-claim
+seed with the required question insert; a just-created module no longer does an
+always-null progress round-trip. Required writes stay checked and visible on
+failure. Loading screens for these flows use `LoadingScreen`'s staged mode — a
+real checklist advanced only on completed awaited milestones, never a timer.
 
 ## Migrations
 

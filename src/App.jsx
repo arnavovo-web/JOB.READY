@@ -2319,15 +2319,56 @@ function AcScorecardBody({ result, onOpenClassroom }) {
   );
 }
 
-function LoadingScreen({ messages }) {
+// Two modes:
+//  - legacy: <LoadingScreen messages={[...]} /> — gentle message rotation on a
+//    timer. Still used by screens outside Phase 16B's audited flows.
+//  - staged (Phase 16B): <LoadingScreen progress={{ title, subtitle, steps, stage }} />
+//    — NO timer. `steps` is a real checklist; `stage` is the index of the step
+//    currently in progress, advanced by the calling flow only when a genuine
+//    milestone (an awaited call) has actually completed. Earlier steps show a
+//    tick, the current step spins, later steps are dimmed. This is honest
+//    progress, not a fake animation.
+function LoadingScreen({ messages, progress }) {
   const [idx, setIdx] = useState(0);
-  useEffect(() => { const t = setInterval(() => setIdx((i) => (i + 1) % messages.length), 1300); return () => clearInterval(t); }, [messages]);
+  const staged = progress && Array.isArray(progress.steps) && progress.steps.length > 0;
+  useEffect(() => {
+    if (staged || !messages || messages.length < 2) return;
+    const t = setInterval(() => setIdx((i) => (i + 1) % messages.length), 1300);
+    return () => clearInterval(t);
+  }, [messages, staged]);
+
+  if (staged) {
+    const stage = Math.max(0, Math.min(num(progress.stage, 0, 0, progress.steps.length), progress.steps.length - 1));
+    return (
+      <div className="flex flex-col items-center justify-center" style={{ minHeight: 440, padding: "0 24px" }}>
+        <div style={{ width: 52, height: 52, borderRadius: 16, background: "linear-gradient(135deg, var(--blue), var(--violet))", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 18 }}>
+          <Loader2 className="animate-spin" size={24} color="#fff" />
+        </div>
+        {progress.title && <div style={{ fontSize: 18, fontWeight: 700, color: "var(--navy)" }}>{progress.title}</div>}
+        {progress.subtitle && <div style={{ fontSize: 13.5, color: "var(--text-dim)", marginTop: 4, textAlign: "center" }}>{progress.subtitle}</div>}
+        <div style={{ marginTop: 20, display: "flex", flexDirection: "column", gap: 9, minWidth: 260 }}>
+          {progress.steps.map((label, i) => {
+            const done = i < stage, active = i === stage;
+            return (
+              <div key={label} style={{ display: "flex", alignItems: "center", gap: 9, fontSize: 13.5, fontWeight: active ? 700 : 500, color: done ? "var(--good)" : active ? "var(--navy)" : "var(--text-faint)" }}>
+                <span style={{ width: 16, display: "inline-flex", justifyContent: "center", flexShrink: 0 }}>
+                  {done ? <CheckCircle2 size={15} /> : active ? <Loader2 className="animate-spin" size={13} /> : <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--border)" }} />}
+                </span>
+                {label}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col items-center justify-center" style={{ minHeight: 440 }}>
       <div style={{ width: 52, height: 52, borderRadius: 16, background: "linear-gradient(135deg, var(--blue), var(--violet))", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 22 }}>
         <Loader2 className="animate-spin" size={24} color="#fff" />
       </div>
-      <div className="jr-fade" key={idx} style={{ fontSize: 17, fontWeight: 600, color: "var(--navy)" }}>{messages[idx]}</div>
+      <div className="jr-fade" key={idx} style={{ fontSize: 17, fontWeight: 600, color: "var(--navy)" }}>{messages ? messages[idx] : ""}</div>
     </div>
   );
 }
@@ -2471,6 +2512,13 @@ function App() {
   // the existing `applications` state + persistence.
   const [appView, setAppView] = useState(null);
   const [appForm, setAppForm] = useState(null);
+  // Phase 16B: honest staged loading. { title, subtitle, steps:[...], stage:N }.
+  // The generating flows (interview / development module / application analysis)
+  // set this up front and bump `stage` only when a real awaited milestone
+  // completes — never on a timer. null => the screen falls back to its legacy
+  // rotating-message LoadingScreen.
+  const [genProgress, setGenProgress] = useState(null);
+  const bumpGenStage = (n) => setGenProgress((p) => (p ? { ...p, stage: n } : p));
   // Phase 7: Interview Invitation Scanner — a second INPUT METHOD into this SAME wizard, never
   // a parallel one. buildMethod tracks which entry the candidate took ("jdcv" is the default/
   // existing behaviour, applied even for entry points that skip the choice screen entirely —
@@ -2730,7 +2778,7 @@ function App() {
     setDevModule(null); setDevTopic(null); setDevProgress(null); setDevView("hub");
     setQuizOrder([]); setQuizResults([]); setQuizDraft(""); setRedoDraft(""); setRedoResult(null); setFlashIdx(0); setFlashRevealed(false);
     setDevelopmentModules([]); setModuleProgress([]); setPendingReportSave(null); setPendingModuleSave(null);
-    setAppView(null); setAppForm(null);
+    setAppView(null); setAppForm(null); setGenProgress(null);
     // Phase 7: same ownership-hygiene reasoning — a signed-out session must never leave a
     // previous user's pasted invitation email (which may contain personal information — §17)
     // sitting in memory.
@@ -3065,6 +3113,38 @@ Rules: mini study guide, not an essay. core_knowledge 3-5 points, key_points 3-5
     setQuizIdx(0); setQuizDraft(""); setQuizResults([]); setRedoDraft(""); setRedoResult(null); setError("");
 
     // COST INVARIANT (Phase 15A): a persisted module is reused — ZERO AI calls.
+    // Phase 16B FAST PATH: loadFullUserState already prefetched every
+    // development_modules + development_module_progress row for this user into
+    // React state, and a module's content is immutable once generated. So when
+    // the row is already in `developmentModules`, render straight from state —
+    // no dbGetDevelopmentModule, no dbGetModuleProgress, no blocking await, no
+    // loading screen. Reopening an existing module becomes instant.
+    const cachedRow = developmentModules.find((m) => m.topic_id === topic.id);
+    if (cachedRow) {
+      const mod = hydrateDevModuleRow(cachedRow);
+      setDevModule(mod);
+      const stateProg = moduleProgress.find((p) => p.module_id === cachedRow.id) || null;
+      setDevProgress(stateProg);
+      setQuizOrder([...Array(mod.learning_items.length).keys()]);
+      setScreen("dev_module");
+      // Only when state holds NO progress record for this module do we confirm
+      // against the DB — covers progress made on another device/tab since login.
+      // Non-blocking: the screen is already up. FILL-IN ONLY — if the user has
+      // already interacted (a progress write set devProgress in the meantime),
+      // that value wins and this stale read is dropped, so it can never regress
+      // real progress.
+      if (!stateProg) {
+        dbGetModuleProgress(cachedRow.id, user.id).then((fresh) => {
+          if (!fresh) return;
+          setDevProgress((cur) => cur || fresh);
+          setModuleProgress((prev) => (prev.some((p) => p.module_id === fresh.module_id) ? prev : [...prev, fresh]));
+        }).catch(() => {});
+      }
+      return;
+    }
+
+    // Not in state: a legacy session from before the Phase 15A prefetch, or a
+    // module created on another device this session. Direct read (still 0 AI).
     const existing = await dbGetDevelopmentModule(topic.id);
     if (existing) {
       const mod = hydrateDevModuleRow(existing);
@@ -3079,6 +3159,12 @@ Rules: mini study guide, not an essay. core_knowledge 3-5 points, key_points 3-5
     }
 
     devGenRef.current = true;
+    setGenProgress({
+      title: "Building your learning material",
+      subtitle: topic.topic || "",
+      steps: ["Creating your personalised material", "Getting your practice ready"],
+      stage: 0,
+    });
     setScreen("dev_module_generating");
     try {
       const dimension = devDimensionForCategory(topic.category);
@@ -3117,6 +3203,7 @@ Rules: EXACTLY 4 learning_items, each ONE atomic idea — do not exceed 4. Keep 
       const raw = await callClaude(system, userText, 6000, false, { requestType: "development_module", applicationId: topic.applicationId, interviewId: topic.lastInterviewId || null });
       const validated = validateDevelopmentModule(raw);
       if (!validated.learning_items.length) throw new Error("The learning module came back incomplete. Please try again.");
+      bumpGenStage(1); // material generated & validated — now persisting + preparing practice
 
       const moduleFields = {
         dimension,
@@ -3145,12 +3232,16 @@ Rules: EXACTLY 4 learning_items, each ONE atomic idea — do not exceed 4. Keep 
       setPendingModuleSave(null);
       const mod = hydrateDevModuleRow(saved);
       setDevModule(mod);
-      setDevProgress(await dbGetModuleProgress(saved.id, user.id));
+      // Phase 16B: a module that was just created has no progress row — this was
+      // an always-null DB round-trip on the critical path. Start clean instead.
+      setDevProgress(null);
       setDevelopmentModules((prev) => [...prev.filter((m) => m.topic_id !== topic.id), saved]);
       setQuizOrder([...Array(mod.learning_items.length).keys()]);
+      setGenProgress(null);
       setScreen("dev_module");
     } catch (e) {
       setError(e.message || "Couldn't build this development module.");
+      setGenProgress(null);
       setScreen("classroom");
     } finally {
       devGenRef.current = false;
@@ -3247,11 +3338,23 @@ Rules: EXACTLY 4 learning_items, each ONE atomic idea — do not exceed 4. Keep 
     const mod = hydrateDevModuleRow(saved);
     setDevModule(mod);
     setDevTopic((cur) => cur && cur.id === saved.topic_id ? cur : (classroom.find((t) => t.id === saved.topic_id) || cur));
-    setDevProgress(await dbGetModuleProgress(saved.id, user.id));
+    // Phase 16B: this is a persist-only retry of a module that just failed to
+    // save, so a progress row almost never exists yet. Trust state; only when it
+    // has nothing, confirm in the background (covers the duplicate-key race where
+    // dbInsertDevelopmentModule returned a row a previous attempt had persisted).
+    const stateProg = moduleProgress.find((p) => p.module_id === saved.id) || null;
+    setDevProgress(stateProg);
     setDevelopmentModules((prev) => [...prev.filter((m) => m.topic_id !== saved.topic_id), saved]);
     setQuizOrder([...Array(mod.learning_items.length).keys()]);
     setDevView("hub");
     setScreen("dev_module");
+    if (!stateProg) {
+      dbGetModuleProgress(saved.id, user.id).then((fresh) => {
+        if (!fresh) return;
+        setDevProgress((cur) => cur || fresh);
+        setModuleProgress((prev) => (prev.some((p) => p.module_id === fresh.module_id) ? prev : [...prev, fresh]));
+      }).catch(() => {});
+    }
   }
 
   // BUG FIX (stale state): neither this function nor startCreateFlow below ever cleared
@@ -3399,10 +3502,17 @@ Rules: EXACTLY 4 learning_items, each ONE atomic idea — do not exceed 4. Keep 
     const cleanCompany = sanitizeText(app.company);
     const cleanRole = sanitizeText(app.role);
     const cleanJd = sanitizeText(app.jobDescription || "");
+    setGenProgress({
+      title: "Personalising your preparation",
+      subtitle: [cleanCompany, cleanRole].filter(Boolean).join(" · "),
+      steps: ["Analysing the role and requirements", "Saving your personalised preparation"],
+      stage: 0,
+    });
     setScreen("application_analyzing");
     try {
       const userText = `This candidate is preparing for an interview. Analyse the application to identify what they should prepare for. There is no CV and no live interview transcript — populate candidate_profile as best you can from the role (it may be sparse) and focus on interview_profile + application_intelligence.\n\nCompany: ${cleanCompany}\nRole: ${cleanRole}\nInterview stage: ${app.stageLabel || "not specified yet"}\n\n${cleanJd ? `Job description / application context:\n${cleanJd}` : "Job description: none provided. Rely on general knowledge of this role type; keep application_intelligence company context weak."}\n\nCandidate CV:\nnone provided.`;
       const result = validateProfile(await callClaude(INTERVIEW_PROFILE_SYSTEM, userText, 3000, false, { requestType: "interview_profile", applicationId: app.id }));
+      bumpGenStage(1);
       const jdProfile = buildJdProfile(result.interview_profile.jd_requirements, cleanJd);
       let applicationIntelligence = null;
       try {
@@ -3411,31 +3521,41 @@ Rules: EXACTLY 4 learning_items, each ONE atomic idea — do not exceed 4. Keep 
           interviewProfile: result.interview_profile, aiBlock: result.application_intelligence, invitationDraft: null,
         });
       } catch (e) { console.error("application intelligence build failed:", e.message); }
+      // Phase 16B: the best-effort claim seed hits a DIFFERENT table (candidate_claims)
+      // and only needs app.id — start it now so it overlaps the required
+      // application-row write below instead of adding its own serial round-trip.
+      // The wrapper never rejects; setCandidateClaims uses a functional update.
+      const claimsSeed = (async () => {
+        try {
+          const newClaims = dedupeNewClaims(candidateClaims, result.candidate_profile.potential_probe_areas);
+          if (newClaims.length) {
+            const inserted = await dbInsertClaims(user.id, app.id, null, newClaims);
+            if (inserted.length) setCandidateClaims((cur) => [...cur, ...inserted]);
+          }
+        } catch (e) { /* best-effort — intelligence still persists independently */ }
+      })();
       const upd = await dbUpdateApplication(app.id, {
         job_description: cleanJd, jd_profile: jdProfile, jd_profile_hash: hashText(cleanJd),
         application_intelligence: applicationIntelligence,
         status: app.status === "draft" ? "active" : app.status,
       });
       if (!upd || upd.ok === false) {
+        await claimsSeed;
         setError("The analysis ran but couldn't be saved. Please try again — you won't be re-charged if it's already stored.");
+        setGenProgress(null);
         setScreen("application");
         return;
       }
       setApplications((prev) => prev.map((a) => (a.id === app.id
         ? { ...a, jobDescription: cleanJd, applicationIntelligence, status: a.status === "draft" ? "active" : a.status }
         : a)));
-      // best-effort: seed CV probe claims the SAME way analyseAndPlan does (no new AI call)
-      try {
-        const newClaims = dedupeNewClaims(candidateClaims, result.candidate_profile.potential_probe_areas);
-        if (newClaims.length) {
-          const inserted = await dbInsertClaims(user.id, app.id, null, newClaims);
-          if (inserted.length) setCandidateClaims([...candidateClaims, ...inserted]);
-        }
-      } catch (e) { /* best-effort — intelligence already persisted */ }
+      await claimsSeed;
       setAppView(app.id);
+      setGenProgress(null);
       setScreen("application");
     } catch (e) {
       setError(e.message || "Couldn't analyse this application. Please try again.");
+      setGenProgress(null);
       setScreen("application");
     }
   }
@@ -3565,11 +3685,23 @@ Rules: EXACTLY 4 learning_items, each ONE atomic idea — do not exceed 4. Keep 
 
   /* ---------------- STEP 1: JD + CV ANALYSIS -> PROFILE ---------------- */
   async function analyseAndPlan() {
-    setError(""); setScreen("analyzing");
+    setError("");
     const cleanCompany = sanitizeText(company);
     const cleanRole = sanitizeText(role);
     const cleanJd = sanitizeText(jdText);
     const cleanCv = sanitizeText(cvText);
+    // Phase 16B: immediate, honest staged feedback (no timer). Steps are the
+    // real awaited milestones; the batch pipeline has one extra generation step.
+    const batchPipeline = resolveInterviewConfig(interviewStage, interviewFormat).pipeline === "independent_batch";
+    setGenProgress({
+      title: "Preparing your interview",
+      subtitle: [cleanCompany, cleanRole].filter(Boolean).join(" · "),
+      steps: batchPipeline
+        ? ["Creating your personalised questions", "Preparing every question", "Finalising your interview"]
+        : ["Creating your personalised questions", "Finalising your interview"],
+      stage: 0,
+    });
+    setScreen("analyzing");
     // Phase 4A: resolve the chosen stage (+ optional format override) into a concrete config.
     // This is persisted below and is what Phase 4B's independent/batch engine will branch on;
     // in 4A it is NOT yet used to change question-generation or evaluation behaviour — every
@@ -3670,19 +3802,30 @@ Rules: EXACTLY 4 learning_items, each ONE atomic idea — do not exceed 4. Keep 
         result.opening_question.category = clampedOpeningCategory;
       }
 
-      // REQUIRED write: this row now carries the analysed JD profile + Application
-      // Intelligence that this interview AND the Classroom read back later. If it
-      // fails (schema mismatch, RLS, transient), stop here — do not proceed to
-      // build an interview on analysis that was never persisted. analyseAndPlan's
-      // catch surfaces the message and returns the user to setup.
-      // application_intelligence is an additive JSONB column (see
-      // supabase/migrations/20260828120000_baseline_schema.sql); readers still
-      // treat null as "not analysed yet", so a legacy row remains safe to load.
-      const appUpdate = await dbUpdateApplication(applicationId, {
-        job_description: cleanJd, interview_stage: stageLabel, interview_type: formatLabel, interview_length: length, status: "active",
-        jd_profile: jdProfile, jd_profile_hash: hashText(cleanJd),
-        application_intelligence: applicationIntelligence,
-      });
+      // Phase 16B: mark the first real milestone done — the interview_profile
+      // call above has returned and been validated.
+      bumpGenStage(1);
+
+      // Phase 16B: these two writes touch DIFFERENT tables with independent data —
+      // the `applications` row (analysed JD profile + Application Intelligence that
+      // this interview AND the Classroom read back later) and a NEW `interviews`
+      // row (only needs applicationId, which already exists). Neither reads the
+      // other's result, so they run concurrently instead of as two serial
+      // round-trips. dbUpdateApplication stays a REQUIRED write: if it fails
+      // (schema/RLS/transient) we still throw and return the user to setup with a
+      // visible error — the only cost of parallelising is that a rare app-update
+      // failure leaves an unreferenced `interviews` row that loadFullUserState
+      // never surfaces (it loads only status = "completed"). dbCreateInterview
+      // throws on its own failure. application_intelligence is an additive JSONB
+      // column; readers treat null as "not analysed yet", so a legacy row stays safe.
+      const [appUpdate, ivRow] = await Promise.all([
+        dbUpdateApplication(applicationId, {
+          job_description: cleanJd, interview_stage: stageLabel, interview_type: formatLabel, interview_length: length, status: "active",
+          jd_profile: jdProfile, jd_profile_hash: hashText(cleanJd),
+          application_intelligence: applicationIntelligence,
+        }),
+        dbCreateInterview(user.id, applicationId, ivConfig, methodologyDistribution),
+      ]);
       if (!appUpdate || !appUpdate.ok) {
         throw new Error("Couldn't save the analysed role details. Please try again.");
       }
@@ -3690,20 +3833,27 @@ Rules: EXACTLY 4 learning_items, each ONE atomic idea — do not exceed 4. Keep 
       // state so this application's card reflects "active" + its stage/JD immediately, without
       // waiting for a reload — same rationale as confirmCompanyRole's own update above.
       setApplications((prev) => prev.map((a) => (a.id === applicationId ? { ...a, status: "active", jobDescription: cleanJd, stageLabel, formatLabel, applicationIntelligence } : a)));
-      const ivRow = await dbCreateInterview(user.id, applicationId, ivConfig, methodologyDistribution);
 
       // Phase 2D: seed newly-extracted CV claims into persistent candidate_claims — reuses
       // potential_probe_areas the interview_profile call above ALREADY produced, no new AI
       // call. Deduped against every claim this candidate already has, across every past
-      // application/interview (cross-interview persistence, not scoped to this application).
-      // Never fatal: Candidate Intelligence must never block an interview from starting.
-      try {
-        const newClaims = dedupeNewClaims(candidateClaims, result.candidate_profile.potential_probe_areas);
-        if (newClaims.length && user) {
-          const inserted = await dbInsertClaims(user.id, applicationId, ivRow.id, newClaims);
-          if (inserted.length) setCandidateClaims([...candidateClaims, ...inserted]);
-        }
-      } catch (ciErr) { console.error("candidate intelligence claim seeding failed:", ciErr.message); }
+      // application/interview. Never fatal: Candidate Intelligence must never block an
+      // interview from starting.
+      // Phase 16B: kicked off here as a non-blocking promise so it overlaps the
+      // REQUIRED opening-question insert (adaptive) / batch generation+insert
+      // (batch) below, instead of adding its own serial round-trip. The wrapper
+      // never rejects (best-effort), and setCandidateClaims uses a functional
+      // update so it can't clobber concurrent state. Awaited before the screen
+      // switches so nothing races the "preview" render.
+      const claimsSeed = (async () => {
+        try {
+          const newClaims = dedupeNewClaims(candidateClaims, result.candidate_profile.potential_probe_areas);
+          if (newClaims.length && user) {
+            const inserted = await dbInsertClaims(user.id, applicationId, ivRow.id, newClaims);
+            if (inserted.length) setCandidateClaims((cur) => [...cur, ...inserted]);
+          }
+        } catch (ciErr) { console.error("candidate intelligence claim seeding failed:", ciErr.message); }
+      })();
 
       // Phase 2D: for the adaptive (live, turn-by-turn) pipeline only, widen this interview's
       // probe-area pool with persistent, cross-interview unresolved claims — the SAME
@@ -3737,6 +3887,7 @@ Rules: EXACTLY 4 learning_items, each ONE atomic idea — do not exceed 4. Keep 
         const batchDistribution = applyQuestionMixToDistribution(methodologyDistribution, ivConfig.question_mix);
         const batch = await generateQuestionBatch(ivConfig, result.interview_profile, cvBackground, cleanJd, weaknessNote, { applicationId, interviewId: ivRow.id }, batchDistribution);
         if (!batch.questions.length) throw new Error("Couldn't generate the interview questions. Please try again.");
+        bumpGenStage(2); // batch generated — now persisting
         const savedRows = await dbInsertQuestionBatch(ivRow.id, batch.questions, { prepSeconds: ivConfig.preparation_time, answerSeconds: ivConfig.answer_time });
         const questions = savedRows.map((row, i) => ({
           dbId: row.id, questionNumber: row.question_number, text: row.question_text, category: row.category, competency: row.competency,
@@ -3750,7 +3901,9 @@ Rules: EXACTLY 4 learning_items, each ONE atomic idea — do not exceed 4. Keep 
           id: ivRow.id, applicationId, company: cleanCompany, role: cleanRole, stage: ivConfig.stage, format: ivConfig.format, stageLabel, formatLabel, startedAt: Date.now(),
           config: ivConfig, cvBackground, questions, currentIndex: 0, answers: [], status: "planned",
         };
+        await claimsSeed; // settle the overlapped best-effort seed (never rejects)
         setInterview(newInterview);
+        setGenProgress(null);
         setScreen("preview");
         return;
       }
@@ -3773,10 +3926,13 @@ Rules: EXACTLY 4 learning_items, each ONE atomic idea — do not exceed 4. Keep 
         // regenerateNextQuestion. null on a fresh interview.
         pendingRecovery: null,
       };
+      await claimsSeed; // settle the overlapped best-effort seed (never rejects)
       setInterview(newInterview);
+      setGenProgress(null);
       setScreen("preview");
     } catch (e) {
       setError(e.message || "Something went wrong analysing this role.");
+      setGenProgress(null);
       setScreen("create");
     }
   }
@@ -5030,7 +5186,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
        * ================================================================== */}
 
       {/* State: mid-analysis loader (explicit user action only) */}
-      {screen === "application_analyzing" && <LoadingScreen messages={["Reading the role and requirements...", "Identifying what to prepare for...", "Mapping the company and role themes...", "Personalising your preparation..."]} />}
+      {screen === "application_analyzing" && <LoadingScreen progress={genProgress} messages={["Reading the role and requirements...", "Identifying what to prepare for...", "Mapping the company and role themes...", "Personalising your preparation..."]} />}
 
       {/* ---------------- APPLICATIONS LIST ---------------- */}
       {screen === "applications" && user && (
@@ -5821,7 +5977,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
         );
       })()}
 
-      {screen === "analyzing" && <LoadingScreen messages={["Reading the job description...", "Mapping required competencies...", "Reviewing your CV...", "Finding claims worth probing...", "Building your interview..."]} />}
+      {screen === "analyzing" && <LoadingScreen progress={genProgress} messages={["Reading the job description...", "Mapping required competencies...", "Reviewing your CV...", "Finding claims worth probing...", "Building your interview..."]} />}
 
       {/* ---------------- PREVIEW ---------------- */}
       {screen === "preview" && profile && (
@@ -6449,7 +6605,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
 
       {screen === "classroom_generating" && <LoadingScreen messages={["Reviewing what went wrong...", "Checking the facts you'll need...", "Building your lesson...", "Writing a quick check..."]} />}
 
-      {screen === "dev_module_generating" && <LoadingScreen messages={["Reviewing the diagnosis...", "Building your learning guide...", "Writing flashcards...", "Preparing a written quiz..."]} />}
+      {screen === "dev_module_generating" && <LoadingScreen progress={genProgress} messages={["Reviewing the diagnosis...", "Building your learning guide...", "Writing flashcards...", "Preparing a written quiz..."]} />}
 
       {/* ---------------- PHASE 14: DEVELOPMENT MODULE ---------------- */}
       {screen === "dev_module" && devModule && devTopic && (() => {

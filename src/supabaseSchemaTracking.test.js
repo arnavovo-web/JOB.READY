@@ -119,8 +119,10 @@ describe("baseline migration covers every client-referenced table + the ad-hoc c
   });
 
   it("every field analyseAndPlan writes to `applications` exists as a column in the baseline", () => {
-    // pull the object literal passed to the REQUIRED (checked) dbUpdateApplication call
-    const call = APP_SRC.match(/const appUpdate = await dbUpdateApplication\(applicationId,\s*\{([\s\S]*?)\}\);/);
+    // pull the object literal passed to the REQUIRED (checked) dbUpdateApplication call.
+    // Phase 16B parallelised this write with dbCreateInterview via Promise.all — anchor on
+    // that so the best-effort company/role rename call (same arg name) is never picked up.
+    const call = APP_SRC.match(/Promise\.all\(\[\s*\n?\s*dbUpdateApplication\(applicationId,\s*\{([\s\S]*?)\}\),/);
     expect(call).toBeTruthy();
     const keys = [...call[1].matchAll(/(\w+):/g)].map((m) => m[1]);
     expect(keys).toContain("application_intelligence");
@@ -155,10 +157,12 @@ describe("dbUpdateApplication — required persistence failure is visible", () =
 
   it("analyseAndPlan checks the result and aborts loudly when the analysed-role write fails", () => {
     const ap = APP_SRC.slice(APP_SRC.indexOf("ivConfig.question_mix = questionMixSelected"), APP_SRC.indexOf("function beginInterview()"));
-    expect(ap).toMatch(/const appUpdate = await dbUpdateApplication\(applicationId,/);
+    // Phase 16B: dbUpdateApplication is now parallelised with dbCreateInterview
+    // (independent tables) via Promise.all — its RESULT is still captured and checked.
+    expect(ap).toMatch(/const \[appUpdate, ivRow\] = await Promise\.all\(\[\s*\n?\s*dbUpdateApplication\(applicationId,/);
     expect(ap).toMatch(/if \(!appUpdate \|\| !appUpdate\.ok\)\s*\{\s*\n?\s*throw new Error\(/);
     // the checked write is the one carrying jd_profile + application_intelligence
-    expect(ap).toMatch(/jd_profile: jdProfile[\s\S]{0,200}application_intelligence: applicationIntelligence[\s\S]{0,200}if \(!appUpdate/);
+    expect(ap).toMatch(/jd_profile: jdProfile[\s\S]{0,300}application_intelligence: applicationIntelligence[\s\S]{0,300}if \(!appUpdate/);
   });
 
   it("the two best-effort callers (company/role rename) still ignore the result — no throw introduced there", () => {
