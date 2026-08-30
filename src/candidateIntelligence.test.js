@@ -236,18 +236,22 @@ describe("buildUnresolvedClaims / buildRecommendedProbes", () => {
 
 describe("mergeProbeAreasForInterview — the 2C integration point", () => {
   it("merges fresh CV claims with recommended persistent probes, deduped", () => {
-    const fresh = [{ claim: "Built an automated valuation model", why: "cv" }];
+    const fresh = [{ claim: "Built an automated valuation model", why: "cv", source: "cv", evidence_quote: "built an automated valuation model" }];
     const recommended = [{ claim: "Led a team of 10", why: "unresolved", category: "behavioural_competency", claimId: "c1" }];
     const merged = mergeProbeAreasForInterview(fresh, recommended);
     expect(merged).toEqual([
-      { claim: "Built an automated valuation model", why: "cv" },
-      { claim: "Led a team of 10", why: "unresolved" },
+      // Phase 21: provenance is carried through; a fresh CV probe keeps its source
+      { claim: "Built an automated valuation model", why: "cv", source: "cv", evidence_quote: "built an automated valuation model" },
+      // a recommended probe from a past interview carries no provenance -> unverified
+      { claim: "Led a team of 10", why: "unresolved", source: "unverified", evidence_quote: "" },
     ]);
   });
 
-  it("output is strictly {claim, why} — never leaks category/claimId or any scheduler-owned field", () => {
+  it("output is strictly {claim, why, source, evidence_quote} — never leaks category/claimId or any scheduler-owned field", () => {
     const merged = mergeProbeAreasForInterview([], [{ claim: "x claim here", why: "y", category: "motivation_fit", claimId: "c1" }]);
-    expect(Object.keys(merged[0]).sort()).toEqual(["claim", "why"]);
+    expect(Object.keys(merged[0]).sort()).toEqual(["claim", "evidence_quote", "source", "why"]);
+    expect(merged[0]).not.toHaveProperty("category");
+    expect(merged[0]).not.toHaveProperty("claimId");
   });
 
   it("drops duplicates between fresh and recommended (same underlying claim from two sources)", () => {

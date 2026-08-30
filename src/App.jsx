@@ -46,6 +46,10 @@ import {
   buildApplicationIntelligence, validateApplicationIntelligence, applicationIntelligenceLessonContext,
   classroomRecommendationGroups, experiencesToExplore,
   hashApplicationSources, applicationIntelligenceIsStale,
+  // Phase 21: deterministic CV-provenance layer — normalise a candidate_profile
+  // (legacy or new), verify evidence_quotes verbatim against the real CV, and
+  // downgrade anything unproven to "unverified" so the UI never mis-attributes.
+  normaliseCandidateProfile, verifyCvEvidence,
 } from "./applicationIntelligence";
 // Phase 2C.3: the live adaptive interview's deterministic scheduler wiring.
 // submitAnswer/regenerateNextQuestion never compute a category, turn type,
@@ -58,7 +62,7 @@ import { runSimulatedAdaptiveTurn, stampQuestionFromDecision } from "./adaptiveE
 // category, turn type, or anchor source itself (those stay the scheduler's, above).
 import {
   dedupeNewClaims, buildCandidateSignals, isCandidateIntelligenceUsable,
-  mergeProbeAreasForInterview, matchClaimIdForProbeArea,
+  mergeProbeAreasForInterview, matchClaimIdForProbeArea, CLAIM_SOURCES,
 } from "./candidateIntelligence";
 // Phase 2E: candidate strategy — turns Candidate Intelligence (2D, above) into a compact,
 // deterministic priority signal (categoryPreference) methodology.js's scheduler may use as a
@@ -84,7 +88,7 @@ import { resolveKnowledgeDomain, buildKnowledgeGuidance, findConceptsByText } fr
 // Phase 14: deterministic written-quiz marking for Development Modules. Pure,
 // offline, no AI — marks a free-response answer by concept coverage against the
 // machine-readable expected_concepts the ONE module-generation call produced.
-import { markWrittenQuiz, coverageVerdict } from "./writtenQuiz";
+import { markWrittenQuiz, coverageVerdict, normaliseConcept } from "./writtenQuiz";
 // Phase 15A: pure returning-user helpers — application-scoped topic identity,
 // deterministic "Continue preparing" pick, and the concept union a redo answer
 // is marked against. No AI, no DB, no React.
@@ -351,7 +355,8 @@ const INTERVIEW_PROFILE_SYSTEM = `You are an expert interview coach and recruite
   "candidate_profile": {
     "education": [""], "experience": [""], "leadership": [""], "achievements": [""],
     "skills": [""], "behavioural_examples": [""],
-    "potential_probe_areas": [{"claim": "", "why": ""}]
+    "cv_evidence": [{"text": "", "source": "cv|jd|inferred", "evidence_quote": ""}],
+    "potential_probe_areas": [{"claim": "", "why": "", "source": "cv|jd|inferred", "evidence_quote": ""}]
   },
   "application_intelligence": {
     "company_themes": [{"theme": "", "evidence": ""}],
@@ -361,7 +366,8 @@ const INTERVIEW_PROFILE_SYSTEM = `You are an expert interview coach and recruite
   },
   "opening_question": { "text": "", "category": "motivation_fit|cv_behavioural|role_specific|technical|commercial_awareness", "competency": "" }
 }
-Rules: "basis" must honestly mark whether each competency is explicitly stated in the JD, reasonably inferred, or just generally expected for this role type. question_mix percentages sum to 100 and reflect the actual role type. potential_probe_areas should point at specific claims worth challenging. opening_question must be natural and specific, not generic. jd_requirements should list distinct requirements actually evidenced in the job description — "evidence_quote" must be an exact short quote copied verbatim from the job description text (not a paraphrase or summary), "confidence" follows the same explicit/inferred/general distinction as competencies' basis, and "occurrences" is how many times this requirement (or a clear restatement of it) appears in the job description text.
+Rules: "basis" must honestly mark whether each competency is explicitly stated in the JD, reasonably inferred, or just generally expected for this role type. question_mix percentages sum to 100 and reflect the actual role type. potential_probe_areas should point at specific claims worth challenging. opening_question must be natural and specific, not generic.
+CANDIDATE PROFILE PROVENANCE (strict): the six list fields (education, experience, leadership, achievements, skills, behavioural_examples) stay plain strings. For "cv_evidence" and for each "potential_probe_areas" entry, set "source" to where the statement genuinely comes from — "cv" only if it is actually present in the supplied CV text, "jd" if it comes from the job description, "inferred" if it is your reasonable inference from the role. When "source" is "cv", "evidence_quote" MUST be a short exact substring copied verbatim from the supplied CV text — never a paraphrase, summary or inference. If you cannot copy an exact CV quote, do not use "source": "cv". If NO CV text was supplied, never use "source": "cv" for anything and leave "cv_evidence" as []. jd_requirements should list distinct requirements actually evidenced in the job description — "evidence_quote" must be an exact short quote copied verbatim from the job description text (not a paraphrase or summary), "confidence" follows the same explicit/inferred/general distinction as competencies' basis, and "occurrences" is how many times this requirement (or a clear restatement of it) appears in the job description text.
 "application_intelligence" captures what THIS specific application appears to prioritise, using ONLY the company/role/job-description-and-application-context/invitation material provided above — never outside knowledge, never assumed company values. "company_themes" = themes, culture, values or programme characteristics the material EXPLICITLY states about this company; each "evidence" MUST be an exact verbatim quote from the provided text. If the material gives nothing company-specific beyond the name, return "company_themes": [] and "company_context_strength": "weak" — do NOT invent plausible-sounding values. "role_themes" = what the role itself is about (responsibilities, focus areas) with verbatim "evidence" where possible. "*_context_strength" is your honest read of how much genuine company-/role-specific detail the material contains.`;
 
 // Exported (like validateQuestionBatch) so it's directly unit-testable —
@@ -400,12 +406,13 @@ export function validateProfile(p) {
         occurrences: num(r?.occurrences, 1, 1, 50),
       })).filter((r) => r.requirement && r.evidence_quote),
     },
-    candidate_profile: {
-      education: arr(cp.education).map((s) => str(s)), experience: arr(cp.experience).map((s) => str(s)),
-      leadership: arr(cp.leadership).map((s) => str(s)), achievements: arr(cp.achievements).map((s) => str(s)),
-      skills: arr(cp.skills).map((s) => str(s)), behavioural_examples: arr(cp.behavioural_examples).map((s) => str(s)),
-      potential_probe_areas: arr(cp.potential_probe_areas).map((a) => ({ claim: str(a?.claim), why: str(a?.why) })).filter((a) => a.claim),
-    },
+    // Phase 21: single normalisation chokepoint for candidate_profile. The six
+    // list fields stay string[] (unchanged wire contract); the additive
+    // cv_evidence list and per-probe { source, evidence_quote } carry provenance,
+    // defaulting to "unverified" for any legacy / unknown value. Verbatim CV
+    // verification happens later, in analyseAndPlan, where the real CV text is
+    // in hand (validateProfile has no CV to check against).
+    candidate_profile: normaliseCandidateProfile(cp),
     opening_question: {
       text: str(p.opening_question?.text, "Tell me about yourself and why you're interested in this role."),
       category: mapLegacyCategory(str(p.opening_question?.category, "motivation_fit")), competency: str(p.opening_question?.competency),
@@ -1076,10 +1083,25 @@ export function validateDevelopmentModule(m) {
     quiz_question: str(it?.quiz_question),
     model_answer: str(it?.model_answer),
     review: str(it?.review),
-    expected_concepts: arr(it?.expected_concepts).map((c) => ({
-      label: str(c?.label).slice(0, 120),
-      accepted_terms: arr(c?.accepted_terms).map((t) => str(t)).filter(Boolean).slice(0, 8),
-    })).filter((c) => c.label).slice(0, 6),
+    // Phase 21: richer concept shape (aliases / definition / required /
+    // accepted_phrasings) drives more tolerant DETERMINISTIC marking. Legacy
+    // { label, accepted_terms } is still accepted unchanged — normaliseConcept
+    // coerces both and defaults `required` to true, so pre-Phase-21 modules
+    // grade exactly as before. Every persisted concept keeps BOTH the legacy
+    // `label` key and the new `concept` key for forward/backward consumers.
+    expected_concepts: arr(it?.expected_concepts).map((c) => {
+      const nc = normaliseConcept(c);
+      if (!nc) return null;
+      return {
+        label: nc.label.slice(0, 120),
+        concept: nc.concept.slice(0, 120),
+        accepted_terms: nc.accepted_terms.slice(0, 8),
+        accepted_phrasings: nc.accepted_phrasings.slice(0, 8),
+        aliases: nc.aliases.slice(0, 8),
+        definition: nc.definition,
+        required: nc.required,
+      };
+    }).filter(Boolean).slice(0, 6),
   })).filter((it) => it.concept && it.flashcard_front && it.flashcard_back && it.quiz_question && it.expected_concepts.length);
   return {
     topic: str(m.topic, "Development area"),
@@ -1516,10 +1538,22 @@ async function dbUpsertCandidateDna(userId, { strengths, weaknesses, style_notes
 // Intelligence is an enhancement, not a hard dependency — see the module's own docstring).
 async function dbInsertClaims(userId, applicationId, originInterviewId, newClaims) {
   const supabase = await getSupabase();
-  const rows = newClaims.map((c) => ({
-    user_id: userId, application_id: applicationId || null, origin_interview_id: originInterviewId || null,
-    claim_text: c.claim, source: "cv",
-  }));
+  // Phase 21: persist the ACTUAL provenance, not a blanket "cv". `source` honours
+  // the existing candidate_claims CHECK (cv | interview | candidate_input) —
+  // callers pass only CV-verified probe areas today, so the default stays "cv",
+  // but a non-cv `c.source` is respected. The verbatim CV excerpt is stored in
+  // the existing `evidence` jsonb column so the UI can prove a "Your CV mentions"
+  // attribution without re-deriving it. No schema change.
+  const rows = newClaims.map((c) => {
+    const source = CLAIM_SOURCES.includes(c.source) ? c.source : "cv";
+    const quote = str(c.evidence_quote).trim();
+    const evidence = source === "cv" && quote ? [{ type: "cv_quote", quote, verified: true }] : [];
+    return {
+      user_id: userId, application_id: applicationId || null, origin_interview_id: originInterviewId || null,
+      claim_text: c.claim, source,
+      evidence, evidence_count: evidence.length,
+    };
+  });
   const { data, error } = await supabase.from("candidate_claims").insert(rows).select();
   if (error) { console.error("candidate_claims insert failed:", error.message); return []; }
   return data || [];
@@ -2244,15 +2278,20 @@ function ReportBody({ report, company, role, badge, stageLabel, formatLabel, cla
       {claimsTested.length > 0 && (
         <Card style={{ padding: 20, marginBottom: 20, borderLeft: "4px solid var(--violet)" }}>
           <div className="flex items-center gap-2 mb-3"><Target size={16} color="var(--violet)" /><div style={{ fontSize: 14.5, fontWeight: 700, color: "var(--navy)" }}>Claims explored this interview</div></div>
-          <div style={{ fontSize: 12.5, color: "var(--text-dim)", marginBottom: 12 }}>Specific claims from your CV or a past interview that this interview tested directly.</div>
+          <div style={{ fontSize: 12.5, color: "var(--text-dim)", marginBottom: 12 }}>Specific claims this interview tested directly.</div>
           {claimsTested.map((c, i) => {
             const meta = claimStatusMeta(c.status);
+            // Phase 21: only label a claim as CV-derived when its persisted source
+            // is genuinely "cv" AND it carries a verified verbatim CV excerpt.
+            const cvQuote = c.source === "cv" && arr(c.evidence).find((e) => e && e.type === "cv_quote" && e.verified && str(e.quote).trim());
+            const originLabel = cvQuote ? "From your CV" : c.source === "interview" ? "From a past interview" : "";
             return (
               <div key={c.id} style={{ padding: "10px 0", borderBottom: i < claimsTested.length - 1 ? "1px solid var(--border)" : "none" }}>
                 <div className="flex justify-between items-start gap-3">
                   <div style={{ fontSize: 13.5, color: "var(--navy)", fontStyle: "italic", flex: 1 }}>"{c.claim_text}"</div>
                   <Pill color={meta.color} bg={meta.bg}>{meta.label}</Pill>
                 </div>
+                {originLabel && <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 3 }}>{originLabel}</div>}
               </div>
             );
           })}
@@ -3240,10 +3279,17 @@ Rules: mini study guide, not an essay. core_knowledge 3-5 points, key_points 3-5
     { "concept": "", "explanation": "",
       "flashcard_front": "", "flashcard_back": "",
       "quiz_question": "", "model_answer": "", "review": "",
-      "expected_concepts": [ { "label": "", "accepted_terms": ["",""] } ] }
+      "expected_concepts": [ { "concept": "", "accepted_terms": ["",""], "aliases": ["",""], "definition": "", "required": true } ] }
   ]
 }
-Rules: EXACTLY 4 learning_items, each ONE atomic idea — do not exceed 4. Keep it tight: "explanation" 2-3 sentences, "flashcard_back" 1-2 sentences, "model_answer" 3-4 sentences, "review" 2-3 sentences. flashcard_front is a short question. quiz_question is open / free-response — NEVER multiple choice. expected_concepts: 2-3 atomic ideas a correct written answer MUST express; "label" is a 2-5 word noun phrase; "accepted_terms" are 2-3 alternative phrasings a correct student might genuinely use (synonyms, common abbreviations) — these drive DETERMINISTIC marking, so be accurate, and never a bare generic word. "review" is the model knowledge to show after marking. learning_guide.frameworks/examples/common_mistakes: at most 3 short bullets each. why_it_matters: ${demonstrated ? "the candidate answered a real interview question on this and it came out weak or unclear — say that plainly and specifically." : "this is an AREA TO PREPARE for this application; it is NOT a demonstrated weakness — say exactly that."} ${weakCompanyContext ? "context_note: state plainly that JOB.READY has limited specific information about this company and role, so the guidance stays general; NEVER invent company facts, values or details." : "context_note: leave it an empty string unless a genuine data-limitation caveat is needed."} Do not use web search. Match depth to the candidate level given.`;
+Rules: EXACTLY 4 learning_items, each ONE atomic idea — do not exceed 4. Keep it tight: "explanation" 2-3 sentences, "flashcard_back" 1-2 sentences, "model_answer" 3-4 sentences, "review" 2-3 sentences. flashcard_front is a short question. quiz_question is open / free-response — NEVER multiple choice.
+expected_concepts: 2-4 atomic ideas per quiz answer. These drive DETERMINISTIC (non-AI) marking, so be precise and literal. For each concept:
+ - "concept": a 2-5 word noun phrase naming the idea (not a bare generic word like "value" or "process").
+ - "accepted_terms": 2-4 alternative WORDINGS a correct student might genuinely write for this same idea — true synonyms and standard phrasings only.
+ - "aliases": abbreviations / initialisms AND their expansions (e.g. "DCF" and "discounted cash flow"), plus UK/US spelling variants if relevant (e.g. "amortisation", "amortization"). Omit or leave [] if none apply.
+ - "definition": ONE plain-language sentence stating the idea in different words from "concept" — used as a tolerant fallback when the student paraphrases. Keep it concrete and specific to this idea.
+ - "required": true for a concept the answer MUST express to be complete; false for a supporting/optional concept that is good to mention but not essential. Mark 2-3 as required and any extras as optional.
+Never invent an alias that is not genuinely equivalent. "review" is the model knowledge to show after marking. learning_guide.frameworks/examples/common_mistakes: at most 3 short bullets each. why_it_matters: ${demonstrated ? "the candidate answered a real interview question on this and it came out weak or unclear — say that plainly and specifically." : "this is an AREA TO PREPARE for this application; it is NOT a demonstrated weakness — say exactly that."} ${weakCompanyContext ? "context_note: state plainly that JOB.READY has limited specific information about this company and role, so the guidance stays general; NEVER invent company facts, values or details." : "context_note: leave it an empty string unless a genuine data-limitation caveat is needed."} Do not use web search. Match depth to the candidate level given.`;
       const userText = `Development need: ${topic.topic}\nDimension: ${dimension}\nDiagnosis / description: ${topic.description || "n/a"}\nOriginal interview question: ${topic.relatedQuestion || "n/a"}\nCompany: ${topic.company || "n/a"}\nRole: ${topic.role || "n/a"}\nCandidate level: ${candidateLevel()}${knowledgeGrounding}${motivationGrounding}`;
 
       const raw = await callClaude(system, userText, 6000, false, { requestType: "development_module", applicationId: topic.applicationId, interviewId: topic.lastInterviewId || null });
@@ -3331,7 +3377,7 @@ Rules: EXACTLY 4 learning_items, each ONE atomic idea — do not exceed 4. Keep 
     const itemIdx = quizOrder[quizIdx];
     const item = devModule.learning_items[itemIdx];
     const mark = markWrittenQuiz(quizDraft, item?.expected_concepts || []); // pure, no AI
-    const nextResults = [...quizResults, { itemIdx, text: quizDraft, covered: mark.covered, missing: mark.missing, coverage: mark.coverage }];
+    const nextResults = [...quizResults, { itemIdx, text: quizDraft, covered: mark.covered, missing: mark.missing, coverage: mark.coverage, optionalCovered: mark.optionalCovered, optionalMissing: mark.optionalMissing }];
     setQuizResults(nextResults);
     setQuizDraft("");
     if (quizIdx + 1 < quizOrder.length) { setQuizIdx(quizIdx + 1); return; }
@@ -3358,7 +3404,7 @@ Rules: EXACTLY 4 learning_items, each ONE atomic idea — do not exceed 4. Keep 
     if (!devModule || !redoDraft.trim()) return;
     const concepts = redoConceptUnion(devModule);
     const mark = markWrittenQuiz(redoDraft, concepts); // pure, deterministic, NO AI
-    const entry = { answered_at: new Date().toISOString(), text: redoDraft.trim(), source_question: devModule.source_question || devTopic?.relatedQuestion || "", covered: mark.covered, missing: mark.missing, coverage: mark.coverage };
+    const entry = { answered_at: new Date().toISOString(), text: redoDraft.trim(), source_question: devModule.source_question || devTopic?.relatedQuestion || "", covered: mark.covered, missing: mark.missing, coverage: mark.coverage, optionalCovered: mark.optionalCovered, optionalMissing: mark.optionalMissing };
     setRedoResult(entry);
     if (devModule.id && user) {
       const prev = arr(devProgress?.retry_answers);
@@ -3566,6 +3612,11 @@ Rules: EXACTLY 4 learning_items, each ONE atomic idea — do not exceed 4. Keep 
     try {
       const userText = `This candidate is preparing for an interview. Analyse the application to identify what they should prepare for. There is no CV and no live interview transcript — populate candidate_profile as best you can from the role (it may be sparse) and focus on interview_profile + application_intelligence.\n\nCompany: ${cleanCompany}\nRole: ${cleanRole}\nInterview stage: ${app.stageLabel || "not specified yet"}\n\n${cleanJd ? `Job description / application context:\n${cleanJd}` : "Job description: none provided. Rely on general knowledge of this role type; keep application_intelligence company context weak."}\n\nCandidate CV:\nnone provided.`;
       const result = validateProfile(await callClaude(INTERVIEW_PROFILE_SYSTEM, userText, 6000, false, { requestType: "interview_profile", applicationId: app.id }));
+      // Phase 21: there is NO CV here. verifyCvEvidence against an empty CV
+      // downgrades every "cv"-sourced item the model may have produced to
+      // "unverified", so nothing from this CV-less analysis can be mis-attributed
+      // to the candidate's CV downstream (Classroom, preview, Candidate DNA).
+      result.candidate_profile = verifyCvEvidence(result.candidate_profile, "");
       bumpGenStage(1);
       const jdProfile = buildJdProfile(result.interview_profile.jd_requirements, cleanJd);
       let applicationIntelligence = null;
@@ -3581,7 +3632,12 @@ Rules: EXACTLY 4 learning_items, each ONE atomic idea — do not exceed 4. Keep 
       // The wrapper never rejects; setCandidateClaims uses a functional update.
       const claimsSeed = (async () => {
         try {
-          const newClaims = dedupeNewClaims(candidateClaims, result.candidate_profile.potential_probe_areas);
+          // Phase 21: only CV-verified probe areas are real candidate claims. With
+          // no CV supplied, this is always empty — a CV-less analysis seeds zero
+          // candidate_claims rather than inventing "cv"-sourced ones.
+          const cvVerifiedProbes = arr(result.candidate_profile.potential_probe_areas)
+            .filter((p) => p?.source === "cv" && p?.evidence_quote);
+          const newClaims = dedupeNewClaims(candidateClaims, cvVerifiedProbes);
           if (newClaims.length) {
             const inserted = await dbInsertClaims(user.id, app.id, null, newClaims);
             if (inserted.length) setCandidateClaims((cur) => [...cur, ...inserted]);
@@ -3938,6 +3994,12 @@ Rules: EXACTLY 4 learning_items, each ONE atomic idea — do not exceed 4. Keep 
         : "";
       const userText = `${weaknessNote}\n\nCompany: ${cleanCompany}\nRole: ${cleanRole}\nInterview stage: ${stageLabel}\nInterview format: ${formatLabel}${invitationContext}${questionMixNote}\n\n${jdBlock}\n\nCandidate CV:\n${cleanCv || "none provided."}`;
       const result = validateProfile(await callClaude(system, userText, 6000, false, { requestType: "interview_profile", applicationId }));
+      // Phase 21: verify every "cv"-sourced candidate_profile item's evidence_quote
+      // verbatim against the real CV text (validateProfile had no CV to check).
+      // Unverified items are downgraded to "unverified" so no downstream surface
+      // can mis-attribute them to the candidate's CV. With no CV, this strips any
+      // "cv" item the model may have invented.
+      result.candidate_profile = verifyCvEvidence(result.candidate_profile, cleanCv || "");
 
       // Phase 2B: build the structured jd_profile (evidence-quote-verified
       // subset of result.interview_profile.jd_requirements — see
@@ -4038,7 +4100,15 @@ Rules: EXACTLY 4 learning_items, each ONE atomic idea — do not exceed 4. Keep 
       // switches so nothing races the "preview" render.
       const claimsSeed = (async () => {
         try {
-          const newClaims = dedupeNewClaims(candidateClaims, result.candidate_profile.potential_probe_areas);
+          // Phase 21: a candidate_claims row is a claim the CANDIDATE made — only
+          // CV-verified probe areas qualify. A probe area the model sourced to the
+          // JD or to role inference is a role expectation, not a candidate claim,
+          // and must not be persisted as a "cv" claim (the false-attribution bug
+          // this phase removes). verifyCvEvidence above already downgraded every
+          // unproven item to "unverified".
+          const cvVerifiedProbes = arr(result.candidate_profile.potential_probe_areas)
+            .filter((p) => p?.source === "cv" && p?.evidence_quote);
+          const newClaims = dedupeNewClaims(candidateClaims, cvVerifiedProbes);
           if (newClaims.length && user) {
             const inserted = await dbInsertClaims(user.id, applicationId, ivRow.id, newClaims);
             if (inserted.length) setCandidateClaims((cur) => [...cur, ...inserted]);
@@ -4885,10 +4955,25 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
   } catch (e) { console.error("classroom recommendations build failed:", e.message); }
   // Cautious CV cross-reference for the top recommendations — Fact vs Suggestion,
   // possibility framing only (see experiencesToExplore's contract).
+  // Phase 21 (application isolation): the global `profile` state is set ONLY by
+  // analyseAndPlan / resumeInterviewById, so on the Classroom screen it may
+  // belong to a DIFFERENT application than the one being viewed. Use its
+  // candidate_profile here ONLY when it provably belongs to activeClassroomApp;
+  // otherwise pass nothing (generic wording, never a cross-application leak).
+  // Claims are always scoped to the active application by application_id. When
+  // the active app has been analysed but has no interview, `profile` is null
+  // (analyseApplicationOnly never calls setProfile) — the generic path.
+  const classroomProfileAppId = interview?.applicationId || applicationId || null;
+  const classroomScopedProfile = (activeClassroomApp && classroomProfileAppId === activeClassroomApp.id)
+    ? profile?.candidate_profile
+    : null;
+  const classroomScopedClaims = activeClassroomApp
+    ? candidateClaims.filter((c) => c.application_id === activeClassroomApp.id)
+    : [];
   let classroomExperienceHints = [];
   try {
     classroomExperienceHints = experiencesToExplore(
-      { candidateProfile: profile?.candidate_profile, claims: candidateClaims },
+      { candidateProfile: classroomScopedProfile, claims: classroomScopedClaims },
       classroomRecs.all, { limit: 3 }
     );
   } catch (e) { console.error("classroom experience hints build failed:", e.message); }
@@ -6286,17 +6371,42 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
             {Object.entries(profile.interview_profile.question_mix || {}).map(([k, v]) => <ScoreBar key={k} label={k.replace(/_/g, " ")} value={v} />)}
           </Card>
 
-          {profile.candidate_profile?.potential_probe_areas?.length > 0 && (
-            <Card style={{ padding: 22, marginBottom: 16 }}>
-              <div style={{ fontSize: 15, fontWeight: 700, color: "var(--navy)", marginBottom: 12 }}>From your CV, likely to be probed</div>
-              {profile.candidate_profile.potential_probe_areas.map((p, i) => (
-                <div key={i} style={{ marginBottom: 10, fontSize: 13.5 }}>
-                  <div style={{ color: "var(--navy)", fontWeight: 500 }}>"{p.claim}"</div>
-                  <div style={{ color: "var(--text-dim)", fontSize: 12.5 }}>{p.why}</div>
-                </div>
-              ))}
-            </Card>
-          )}
+          {profile.candidate_profile?.potential_probe_areas?.length > 0 && (() => {
+            // Phase 21: only claims whose source is a verified verbatim CV quote
+            // may be shown under "From your CV". Everything else (JD-derived,
+            // role-inferred, unverifiable) is framed generically — no CV
+            // attribution.
+            const probes = arr(profile.candidate_profile.potential_probe_areas);
+            const fromCv = probes.filter((p) => p?.source === "cv" && str(p?.evidence_quote).trim());
+            const generic = probes.filter((p) => !(p?.source === "cv" && str(p?.evidence_quote).trim()));
+            return (
+              <Card style={{ padding: 22, marginBottom: 16 }}>
+                {fromCv.length > 0 && (
+                  <>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: "var(--navy)", marginBottom: 12 }}>From your CV, likely to be probed</div>
+                    {fromCv.map((p, i) => (
+                      <div key={`cv-${i}`} style={{ marginBottom: 10, fontSize: 13.5 }}>
+                        <div style={{ color: "var(--navy)", fontWeight: 500 }}>"{p.claim}"</div>
+                        <div style={{ color: "var(--text-faint)", fontSize: 12, fontStyle: "italic" }}>Your CV: "{p.evidence_quote}"</div>
+                        {p.why && <div style={{ color: "var(--text-dim)", fontSize: 12.5 }}>{p.why}</div>}
+                      </div>
+                    ))}
+                  </>
+                )}
+                {generic.length > 0 && (
+                  <>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: "var(--navy)", margin: `${fromCv.length ? 16 : 0}px 0 12px` }}>Areas likely to be probed</div>
+                    {generic.map((p, i) => (
+                      <div key={`gen-${i}`} style={{ marginBottom: 10, fontSize: 13.5 }}>
+                        <div style={{ color: "var(--navy)", fontWeight: 500 }}>{p.claim}</div>
+                        {p.why && <div style={{ color: "var(--text-dim)", fontSize: 12.5 }}>{p.why}</div>}
+                      </div>
+                    ))}
+                  </>
+                )}
+              </Card>
+            );
+          })()}
 
           <div style={{ fontSize: 11.5, color: "var(--text-faint)", marginBottom: 20, lineHeight: 1.5 }}>
             Questions marked "Inferred" or "General for role" are AI judgement calls, not confirmed facts about how {company || "this company"} actually interviews.
@@ -6825,10 +6935,11 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
               {classroomExperienceHints.length > 0 && (
                 <Card style={{ padding: 16, marginTop: 4 }}>
                   <div style={{ fontSize: 13, fontWeight: 800, color: "var(--navy)", marginBottom: 3 }}>Experiences to explore</div>
-                  <div style={{ fontSize: 12, color: "var(--text-faint)", lineHeight: 1.5, marginBottom: 10 }}>Possible connections from your CV — prompts, not conclusions. Check each one honestly before you rely on it.</div>
+                  <div style={{ fontSize: 12, color: "var(--text-faint)", lineHeight: 1.5, marginBottom: 10 }}>Possible connections to explore — prompts, not conclusions. Check each one honestly before you rely on it.</div>
                   {classroomExperienceHints.map((h, i) => (
                     <div key={i} style={{ padding: "8px 0", borderTop: i ? "1px solid var(--border)" : "none" }}>
-                      <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.03em", marginBottom: 2 }}>Fact</div>
+                      {/* Phase 21: "Your CV" label only for a verified verbatim CV attribution. */}
+                      <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.03em", marginBottom: 2 }}>{h.attributed ? "Your CV" : "Focus area"}</div>
                       <div style={{ fontSize: 12.5, color: "var(--navy)", fontStyle: "italic", marginBottom: 5 }}>{h.fact}</div>
                       <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.03em", marginBottom: 2 }}>Suggestion</div>
                       <div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.5 }}>{h.suggestion}</div>
@@ -7102,6 +7213,12 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                           {r.missing.map((c, j) => <div key={j} style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.5 }}><span style={{ fontWeight: 700 }}>○</span> {c}</div>)}
                         </div>
                       )}
+                      {arr(r.optionalMissing).length > 0 && (
+                        <div style={{ marginBottom: 8 }}>
+                          <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", marginBottom: 4 }}>Points you may also want to include</div>
+                          {arr(r.optionalMissing).map((c, j) => <div key={j} style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.5 }}><span style={{ fontWeight: 700 }}>+</span> {c}</div>)}
+                        </div>
+                      )}
                       {(item?.review || item?.model_answer) && (
                         <div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.55, marginTop: 8, background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, padding: 12 }}>
                           <span style={{ fontWeight: 700, color: "var(--navy)" }}>Review: </span>{item.review || item.model_answer}
@@ -7142,6 +7259,12 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                       <div style={{ marginBottom: 8 }}>
                         <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", marginBottom: 4 }}>Still to include</div>
                         {redoResult.missing.map((c, j) => <div key={j} style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.5 }}><span style={{ fontWeight: 700 }}>○</span> {c}</div>)}
+                      </div>
+                    )}
+                    {arr(redoResult.optionalMissing).length > 0 && (
+                      <div style={{ marginBottom: 8 }}>
+                        <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", marginBottom: 4 }}>Points you may also want to include</div>
+                        {arr(redoResult.optionalMissing).map((c, j) => <div key={j} style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.5 }}><span style={{ fontWeight: 700 }}>+</span> {c}</div>)}
                       </div>
                     )}
                     <div className="flex gap-2" style={{ flexWrap: "wrap", marginTop: 6 }}>

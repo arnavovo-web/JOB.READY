@@ -556,32 +556,181 @@ function exploreTokens(text) {
     .filter((t) => t.length >= 4 && !EXPLORE_STOPWORDS.has(t));
 }
 
+/* ================================================================== *
+ * PHASE 21 — CV SOURCE TRUSTWORTHINESS
+ * ------------------------------------------------------------------
+ * Deterministic provenance for candidate-profile material. A statement
+ * may ONLY be attributed to the candidate's CV ("Your CV mentions ...")
+ * when its `source` is "cv" AND it carries an `evidence_quote` that is a
+ * genuine, verbatim (modulo SAFE normalisation) excerpt of that
+ * application's actual CV text. No embeddings, no fuzzy/semantic
+ * matching — this is the same substring principle as App.jsx's
+ * filterEvidencedSignals. If a quote does not verify, the source is
+ * downgraded to "unverified" and the UI must use generic wording.
+ * "False attribution is worse than conservative generic wording."
+ * ================================================================== */
+
+// Controlled provenance vocabulary. "cv" / "jd" / "inferred" describe where a
+// statement genuinely came from; "unverified" is the safe default whenever we
+// cannot prove it (legacy data, missing/failed evidence_quote, unknown value).
+export const CV_EVIDENCE_SOURCES = ["cv", "jd", "inferred", "unverified"];
+
+// SAFE normalisation only: unify smart quotes / dashes / exotic spaces, collapse
+// whitespace runs, l-case, trim. Deliberately keeps interior punctuation so a
+// paraphrase cannot slip through as a "verbatim" quote.
+function normaliseForProvenance(v) {
+  return str(v)
+    .replace(/[‘’‚‛′]/g, "'")
+    .replace(/[“”„‟″]/g, '"')
+    .replace(/[‐-―−]/g, "-")
+    .replace(/\s+/g, " ")
+    .toLowerCase()
+    .trim();
+}
+
 /**
- * experiencesToExplore({ candidateProfile, claims }, recommendations, { limit } = {})
- *   -> [{ recommendationLabel, dimension, fact, suggestion, sourceKind }]
- *
- * A DELIBERATELY cautious layer. For each top recommendation, look for a CV
- * line or extracted claim that shares real vocabulary with it and — if found —
- * surface it as a SUGGESTION to consider, never as proof.
- *   fact       : always `Your CV mentions: "<verbatim text>"`
- *   suggestion : always begins `Consider whether ...`
- * Fact and Suggestion are separate fields. The function never emits assertion
- * language ("this proves", "you are strong at", "demonstrates"). Returns [] when
- * there is no CV / claim material at all — it never says "you have no experience".
+ * cvEvidenceVerifies(quote, cvText) -> boolean
+ * True only when `quote`, after safe normalisation, is a real substring of the
+ * equally-normalised `cvText`. A quote shorter than 8 normalised chars, or an
+ * empty CV, never verifies (too weak to be a meaningful excerpt).
  */
-export function experiencesToExplore({ candidateProfile, claims } = {}, recommendations, { limit = 4 } = {}) {
-  const cp = candidateProfile && typeof candidateProfile === "object" ? candidateProfile : {};
+export function cvEvidenceVerifies(quote, cvText) {
+  const q = normaliseForProvenance(quote)
+    .replace(/^["'\s.,;:!?()[\]{}-]+|["'\s.,;:!?()[\]{}-]+$/g, "");
+  if (q.length < 8) return false;
+  const hay = normaliseForProvenance(cvText);
+  return !!hay && hay.includes(q);
+}
+
+/**
+ * normaliseCvEvidenceItem(x) -> { text, source, evidence_quote, why? } | null
+ * Pure, never throws. Accepts a plain string, a { text, source, evidence_quote }
+ * object, or a probe-area-ish { claim, why, source, evidence_quote } object.
+ * Unknown / missing `source` defaults to "unverified". Empty text -> null
+ * (dropped at the caller boundary).
+ */
+export function normaliseCvEvidenceItem(x) {
+  if (x == null) return null;
+  if (typeof x === "string") {
+    const t = x.trim();
+    return t ? { text: t.slice(0, 400), source: "unverified", evidence_quote: "" } : null;
+  }
+  if (typeof x !== "object") return null;
+  const text = str(x.text ?? x.claim ?? x.fact ?? x.example).trim();
+  if (!text) return null;
+  const item = {
+    text: text.slice(0, 400),
+    source: CV_EVIDENCE_SOURCES.includes(x.source) ? x.source : "unverified",
+    evidence_quote: str(x.evidence_quote ?? x.evidence).trim().slice(0, 400),
+  };
+  const why = str(x.why).trim();
+  if (why) item.why = why.slice(0, 400);
+  return item;
+}
+
+/**
+ * normaliseCandidateProfile(cp) -> {
+ *   education, experience, leadership, achievements, skills, behavioural_examples : string[]
+ *   cv_evidence          : { text, source, evidence_quote }[]
+ *   potential_probe_areas: { claim, why, source, evidence_quote }[]
+ * }
+ * Pure, never throws, for ANY input: fresh Phase 21 profile, legacy persisted
+ * profile (string arrays only), resumed-interview blob, minimal fixture, {}.
+ * The six wire arrays stay `string[]` (unchanged contract); provenance lives
+ * only on the additive `cv_evidence` list and on probe-area objects.
+ */
+export function normaliseCandidateProfile(cp) {
+  const src = cp && typeof cp === "object" ? cp : {};
+  const strList = (v) => arr(v).map((s) => str(s).trim()).filter(Boolean);
+  const probe = arr(src.potential_probe_areas).map((a) => {
+    if (a && typeof a === "object") {
+      const claim = str(a.claim).trim();
+      if (!claim) return null;
+      return {
+        claim: claim.slice(0, 400),
+        why: str(a.why).trim().slice(0, 400),
+        source: CV_EVIDENCE_SOURCES.includes(a.source) ? a.source : "unverified",
+        evidence_quote: str(a.evidence_quote).trim().slice(0, 400),
+      };
+    }
+    const claim = str(a).trim();
+    return claim ? { claim: claim.slice(0, 400), why: "", source: "unverified", evidence_quote: "" } : null;
+  }).filter(Boolean);
+  return {
+    education: strList(src.education),
+    experience: strList(src.experience),
+    leadership: strList(src.leadership),
+    achievements: strList(src.achievements),
+    skills: strList(src.skills),
+    behavioural_examples: strList(src.behavioural_examples),
+    cv_evidence: arr(src.cv_evidence).map(normaliseCvEvidenceItem).filter(Boolean),
+    potential_probe_areas: probe,
+  };
+}
+
+/**
+ * verifyCvEvidence(profile, cvText) -> normalised candidate_profile
+ * Every `cv_evidence` item and every `potential_probe_areas` item that claims
+ * `source: "cv"` keeps that source ONLY if its `evidence_quote` verifies
+ * verbatim against `cvText`; otherwise it is downgraded to "unverified".
+ * Items already marked "jd" / "inferred" / "unverified" pass through untouched.
+ * Run this once, before persisting, on any profile built with a real CV.
+ */
+export function verifyCvEvidence(profile, cvText) {
+  const cp = normaliseCandidateProfile(profile);
+  const check = (item) => {
+    if (item.source !== "cv") return item;
+    if (item.evidence_quote && cvEvidenceVerifies(item.evidence_quote, cvText)) return item;
+    return { ...item, source: "unverified" };
+  };
+  return {
+    ...cp,
+    cv_evidence: cp.cv_evidence.map(check),
+    potential_probe_areas: cp.potential_probe_areas.map(check),
+  };
+}
+
+/**
+ * experiencesToExplore({ candidateProfile, claims, cvText }, recommendations, { limit } = {})
+ *   -> [{ recommendationLabel, dimension, fact, suggestion, sourceKind, attributed }]
+ *
+ * A DELIBERATELY cautious layer. For each top recommendation, look for CV
+ * evidence, a plain CV line, or an extracted claim that shares real vocabulary
+ * with it and — if found — surface it as a SUGGESTION to consider, never proof.
+ *
+ * PHASE 21 provenance gate — `fact` is CV-attributed ("Your CV mentions: ...")
+ * ONLY when the matched entry has source === "cv", a non-empty evidence_quote,
+ * AND (when `cvText` is supplied) that quote verifies verbatim against it.
+ * Every other match — plain CV string arrays, interview/candidate_input/inferred
+ * claims, unverifiable quotes — uses generic wording:
+ *   `A useful area to focus on is "<recommendation label>".`
+ * The function never emits assertion language and never says "you have no
+ * experience"; it returns [] only when there is no material at all.
+ */
+export function experiencesToExplore({ candidateProfile, claims, cvText } = {}, recommendations, { limit = 4 } = {}) {
+  const cp = normaliseCandidateProfile(candidateProfile);
+  const haveCv = str(cvText).trim().length > 0;
   const entries = [];
   const addAll = (list, kind) => {
-    for (const s of arr(list)) { const t = str(s).trim(); if (t) entries.push({ text: t, kind }); }
+    for (const s of arr(list)) { const t = str(s).trim(); if (t) entries.push({ text: t, kind, quote: "" }); }
   };
+  // Verified CV evidence first — the only source that can carry a real quote.
+  for (const it of cp.cv_evidence) {
+    const verified = it.source === "cv" && it.evidence_quote
+      && (!haveCv || cvEvidenceVerifies(it.evidence_quote, cvText));
+    entries.push({ text: it.text, kind: "cv_evidence", quote: verified ? it.evidence_quote : "" });
+  }
   addAll(cp.experience, "experience");
   addAll(cp.leadership, "leadership");
   addAll(cp.achievements, "achievement");
   addAll(cp.behavioural_examples, "example");
   for (const c of arr(claims)) {
     const t = str(c?.claim_text ?? c?.claim).trim();
-    if (t) entries.push({ text: t, kind: "claim" });
+    if (!t) continue;
+    const cSource = CV_EVIDENCE_SOURCES.includes(c?.source) ? c.source : "unverified";
+    const cQuote = str(c?.evidence_quote ?? c?.evidence).trim();
+    const verified = cSource === "cv" && cQuote && (!haveCv || cvEvidenceVerifies(cQuote, cvText));
+    entries.push({ text: t, kind: "claim", quote: verified ? cQuote : "" });
   }
   if (!entries.length) return [];
   const entryTok = entries.map((e) => ({ ...e, toks: new Set(exploreTokens(e.text)) }));
@@ -602,12 +751,18 @@ export function experiencesToExplore({ candidateProfile, claims } = {}, recommen
     if (best == null) continue;
     usedEntry.add(best);
     const e = entries[best];
+    const attributed = !!e.quote;
     out.push({
       recommendationLabel: r.label,
       dimension: r.dimension || "behavioural",
-      fact: `Your CV mentions: "${e.text.slice(0, 200)}"`,
-      suggestion: `Consider whether this gives you a concrete, honest example you could draw on when preparing "${r.label}". Only use it if it genuinely fits.`,
+      fact: attributed
+        ? `Your CV mentions: "${e.quote.slice(0, 200)}"`
+        : `A useful area to focus on is "${r.label}".`,
+      suggestion: attributed
+        ? `Consider whether this gives you a concrete, honest example you could draw on when preparing "${r.label}". Only use it if it genuinely fits.`
+        : `Consider whether you have a concrete, honest example you could draw on when preparing "${r.label}".`,
       sourceKind: e.kind,
+      attributed,
     });
     if (out.length >= Math.max(1, num(limit, 4))) break;
   }

@@ -262,10 +262,64 @@ describe("experiencesToExplore — Fact vs Suggestion, possibility framing, sile
     }, recs);
     expect(out.length).toBeGreaterThan(0);
     const hit = out[0];
-    expect(hit.fact.startsWith('Your CV mentions: "')).toBe(true);
+    // PHASE 21: a plain CV string array carries NO verifiable provenance, so the
+    // Fact must use generic wording, not a "Your CV mentions" attribution.
+    expect(hit.attributed).toBe(false);
+    expect(hit.fact.startsWith('Your CV mentions: "')).toBe(false);
+    expect(hit.fact).toBe('A useful area to focus on is "strong financial modelling".');
     expect(hit.suggestion.startsWith("Consider whether")).toBe(true);
     expect(hit.recommendationLabel).toBe("strong financial modelling");
     expect(hit.sourceKind).toBe("experience");
+  });
+
+  it("PHASE 21: attributes to the CV only for verified cv_evidence with a matching quote", () => {
+    const cvText = "EXPERIENCE\nBuilt a three-statement financial modelling deck for a mock LBO at university.";
+    const out = experiencesToExplore({
+      candidateProfile: {
+        cv_evidence: [{
+          text: "Financial modelling deck for a mock LBO",
+          source: "cv",
+          evidence_quote: "Built a three-statement financial modelling deck for a mock LBO",
+        }],
+      },
+      claims: [],
+      cvText,
+    }, recs);
+    expect(out.length).toBeGreaterThan(0);
+    expect(out[0].attributed).toBe(true);
+    expect(out[0].fact).toBe('Your CV mentions: "Built a three-statement financial modelling deck for a mock LBO"');
+  });
+
+  it("PHASE 21: a cv_evidence quote that is NOT in the CV falls back to generic wording", () => {
+    const out = experiencesToExplore({
+      candidateProfile: {
+        cv_evidence: [{
+          text: "Financial modelling for an LBO",
+          source: "cv",
+          evidence_quote: "Led all financial modelling for a live $2bn leveraged buyout",
+        }],
+      },
+      claims: [],
+      cvText: "EXPERIENCE\nHelped format slides for a pitch.",
+    }, recs);
+    expect(out.length).toBeGreaterThan(0);
+    expect(out[0].attributed).toBe(false);
+    expect(out[0].fact.startsWith('Your CV mentions')).toBe(false);
+  });
+
+  it("PHASE 21: an inferred / interview claim is never CV-attributed", () => {
+    const out = experiencesToExplore({
+      candidateProfile: {},
+      claims: [
+        { claim_text: "Comfortable owning financial modelling end to end", source: "inferred" },
+        { claim_text: "Discussed financial modelling in a past interview", source: "interview" },
+      ],
+      cvText: "Comfortable owning financial modelling end to end",
+    }, recs);
+    for (const h of out) {
+      expect(h.attributed).toBe(false);
+      expect(h.fact.startsWith('Your CV mentions')).toBe(false);
+    }
   });
 
   it("never emits assertion language", () => {
