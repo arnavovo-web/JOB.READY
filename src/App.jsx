@@ -3557,7 +3557,7 @@ Rules: EXACTLY 4 learning_items, each ONE atomic idea — do not exceed 4. Keep 
     setScreen("application_analyzing");
     try {
       const userText = `This candidate is preparing for an interview. Analyse the application to identify what they should prepare for. There is no CV and no live interview transcript — populate candidate_profile as best you can from the role (it may be sparse) and focus on interview_profile + application_intelligence.\n\nCompany: ${cleanCompany}\nRole: ${cleanRole}\nInterview stage: ${app.stageLabel || "not specified yet"}\n\n${cleanJd ? `Job description / application context:\n${cleanJd}` : "Job description: none provided. Rely on general knowledge of this role type; keep application_intelligence company context weak."}\n\nCandidate CV:\nnone provided.`;
-      const result = validateProfile(await callClaude(INTERVIEW_PROFILE_SYSTEM, userText, 3000, false, { requestType: "interview_profile", applicationId: app.id }));
+      const result = validateProfile(await callClaude(INTERVIEW_PROFILE_SYSTEM, userText, 6000, false, { requestType: "interview_profile", applicationId: app.id }));
       bumpGenStage(1);
       const jdProfile = buildJdProfile(result.interview_profile.jd_requirements, cleanJd);
       let applicationIntelligence = null;
@@ -3912,7 +3912,7 @@ Rules: EXACTLY 4 learning_items, each ONE atomic idea — do not exceed 4. Keep 
         ? `\n\nThe candidate has restricted this interview to these question types ONLY: ${questionMixSelected.map((t) => QUESTION_MIX_PROMPT_LABEL[t]).join(", ")}. The "opening_question" you propose MUST be one of those types — do not open with a type the candidate excluded, even if it would be normal for this stage.`
         : "";
       const userText = `${weaknessNote}\n\nCompany: ${cleanCompany}\nRole: ${cleanRole}\nInterview stage: ${stageLabel}\nInterview format: ${formatLabel}${invitationContext}${questionMixNote}\n\n${jdBlock}\n\nCandidate CV:\n${cleanCv || "none provided."}`;
-      const result = validateProfile(await callClaude(system, userText, 3000, false, { requestType: "interview_profile", applicationId }));
+      const result = validateProfile(await callClaude(system, userText, 6000, false, { requestType: "interview_profile", applicationId }));
 
       // Phase 2B: build the structured jd_profile (evidence-quote-verified
       // subset of result.interview_profile.jd_requirements — see

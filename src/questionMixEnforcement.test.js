@@ -353,7 +353,9 @@ describe("persistence & UI wiring", () => {
     const qm = readFileSync(new URL("./questionMix.js", import.meta.url), "utf8");
     expect(qm).not.toMatch(/callClaude|fetch\(|useWebSearch|WebSearch/);
     // the interview_profile call still passes useWebSearch=false and is the same single call
-    expect(SOURCE).toMatch(/callClaude\(system, userText, 3000, false, \{ requestType: "interview_profile"/);
+    // (Phase 19B raised the output-token budget 3000 -> 6000 to stop CV-included responses
+    //  hitting max_tokens and returning truncated JSON — the call shape is otherwise unchanged)
+    expect(SOURCE).toMatch(/callClaude\(system, userText, 6000, false, \{ requestType: "interview_profile"/);
   });
 
   it("the Question Mix is reset to an unselected state on every entry to the build flow (never carried over / pre-selected)", () => {
