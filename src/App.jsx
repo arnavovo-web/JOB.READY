@@ -5963,11 +5963,18 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
             </div>
           )}
 
-          {wizardStep === 3 && (
+          {wizardStep === 3 && (() => {
+            // A CV is optional. When the box is empty we still let the user move
+            // on via an explicit "continue without a CV" action — the wizard must
+            // not force placeholder text, and downstream (analyseAndPlan) already
+            // treats an empty cvText as genuinely absent ("Candidate CV: none
+            // provided.", verifyCvEvidence against "" → no CV provenance).
+            const hasCv = !!cvText.trim();
+            return (
             <div className="jr-fade">
               <h2 style={{ fontSize: 23, fontWeight: 800, color: "var(--navy)", margin: "14px 0 6px" }}>Tell us about you.</h2>
               <p style={{ fontSize: 14, color: "var(--text-dim)", marginBottom: 20 }}>
-                {buildMethod === "invitation" ? "Paste your CV if you'd like — optional, but it helps personalise the questions." : "Paste your CV, or upload a file."}
+                Paste your CV, or upload a file. It's optional — without one, your interview is personalised from the job description and role instead.
               </p>
               <Card style={{ padding: 22 }}>
                 <div className="flex items-center justify-between mb-3">
@@ -5983,10 +5990,20 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
               {error && <div style={{ color: "var(--bad)", fontSize: 13, marginTop: 12 }}>{error}</div>}
               <div className="flex flex-wrap gap-3 mt-4">
                 <Btn variant="secondary" onClick={() => setWizardStep(2)}><ArrowLeft size={15} /> Back</Btn>
-                <Btn variant="accent" full onClick={() => setWizardStep(4)} disabled={buildMethod !== "invitation" && !cvText}>Continue <ChevronRight size={16} /></Btn>
+                {hasCv || buildMethod === "invitation" ? (
+                  <Btn variant="accent" full onClick={() => setWizardStep(4)}>Continue <ChevronRight size={16} /></Btn>
+                ) : (
+                  <Btn variant="accent" full onClick={() => setWizardStep(4)}>Continue without a CV <ChevronRight size={16} /></Btn>
+                )}
               </div>
+              {!hasCv && buildMethod !== "invitation" && (
+                <div style={{ fontSize: 12, color: "var(--text-faint)", marginTop: 10, lineHeight: 1.5 }}>
+                  No CV added — personalisation will rely more heavily on the job description. You can always add one next time.
+                </div>
+              )}
             </div>
-          )}
+            );
+          })()}
 
           {wizardStep === 4 && (() => {
             const currentStage = stageByKey(interviewStage);
