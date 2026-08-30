@@ -94,7 +94,7 @@ import { classroomTopicMatch, pickContinuePreparing, redoConceptUnion } from "./
 import { interviewCountdown, sortApplicationsByUpcoming, partitionApplications, nearestUpcomingApplication } from "./applicationSchedule";
 // Phase 18: pure, offline reconstruction of an unfinished interview from its
 // persisted rows. No AI, no DB, no React. Resume = read + deterministic rebuild.
-import { reconstructInterviewState, sortResumableInterviews, summariseResumable } from "./resumeInterview";
+import { reconstructInterviewState, sortResumableInterviews, summariseResumable, resumableProgressLabel } from "./resumeInterview";
 
 /* ================================================================== *
  * JOB.READY — DESIGN SYSTEM (unchanged from previous build)
@@ -3469,7 +3469,11 @@ Rules: EXACTLY 4 learning_items, each ONE atomic idea — do not exceed 4. Keep 
     setCompany(app.company); setRole(app.role); setApplicationId(app.id); setBuildMethod("jdcv");
     setFocusWeaknesses(false); setTargetTopic(null);
     setJdText(app.jobDescription || ""); setCvText("");
-    setWizardStep(2); setScreen("create");
+    setWizardStep(2);
+    // Phase 20: a "draft" application normally has no interview, but guard here
+    // too — if one exists, resuming beats launching a duplicate build.
+    if (maybeOfferResume(app.id, "wizard")) return;
+    setScreen("create");
     try {
       const docs = await dbGetApplicationDocuments(user.id, app.id);
       if (!app.jobDescription) {
@@ -3492,7 +3496,11 @@ Rules: EXACTLY 4 learning_items, each ONE atomic idea — do not exceed 4. Keep 
     setCompany(app.company); setRole(app.role); setApplicationId(app.id); setBuildMethod("jdcv");
     setFocusWeaknesses(false); setTargetTopic(null);
     setJdText(app.jobDescription || ""); setCvText("");
-    setWizardStep(app.jobDescription ? 3 : 2); setScreen("create");
+    setWizardStep(app.jobDescription ? 3 : 2);
+    // Phase 20: even "Practise again" (shown when a COMPLETED interview exists)
+    // must offer to resume an in-progress one first, rather than launch a fresh
+    // AI-consuming build.
+    if (!maybeOfferResume(app.id, "wizard")) setScreen("create");
   }
 
   /* ---------------- PHASE 16A: APPLICATIONS PILLAR ---------------- */
@@ -3606,6 +3614,22 @@ Rules: EXACTLY 4 learning_items, each ONE atomic idea — do not exceed 4. Keep 
     }
   }
 
+  // Phase 20: ENTRY-POINT duplicate-generation guard. If this application already
+  // has a resumable unfinished interview, surface the resume/start-new choice
+  // NOW — before the setup wizard — so resuming is never buried behind a full
+  // wizard walk. Returns true when it took over the screen. `analyseAndPlan`'s
+  // own guard stays as the defence-in-depth backstop for any path that reaches
+  // it directly. `next` tells the resume_choice screen where "Start a new
+  // interview" should go: "wizard" from here (the user hasn't configured
+  // anything yet), "generate" from the backstop (they already have).
+  function maybeOfferResume(appId, next) {
+    const existing = resumableInterviews.find((r) => r.applicationId === appId && r.hasProfile);
+    if (!existing) return false;
+    setResumeChoice({ ...existing, next });
+    setScreen("resume_choice");
+    return true;
+  }
+
   // Build an interview from inside an Application — carry the stored context so
   // the user never re-types it. Question Mix stays a MANUAL choice at wizard
   // step 4 (Phase 11 / §9): reset it here so nothing is silently pre-selected.
@@ -3617,7 +3641,8 @@ Rules: EXACTLY 4 learning_items, each ONE atomic idea — do not exceed 4. Keep 
     setJdText(app.jobDescription || ""); setCvText("");
     setQuestionMix({ technical: false, behavioural: false, motivational: false });
     setInvitationText(""); setInvitationDraft(null); setInvitationOriginal(null);
-    setWizardStep(app.jobDescription ? 3 : 2); setScreen("create");
+    setWizardStep(app.jobDescription ? 3 : 2);
+    if (!maybeOfferResume(app.id, "wizard")) setScreen("create");
   }
 
   /* ---------------- PHASE 18: RESUME AN UNFINISHED INTERVIEW ---------------- */
@@ -3833,7 +3858,7 @@ Rules: EXACTLY 4 learning_items, each ONE atomic idea — do not exceed 4. Keep 
     // deletes, overwrites or mutates the existing interview.
     if (!forceNewRef.current) {
       const existing = resumableInterviews.find((r) => r.applicationId === applicationId && r.hasProfile);
-      if (existing) { setResumeChoice(existing); setScreen("resume_choice"); return; }
+      if (existing) { setResumeChoice({ ...existing, next: "generate" }); setScreen("resume_choice"); return; }
     }
     forceNewRef.current = false;
     const cleanCompany = sanitizeText(company);
@@ -5242,7 +5267,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                   <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>🎤 Continue your interview</div>
                   <div style={{ fontSize: 15.5, fontWeight: 700, color: "var(--navy)" }}>{r.company || "Interview"}{r.role ? ` — ${r.role}` : ""}</div>
                   <div style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 4 }}>
-                    {r.answeredCount} of {r.totalQuestions || "?"} question{r.totalQuestions === 1 ? "" : "s"} answered
+                    {resumableProgressLabel(r)}
                   </div>
                   <Btn variant="accent" style={{ marginTop: 12 }} onClick={() => guarded(() => resumeInterviewById(r.id))}>Continue interview <ArrowRight size={15} /></Btn>
                 </Card>
@@ -5519,6 +5544,11 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
         const preparationRecs = recs.all.filter((r) => !r.tested);
         const interviewRecs = recs.all.filter((r) => r.tested);
         const appInterviews = app.interviews || [];
+        // Phase 20: one application-level interview-state view. `appInterviews` is
+        // completed-only (from interviewList); `appResumable` is this app's
+        // in-progress interviews. The Interviews section must reconcile BOTH so it
+        // never shows "in progress" and "no interviews yet" at the same time.
+        const appResumable = resumableInterviews.filter((r) => r.applicationId === app.id);
         const progress = {
           interviewsCompleted: appInterviews.filter((iv) => iv.report || typeof iv.overall_score === "number").length,
           areasStarted: appTopics.length,
@@ -5667,10 +5697,10 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
             <h3 style={{ fontSize: 17, fontWeight: 800, color: "var(--navy)", margin: "8px 0 12px" }}>Interviews</h3>
 
             {/* Phase 18: this application's own unfinished interviews. Continue = 0 AI. */}
-            {resumableInterviews.filter((r) => r.applicationId === app.id).map((r) => (
+            {appResumable.map((r) => (
               <Card key={r.id} style={{ padding: 18, marginBottom: 12, borderLeft: `4px solid ${r.hasProfile ? "var(--violet)" : "var(--border)"}` }}>
                 <div style={{ fontSize: 13, fontWeight: 700, color: r.hasProfile ? "var(--navy)" : "var(--text-dim)" }}>🎤 Interview in progress</div>
-                <div style={{ fontSize: 12.5, color: "var(--text-dim)", marginTop: 4 }}>{r.answeredCount} of {r.totalQuestions || "?"} question{r.totalQuestions === 1 ? "" : "s"} answered</div>
+                <div style={{ fontSize: 12.5, color: "var(--text-dim)", marginTop: 4 }}>{resumableProgressLabel(r)}</div>
                 {r.hasProfile ? (
                   <Btn variant="accent" onClick={() => guarded(() => resumeInterviewById(r.id))} style={{ marginTop: 10 }}>Continue interview <ArrowRight size={14} /></Btn>
                 ) : (
@@ -5680,9 +5710,13 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
             ))}
 
             <Card style={{ padding: 18, marginBottom: 28 }}>
-              {appInterviews.length === 0 ? (
+              {appInterviews.length === 0 && appResumable.length === 0 ? (
                 <div style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.6, marginBottom: 14 }}>
                   No interviews for this application yet. Build one and it will carry this company, role and job description — you choose the question mix.
+                </div>
+              ) : appInterviews.length === 0 ? (
+                <div style={{ fontSize: 12.5, color: "var(--text-faint)", lineHeight: 1.6, marginBottom: 4 }}>
+                  No completed interviews yet — your in-progress one is above.
                 </div>
               ) : (
                 appInterviews.map((iv, i) => (
@@ -5749,12 +5783,21 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
           <Card style={{ padding: 20, marginBottom: 20, borderLeft: "4px solid var(--violet)" }}>
             <div style={{ fontSize: 15.5, fontWeight: 700, color: "var(--navy)" }}>{resumeChoice.company || "Interview"}{resumeChoice.role ? ` — ${resumeChoice.role}` : ""}</div>
             <div style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 4 }}>
-              {resumeChoice.answeredCount} of {resumeChoice.totalQuestions || "?"} question{resumeChoice.totalQuestions === 1 ? "" : "s"} answered
+              {resumableProgressLabel(resumeChoice)}
             </div>
           </Card>
           <div className="flex flex-wrap gap-3">
             <Btn variant="accent" onClick={() => guarded(() => resumeInterviewById(resumeChoice.id))}>Continue interview <ArrowRight size={15} /></Btn>
-            <Btn variant="secondary" onClick={() => { forceNewRef.current = true; setResumeChoice(null); guarded(analyseAndPlan); }}>Start a new interview</Btn>
+            {/* Secondary, deliberate: starting another interview never touches the
+                existing one. "next" routes to the wizard when the user came from
+                an application entry point (nothing configured yet), or straight
+                to generation when they came from the backstop (already configured). */}
+            <Btn variant="secondary" onClick={() => {
+              const goGenerate = resumeChoice.next === "generate";
+              forceNewRef.current = true;
+              setResumeChoice(null);
+              if (goGenerate) guarded(analyseAndPlan); else setScreen("create");
+            }}>Start a new interview</Btn>
           </div>
           <div style={{ marginTop: 16 }}>
             <LinkBtn onClick={() => { setResumeChoice(null); setScreen("dashboard"); }} style={{ fontSize: 12.5, color: "var(--text-faint)", cursor: "pointer" }}>Cancel</LinkBtn>

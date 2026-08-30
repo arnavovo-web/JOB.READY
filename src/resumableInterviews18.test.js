@@ -113,7 +113,9 @@ describe("Dashboard surfaces an unfinished interview clearly", () => {
   const DASH = slice('screen === "dashboard" && user && (', 'PHASE 16A — APPLICATIONS PILLAR');
   it("shows a 'Continue your interview' card with company/role and progress, above 'Continue preparing'", () => {
     expect(DASH).toMatch(/Continue your interview/);
-    expect(DASH).toMatch(/\{r\.answeredCount\} of \{r\.totalQuestions \|\| "\?"\} question/);
+    // Phase 20: progress sentence is built by the one shared helper (uses the
+    // CONFIGURED target, not the count generated so far).
+    expect(DASH).toMatch(/\{resumableProgressLabel\(r\)\}/);
     expect(DASH.indexOf("Continue your interview")).toBeLessThan(DASH.indexOf("{continuePreparing &&"));
   });
   it("Continue calls resumeInterviewById (deterministic, 0 AI); the card is driven by the sorted, profile-backed list", () => {
@@ -130,7 +132,9 @@ describe("Dashboard surfaces an unfinished interview clearly", () => {
 describe("Application overview surfaces ITS OWN unfinished interview only", () => {
   const APPSCREEN = slice("{/* ---------------- APPLICATION OVERVIEW (workspace) ---------------- */}", "{/* ---------------- PHASE 18: RESUME-OR-START-NEW CHOICE ---------------- */}");
   it("filters the resumable list by this application's id — no cross-application leak", () => {
-    expect(APPSCREEN).toMatch(/resumableInterviews\.filter\(\(r\) => r\.applicationId === app\.id\)\.map\(/);
+    // Phase 20: derived once as `appResumable`, then mapped.
+    expect(APPSCREEN).toMatch(/const appResumable = resumableInterviews\.filter\(\(r\) => r\.applicationId === app\.id\)/);
+    expect(APPSCREEN).toMatch(/\{appResumable\.map\(/);
     expect(APPSCREEN).toMatch(/Interview in progress/);
     expect(APPSCREEN).toMatch(/resumeInterviewById\(r\.id\)/);
   });
@@ -141,18 +145,33 @@ describe("Application overview surfaces ITS OWN unfinished interview only", () =
 
 /* ===================== duplicate-generation protection ===================== */
 describe("duplicate generation is intercepted, non-destructively", () => {
-  it("analyseAndPlan checks for an existing resumable interview for this application BEFORE any AI call", () => {
+  it("analyseAndPlan checks for an existing resumable interview for this application BEFORE any AI call (backstop)", () => {
     const head = ANALYSE.slice(0, ANALYSE.indexOf("const cleanCompany = sanitizeText(company)"));
-    expect(head).toMatch(/if \(!forceNewRef\.current\) \{[\s\S]*?resumableInterviews\.find\(\(r\) => r\.applicationId === applicationId && r\.hasProfile\)[\s\S]*?setResumeChoice\(existing\); setScreen\("resume_choice"\); return;/);
+    // Phase 20: the backstop is unchanged in effect; it now tags the choice with
+    // next:"generate" so "Start a new interview" goes straight to generation
+    // (the user already configured the wizard on this path).
+    expect(head).toMatch(/if \(!forceNewRef\.current\) \{[\s\S]*?resumableInterviews\.find\(\(r\) => r\.applicationId === applicationId && r\.hasProfile\)[\s\S]*?setResumeChoice\(\{ \.\.\.existing, next: "generate" \}\); setScreen\("resume_choice"\); return;/);
     expect(head).toMatch(/forceNewRef\.current = false;/);
     // the check sits before the AI call
-    expect(ANALYSE.indexOf("setResumeChoice(existing)")).toBeLessThan(ANALYSE.indexOf("await callClaude("));
+    expect(ANALYSE.indexOf("setResumeChoice(")).toBeLessThan(ANALYSE.indexOf("await callClaude("));
   });
-  it("the resume_choice screen offers Continue (primary) and Start New (secondary)", () => {
+  it("Phase 20: every application-level Build-interview entry point offers resume FIRST, before the wizard", () => {
+    // one shared helper, used by all three application entry points
+    expect(SRC).toMatch(/function maybeOfferResume\(appId, next\) \{[\s\S]*?resumableInterviews\.find\(\(r\) => r\.applicationId === appId && r\.hasProfile\)[\s\S]*?setScreen\("resume_choice"\)/);
+    const biff = slice("function buildInterviewFromApplication(app) {", "/* ---------------- PHASE 18: RESUME AN UNFINISHED INTERVIEW");
+    expect(biff).toMatch(/if \(!maybeOfferResume\(app\.id, "wizard"\)\) setScreen\("create"\)/);
+    const again = slice("function practiseApplicationAgain(app) {", "/* ---------------- PHASE 16A: APPLICATIONS PILLAR");
+    expect(again).toMatch(/if \(!maybeOfferResume\(app\.id, "wizard"\)\) setScreen\("create"\)/);
+    const cont = slice("async function continueApplication(app) {", "// Phase 4: practise again");
+    expect(cont).toMatch(/if \(maybeOfferResume\(app\.id, "wizard"\)\) return;/);
+  });
+  it("the resume_choice screen offers Continue (primary) and Start New (secondary), with a context-aware Start New", () => {
     const CHOICE = slice('screen === "resume_choice" && resumeChoice && (', "{/* ---------------- CREATE (progressive wizard) ---------------- */}");
     expect(CHOICE).toMatch(/You have an interview in progress/);
     expect(CHOICE).toMatch(/resumeInterviewById\(resumeChoice\.id\)/);
-    expect(CHOICE).toMatch(/forceNewRef\.current = true; setResumeChoice\(null\); guarded\(analyseAndPlan\)/);
+    // Start New: sets the one-shot bypass, then routes to the wizard (entry-point
+    // path) or straight to generation (backstop path) per resumeChoice.next
+    expect(CHOICE).toMatch(/const goGenerate = resumeChoice\.next === "generate";\s*\n?\s*forceNewRef\.current = true;\s*\n?\s*setResumeChoice\(null\);\s*\n?\s*if \(goGenerate\) guarded\(analyseAndPlan\); else setScreen\("create"\);/);
   });
   it("Start New never deletes / overwrites / mutates the existing interview (no such calls in the choice screen or the bypass)", () => {
     const CHOICE = slice('screen === "resume_choice" && resumeChoice && (', "{/* ---------------- CREATE (progressive wizard) ---------------- */}");

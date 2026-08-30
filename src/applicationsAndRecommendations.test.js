@@ -93,7 +93,10 @@ describe("continueApplication (STRUCTURAL)", () => {
   });
 
   it("lands on wizard step 2 (company/role already known, so step 1 is skipped)", () => {
-    expect(FN_SRC).toMatch(/setWizardStep\(2\); setScreen\("create"\)/);
+    // Phase 20: an entry-point resume guard sits between setWizardStep and
+    // setScreen — step is still 2, screen is still "create" when not resuming.
+    expect(FN_SRC).toMatch(/setWizardStep\(2\);/);
+    expect(FN_SRC).toMatch(/setScreen\("create"\)/);
   });
 });
 
