@@ -250,17 +250,77 @@ export function sortResumableInterviews(list, now = Date.now()) {
  */
 export function summariseResumable(row, counts, app) {
   const config = row && row.config && typeof row.config === "object" ? row.config : {};
+  const pipeline = str(config.pipeline) === BATCH_PIPELINE ? BATCH_PIPELINE : "adaptive_turn";
+  const { target, approximate } = resumableTarget(config, pipeline, counts && counts.total);
   return {
     id: row.id,
     applicationId: row.application_id || null,
     company: str(app && app.company),
     role: str(app && app.role),
     stage: row.stage || config.stage || null,
-    pipeline: str(config.pipeline) === BATCH_PIPELINE ? BATCH_PIPELINE : "adaptive_turn",
+    pipeline,
     answeredCount: num(counts && counts.answered, 0),
+    // raw count of questions GENERATED so far — kept for any consumer that
+    // genuinely needs it; NOT the display denominator (see targetQuestions).
     totalQuestions: num(counts && counts.total, 0),
+    // the configured interview target for the progress denominator (Phase 20)
+    targetQuestions: target,
+    targetApproximate: approximate,
     createdAt: row.created_at || null,
     interviewDate: (app && app.interview_date) || null,
     hasProfile: !!(config.profile && config.profile.interview_profile),
   };
+}
+
+/**
+ * resumableTarget(config, pipeline, generatedCount) -> { target, approximate }
+ *
+ * The single canonical, deterministic source for a resumable interview's
+ * DISPLAY denominator ("N of ~12 answered"). The number of questions generated
+ * so far is NEVER the target when a configured target exists — it is only a
+ * last-resort fallback for a legacy/corrupt row with no usable config.
+ *
+ *  adaptive_turn:
+ *    config.max_questions  — the user's chosen "Length" (Short 8 / Standard 12 /
+ *      Long 18); written on every interview created since Phase 18; the value the
+ *      deterministic ending rule (isInterviewComplete) actually uses.
+ *    config.question_count — stage default fallback for a pre-Phase-18 row.
+ *    generatedCount        — genuine last resort (config entirely absent).
+ *    -> always `approximate: true` — the adaptive engine can end a turn early or
+ *       late by one, and the live interview screen already renders "of ~N".
+ *
+ *  independent_batch:
+ *    config.question_count — the EXACT number the batch generator produces and
+ *      persists up front (== generatedCount once generation completes).
+ *    generatedCount        — last resort.
+ *    -> `approximate: false` — batch length is fixed and exact.
+ *
+ * `applications.interview_length` is deliberately NOT consulted: it lives on the
+ * application row, is overwritten by every later interview built for that
+ * application, and therefore does not describe any one specific interview.
+ */
+export function resumableTarget(config, pipeline, generatedCount) {
+  const c = config && typeof config === "object" ? config : {};
+  const n = (v) => { const x = Number(v); return Number.isFinite(x) && x > 0 ? Math.round(x) : 0; };
+  const gen = n(generatedCount);
+  if (str(pipeline) === BATCH_PIPELINE) {
+    return { target: n(c.question_count) || gen || 0, approximate: false };
+  }
+  return { target: n(c.max_questions) || n(c.question_count) || gen || 0, approximate: true };
+}
+
+/**
+ * resumableProgressLabel(summary) -> "3 of ~12 questions answered"
+ * The ONE place the resumable-interview progress sentence is built, so the
+ * Dashboard card, the Application-workspace card, and the resume/start-new
+ * screen can never disagree. Uses the CONFIGURED target (targetQuestions), not
+ * the number generated so far; "~" only when the target is approximate
+ * (adaptive). Falls back to "?" for a legacy/corrupt row with no known target.
+ */
+export function resumableProgressLabel(summary) {
+  const s = summary && typeof summary === "object" ? summary : {};
+  const answered = num(s.answeredCount, 0);
+  const t = num(s.targetQuestions, 0);
+  const shown = t > 0 ? `${s.targetApproximate ? "~" : ""}${t}` : "?";
+  return `${answered} of ${shown} question${t === 1 ? "" : "s"} answered`;
 }
