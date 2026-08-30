@@ -312,9 +312,15 @@ describe("entry points default to buildMethod 'jdcv' — the original JD/CV flow
     expect(fnSrc).toMatch(/setWizardStep\(1\); setScreen\("create"\)/);
   });
 
-  it("wizard steps 2/3's JD/CV requirement is relaxed ONLY for buildMethod === \"invitation\" — the original path's disabled condition still gates on jdText/cvText exactly as before", () => {
+  it("wizard step 2's JD requirement is relaxed ONLY for buildMethod === \"invitation\" — the original path's disabled condition still gates on jdText exactly as before", () => {
     expect(SOURCE).toMatch(/disabled=\{buildMethod !== "invitation" && !jdText\}/);
-    expect(SOURCE).toMatch(/disabled=\{buildMethod !== "invitation" && !cvText\}/);
+  });
+
+  it("Phase 22: wizard step 3's CV is optional — an empty CV is no longer a hard gate; the user continues via an explicit 'Continue without a CV' action", () => {
+    // the old CV gate is gone
+    expect(SOURCE).not.toMatch(/disabled=\{buildMethod !== "invitation" && !cvText\}/);
+    // and there is a clear intentional-skip affordance
+    expect(SOURCE).toMatch(/Continue without a CV/);
   });
 
   it("buildMethod state defaults to \"jdcv\" — a build that never touches the invitation scanner at all behaves byte-identically to before Phase 7", () => {

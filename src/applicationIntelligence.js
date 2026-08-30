@@ -603,6 +603,35 @@ export function cvEvidenceVerifies(quote, cvText) {
 }
 
 /**
+ * readEvidenceQuote(c) -> string
+ * Safely pull a human-readable CV quote out of a claim-ish object WITHOUT ever
+ * stringifying an object (which is how "[object Object]" leaked into the UI).
+ * Supports:
+ *   - a probe-area / normalised shape: a plain `evidence_quote` string;
+ *   - a persisted candidate_claims row: the `evidence` jsonb column, e.g.
+ *     [{ type: "cv_quote", quote: "...", verified: true }] (Phase 21 shape).
+ * A structured `evidence` entry only yields a quote when it is explicitly
+ * `verified` — so this never promotes an unproven object to a CV attribution,
+ * and legacy / empty / malformed evidence returns "" (generic wording
+ * downstream). Never throws; handles arrays with mixed / unexpected shapes.
+ */
+export function readEvidenceQuote(c) {
+  if (!c || typeof c !== "object") return "";
+  const direct = str(c.evidence_quote).trim();
+  if (direct) return direct;
+  const ev = c.evidence;
+  if (Array.isArray(ev)) {
+    for (const e of ev) {
+      if (e && typeof e === "object" && e.verified === true) {
+        const q = str(e.quote ?? e.text).trim();
+        if (q) return q;
+      }
+    }
+  }
+  return "";
+}
+
+/**
  * normaliseCvEvidenceItem(x) -> { text, source, evidence_quote, why? } | null
  * Pure, never throws. Accepts a plain string, a { text, source, evidence_quote }
  * object, or a probe-area-ish { claim, why, source, evidence_quote } object.
@@ -621,7 +650,9 @@ export function normaliseCvEvidenceItem(x) {
   const item = {
     text: text.slice(0, 400),
     source: CV_EVIDENCE_SOURCES.includes(x.source) ? x.source : "unverified",
-    evidence_quote: str(x.evidence_quote ?? x.evidence).trim().slice(0, 400),
+    // readEvidenceQuote never stringifies an object — a structured `evidence`
+    // array (candidate_claims shape) yields a quote only from a verified entry.
+    evidence_quote: readEvidenceQuote(x).slice(0, 400),
   };
   const why = str(x.why).trim();
   if (why) item.why = why.slice(0, 400);
@@ -728,7 +759,11 @@ export function experiencesToExplore({ candidateProfile, claims, cvText } = {}, 
     const t = str(c?.claim_text ?? c?.claim).trim();
     if (!t) continue;
     const cSource = CV_EVIDENCE_SOURCES.includes(c?.source) ? c.source : "unverified";
-    const cQuote = str(c?.evidence_quote ?? c?.evidence).trim();
+    // FIX (Phase 22): a persisted candidate_claims row keeps its CV excerpt in
+    // the `evidence` jsonb column as [{ type:"cv_quote", quote, verified:true }],
+    // NOT as an `evidence_quote` string. readEvidenceQuote extracts the quote
+    // text safely (never "[object Object]") and only from a verified entry.
+    const cQuote = readEvidenceQuote(c);
     const verified = cSource === "cv" && cQuote && (!haveCv || cvEvidenceVerifies(cQuote, cvText));
     entries.push({ text: t, kind: "claim", quote: verified ? cQuote : "" });
   }
