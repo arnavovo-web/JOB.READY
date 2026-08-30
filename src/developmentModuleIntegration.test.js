@@ -89,7 +89,7 @@ describe("deterministic sub-activities make NO AI call", () => {
   });
   it("quiz marking uses the pure markWrittenQuiz helper, not an AI request", () => {
     expect(DETERMINISTIC).toMatch(/markWrittenQuiz\(quizDraft, item\?\.expected_concepts/);
-    expect(SRC).toMatch(/import \{ markWrittenQuiz, coverageVerdict \} from "\.\/writtenQuiz"/);
+    expect(SRC).toMatch(/import \{ markWrittenQuiz, coverageVerdict(, normaliseConcept)? \} from "\.\/writtenQuiz"/);
   });
   it("retake reshuffles the persisted item pool — no regeneration", () => {
     const START_QUIZ = DETERMINISTIC.slice(DETERMINISTIC.indexOf("function startWrittenQuiz()"), DETERMINISTIC.indexOf("async function saveFlashProgress"));

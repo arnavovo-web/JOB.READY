@@ -226,23 +226,38 @@ export function pickContinuePreparing(state, { limit = 1 } = {}) {
 }
 
 /**
- * redoConceptUnion(module) -> [{ label, accepted_terms }]
+ * redoConceptUnion(module) -> [{ label, concept, accepted_terms, accepted_phrasings, aliases, definition, required }]
  *
  * The de-duplicated union of every learning item's expected_concepts. This is
  * the deterministic marking target when the student re-answers the ORIGINAL
  * interview question (writtenQuiz.js markWrittenQuiz consumes this shape). No AI.
+ *
+ * Phase 21: the richer concept keys (aliases / definition / accepted_phrasings /
+ * required) are passed straight through so a redo answer is marked with the same
+ * tolerance as the quiz. Legacy modules carry only { label, accepted_terms };
+ * the extra fields simply come through empty/absent and markWrittenQuiz defaults
+ * `required` to true — identical behaviour to before Phase 21.
  */
 export function redoConceptUnion(module) {
   const seen = new Set();
   const out = [];
+  const list = (v) => arr(v).map((t) => str(t)).filter(Boolean);
   for (const item of arr(module && module.learning_items)) {
     for (const c of arr(item && item.expected_concepts)) {
-      const label = str(c && c.label).trim();
+      const label = (str(c && c.concept).trim() || str(c && c.label).trim());
       if (!label) continue;
       const key = norm(label);
       if (seen.has(key)) continue;
       seen.add(key);
-      out.push({ label, accepted_terms: arr(c && c.accepted_terms).map((t) => str(t)).filter(Boolean) });
+      out.push({
+        label,
+        concept: label,
+        accepted_terms: list(c && c.accepted_terms),
+        accepted_phrasings: list(c && c.accepted_phrasings),
+        aliases: list(c && c.aliases),
+        definition: str(c && c.definition).trim(),
+        required: c && c.required === false ? false : true,
+      });
     }
   }
   return out;

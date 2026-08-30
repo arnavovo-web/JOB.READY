@@ -280,16 +280,24 @@ export function buildRecommendedProbes(unresolvedClaims, max = MAX_RECOMMENDED_P
  * recommendedProbes: buildRecommendedProbes()'s output — persistent,
  *   cross-interview unresolved claims.
  *
- * Returns the single merged, deduped, bounded {claim, why}[] array meant
- * to be substituted into profile.candidate_profile.potential_probe_areas
- * before it reaches the Phase 2C scheduler — the ONLY integration point
- * with adaptiveEngine.js, which already accepts this exact shape
- * unmodified (adaptPotentialProbeAreas). category selection, turn type,
- * and anchor source remain entirely the scheduler's — this only widens
- * the pool of candidate-specific claims the scheduler may choose to
- * anchor a challenge_claim turn on.
+ * Returns the single merged, deduped, bounded {claim, why, source,
+ * evidence_quote}[] array meant to be substituted into
+ * profile.candidate_profile.potential_probe_areas before it reaches the
+ * Phase 2C scheduler — the ONLY integration point with adaptiveEngine.js,
+ * which already accepts this exact shape unmodified (adaptPotentialProbeAreas
+ * ignores the extra keys). category selection, turn type, and anchor source
+ * remain entirely the scheduler's — this only widens the pool of
+ * candidate-specific claims the scheduler may choose to anchor a
+ * challenge_claim turn on.
+ *
+ * Phase 21: provenance ({ source, evidence_quote }) is carried through so a
+ * merged probe area keeps its "cv" / "jd" / "inferred" / "unverified" origin
+ * end to end. Missing provenance defaults to "unverified" — a recommended
+ * probe from a past interview carries none, and must never be treated as a
+ * verified CV quote.
  */
 export function mergeProbeAreasForInterview(freshProbeAreas, recommendedProbes, max = MAX_MERGED_PROBE_AREAS) {
+  const SOURCES = ["cv", "jd", "inferred", "unverified"];
   const merged = [];
   const seen = [];
   for (const p of [...arr(freshProbeAreas), ...arr(recommendedProbes)]) {
@@ -297,7 +305,12 @@ export function mergeProbeAreasForInterview(freshProbeAreas, recommendedProbes, 
     if (!claim) continue;
     if (seen.some((s) => claimsAreDuplicate(s, claim))) continue;
     seen.push(claim);
-    merged.push({ claim, why: str(p?.why) });
+    merged.push({
+      claim,
+      why: str(p?.why),
+      source: SOURCES.includes(p?.source) ? p.source : "unverified",
+      evidence_quote: str(p?.evidence_quote),
+    });
     if (merged.length >= max) break;
   }
   return merged;

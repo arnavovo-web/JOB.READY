@@ -60,7 +60,17 @@ describe("Candidate Intelligence cannot override the scheduler (STRUCTURAL)", ()
       [{ claim: "Built an automated valuation model", why: "cv" }],
       [{ claim: "Led a team of 10", why: "unresolved", category: "behavioural_competency", claimId: "c1" }]
     );
-    for (const p of merged) expect(Object.keys(p).sort()).toEqual(["claim", "why"]);
+    // Phase 21: output carries provenance ({ source, evidence_quote }) end to end,
+    // but still NEVER a scheduler-owned field.
+    for (const p of merged) {
+      expect(Object.keys(p).sort()).toEqual(["claim", "evidence_quote", "source", "why"]);
+      expect(p).not.toHaveProperty("category");
+      expect(p).not.toHaveProperty("turnType");
+      expect(p).not.toHaveProperty("anchorSource");
+      expect(p).not.toHaveProperty("claimId");
+    }
+    // provenance defaults to "unverified" when the input probe area carries none
+    for (const p of merged) expect(p.source).toBe("unverified");
   });
 });
 
@@ -183,7 +193,11 @@ describe("cross-interview wiring (STRUCTURAL + EXECUTABLE)", () => {
   });
 
   it("STRUCTURAL: claim seeding is deduped against existing candidateClaims before insert — never blindly re-inserts", () => {
-    expect(ANALYSE_AND_PLAN_SRC).toMatch(/dedupeNewClaims\(candidateClaims, result\.candidate_profile\.potential_probe_areas\)/);
+    // Phase 21: only CV-verified probe areas are seeded as candidate_claims, so
+    // the dedupe input is now the filtered `cvVerifiedProbes` list rather than
+    // the raw potential_probe_areas — still deduped against candidateClaims.
+    expect(ANALYSE_AND_PLAN_SRC).toMatch(/const cvVerifiedProbes = arr\(result\.candidate_profile\.potential_probe_areas\)\s*\n?\s*\.filter\(\(p\) => p\?\.source === "cv" && p\?\.evidence_quote\)/);
+    expect(ANALYSE_AND_PLAN_SRC).toMatch(/dedupeNewClaims\(candidateClaims, cvVerifiedProbes\)/);
   });
 
   it("EXECUTABLE: buildCandidateSignals over multiple interviews' worth of memory rows reflects accumulated evidence (what a later interview would consume)", () => {
