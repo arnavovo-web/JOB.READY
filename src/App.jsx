@@ -100,6 +100,11 @@ import { interviewCountdown, sortApplicationsByUpcoming, partitionApplications, 
 // Phase 18: pure, offline reconstruction of an unfinished interview from its
 // persisted rows. No AI, no DB, no React. Resume = read + deterministic rebuild.
 import { reconstructInterviewState, sortResumableInterviews, summariseResumable, resumableProgressLabel } from "./resumeInterview";
+// Phase 30: legal pages. Structured content (no JSX), grounded in the actual
+// data flows; central contact/metadata config with clearly-marked placeholders.
+import { PRIVACY_POLICY } from "./legal/privacyPolicy";
+import { TERMS_OF_SERVICE } from "./legal/termsOfService";
+import { formatLegalDate } from "./legal/legalContact";
 // Phase 23: pure auth-form helpers — show/hide-password type+label mapping,
 // new-password + reset-email validation, the password-reset redirect-URL
 // strategy (origin-based, no hardcoded host), and recovery-link
@@ -281,9 +286,25 @@ const TOKENS = `
   .jr-chartbar:hover{ transform: translateY(-2px); }
   .jr-chartbar:focus-visible{ outline:2px solid var(--blue); outline-offset:3px; }
 
+  /* Phase 30: legal pages (Privacy Policy / Terms of Service) + shared footer.
+     A constrained ~68ch reading column, with an optional sticky table of
+     contents that only appears on wide screens. */
+  .jr-legal-layout{ display:flex; gap:40px; align-items:flex-start; }
+  .jr-legal-toc{ display:none; }
+  .jr-legal-prose{ min-width:0; max-width:68ch; }
+  .jr-legal-toclink{ font-size:13px; line-height:1.45; color:var(--text-dim); text-decoration:none; }
+  .jr-legal-toclink:hover{ color:var(--navy); text-decoration:underline; }
+  @media (min-width:920px){
+    .jr-legal-toc{ display:block; position:sticky; top:88px; flex:0 0 220px; }
+  }
+
+  .jr-footer{ margin-top:56px; padding-top:20px; border-top:1px solid var(--border); display:flex; flex-wrap:wrap; align-items:center; gap:8px 18px; font-size:13px; color:var(--text-faint); }
+  .jr-footer a, .jr-footer button{ color:var(--text-dim); }
+
   @media (max-width:600px){
     .jr-page-header{ flex-direction:column; align-items:stretch; }
     .jr-metric-value{ font-size:28px; }
+    .jr-legal-layout{ gap:0; }
   }
 
   /* ---------------------------------------------------------------- *
@@ -2954,6 +2975,85 @@ class ErrorBoundary extends React.Component {
 }
 
 /* ================================================================== */
+/* PHASE 30 — LEGAL PAGES + FOOTER                                      */
+/* ------------------------------------------------------------------ */
+/* Presentation only. The policy text lives in src/legal/*.js. These   */
+/* components render it; they hold no state and call no handler beyond  */
+/* the `openLegal` navigation passed in from App().                    */
+/* ================================================================== */
+
+// A restrained legal/brand footer for the public + auth screens only.
+// Never rendered on the immersive authenticated product screens.
+function LegalFooter({ openLegal }) {
+  return (
+    <footer className="jr-footer">
+      <span>&copy; {new Date().getFullYear()} JOB.READY</span>
+      <LinkBtn onClick={() => openLegal("privacy")} style={{ display: "inline", fontWeight: 500, cursor: "pointer" }}>Privacy Policy</LinkBtn>
+      <LinkBtn onClick={() => openLegal("terms")} style={{ display: "inline", fontWeight: 500, cursor: "pointer" }}>Terms of Service</LinkBtn>
+      <span>Made for better interview preparation</span>
+    </footer>
+  );
+}
+
+// Renders a structured policy document ({ title, subtitle, sections:[{ id,
+// heading, paragraphs, list?, trailing? }] }). Semantic headings, a real
+// anchor-linked table of contents on wide screens, a constrained reading
+// column, and a cross-link to the other document.
+function LegalPage({ doc, onBack, openLegal }) {
+  const other = doc.id === "privacy"
+    ? { label: "Terms of Service", page: "terms" }
+    : { label: "Privacy Policy", page: "privacy" };
+  return (
+    <div className="jr-fade jr-page jr-page-wide">
+      <Btn variant="ghost" onClick={onBack} style={{ marginBottom: 16, padding: "6px 4px" }}><ArrowLeft size={14} /> Back</Btn>
+      <div className="jr-page-header">
+        <div className="jr-page-header-text">
+          <div className="flex items-center gap-3" style={{ marginBottom: 6 }}>
+            <IconBadge icon={FileText} tone="neutral" size={18} lg />
+            <h1 className="jr-h1">{doc.title}</h1>
+          </div>
+          <div className="jr-text">{doc.subtitle}</div>
+          <div className="jr-meta" style={{ marginTop: 10 }}>Last updated: {formatLegalDate()}</div>
+        </div>
+      </div>
+
+      <div className="jr-legal-layout">
+        <nav className="jr-legal-toc" aria-label="On this page">
+          <div className="jr-meta" style={{ marginBottom: 10 }}>On this page</div>
+          <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 7 }}>
+            {doc.sections.map((s) => (
+              <li key={s.id}><a href={"#legal-" + s.id} className="jr-legal-toclink">{s.heading}</a></li>
+            ))}
+          </ul>
+        </nav>
+
+        <div className="jr-legal-prose">
+          {doc.sections.map((s) => (
+            <section key={s.id} id={"legal-" + s.id} style={{ marginBottom: 28, scrollMarginTop: 24 }}>
+              <h2 className="jr-h2" style={{ marginBottom: 10 }}>{s.heading}</h2>
+              {(s.paragraphs || []).map((p, i) => <p key={i} className="jr-text" style={{ marginBottom: 10 }}>{p}</p>)}
+              {Array.isArray(s.list) && s.list.length > 0 && (
+                <ul style={{ margin: "2px 0 10px", paddingLeft: 22 }}>
+                  {s.list.map((li, i) => <li key={i} className="jr-text" style={{ marginBottom: 6 }}>{li}</li>)}
+                </ul>
+              )}
+              {(s.trailing || []).map((p, i) => <p key={i} className="jr-text" style={{ marginBottom: 10 }}>{p}</p>)}
+            </section>
+          ))}
+          <div style={{ paddingTop: 18, borderTop: "1px solid var(--border)" }}>
+            <span className="jr-text-sm">See also the </span>
+            <LinkBtn onClick={() => openLegal(other.page)} style={{ display: "inline", color: "var(--blue-dark)", fontWeight: 600, cursor: "pointer" }}>{other.label}</LinkBtn>
+            <span className="jr-text-sm">.</span>
+          </div>
+        </div>
+      </div>
+
+      <LegalFooter openLegal={openLegal} />
+    </div>
+  );
+}
+
+/* ================================================================== */
 /* MAIN APP                                                             */
 /* ================================================================== */
 function App() {
@@ -2971,6 +3071,9 @@ function App() {
   const [authBusy, setAuthBusy] = useState(false); // Phase 23: in-flight auth request — disables submit buttons, blocks duplicate submits
   const [resetEmailSent, setResetEmailSent] = useState(false); // Phase 23: forgot-password success state
   const [error, setError] = useState("");
+  // Phase 30: which screen to return to when leaving a legal page. Mirrors the
+  // existing `historyBackScreen` pattern; screen-swap navigation only, no router.
+  const [legalReturn, setLegalReturn] = useState("landing");
 
   const [wizardStep, setWizardStep] = useState(1);
   const [company, setCompany] = useState("");
@@ -5297,7 +5400,15 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
   }
 
   /* ---------------- DERIVED VALUES ---------------- */
-  const showNav = ["landing", "how", "universities", "login", "dashboard", "applications", "application", "application_form", "create", "create_choose", "resume_choice", "invitation_paste", "invitation_review", "preview", "progress", "report", "report_view", "classroom", "lesson", "ac_home", "ac_exercise", "ac_scorecard", "ac_attempt_view"].includes(screen);
+  const showNav = ["landing", "how", "universities", "login", "privacy", "terms", "dashboard", "applications", "application", "application_form", "create", "create_choose", "resume_choice", "invitation_paste", "invitation_review", "preview", "progress", "report", "report_view", "classroom", "lesson", "ac_home", "ac_exercise", "ac_scorecard", "ac_attempt_view"].includes(screen);
+
+  // Phase 30: open a legal page, remembering where to return to. Legal pages are
+  // public (no auth guard) and reachable from the landing page, the auth screens
+  // and the shared footer. Pure screen-swap — routing behaviour is unchanged.
+  const openLegal = (page) => {
+    if (screen !== "privacy" && screen !== "terms") setLegalReturn(screen);
+    setScreen(page);
+  };
   // Only interview-evidenced topics count toward the nav "needs work" badge —
   // a recommendation-materialised topic (no scores yet) is "to start", not "needs work".
   const classroomNeedsWorkCount = classroom.filter((t) => (t.scores || []).length > 0 && statusFor(t.scores).label !== "Mastered").length;
@@ -5687,6 +5798,9 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
             <p style={{ color: "#94A3B8", fontSize: 15.5, marginBottom: 28 }}>Stop guessing what you'll be asked. Start practising for the interview you're actually going to face.</p>
             <Btn variant="accent" onClick={() => setScreen("login")} style={{ padding: "14px 28px", fontSize: 15.5 }}>Start practising <ChevronRight size={16} /></Btn>
           </div>
+          <div style={{ maxWidth: 1080, margin: "0 auto", padding: "0 24px" }}>
+            <LegalFooter openLegal={openLegal} />
+          </div>
         </div>
       )}
 
@@ -5707,6 +5821,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
             </div>
           ))}
           <Btn variant="accent" onClick={() => setScreen("login")} style={{ marginTop: 8 }}>Start practising <ChevronRight size={16} /></Btn>
+          <LegalFooter openLegal={openLegal} />
         </div>
       )}
       {screen === "universities" && (
@@ -5714,6 +5829,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
           <Btn variant="ghost" onClick={() => setScreen("landing")} style={{ marginBottom: 20, padding: "8px 4px" }}><ArrowLeft size={14} /> Back</Btn>
           <h2 style={{ fontSize: 26, fontWeight: 800, color: "var(--navy)", marginBottom: 14 }}>JOB.READY for universities</h2>
           <p style={{ color: "var(--text-dim)", fontSize: 15, lineHeight: 1.6 }}>The institutional dashboard is on the roadmap. This MVP is focused on proving the individual student experience first.</p>
+          <LegalFooter openLegal={openLegal} />
         </div>
       )}
 
@@ -5747,6 +5863,14 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                 {error && <div role="alert" style={{ color: "var(--bad)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
                 {authNotice && <div role="status" style={{ color: "var(--good)", fontSize: 13, marginBottom: 10 }}>{authNotice}</div>}
                 <Btn variant="accent" full disabled={authBusy} onClick={() => guarded(handleSignUp)} style={{ marginTop: 8 }}>{authBusy ? "Creating account…" : <>Create account <ChevronRight size={16} /></>}</Btn>
+                {/* Phase 30: legal notice next to account creation. Low-friction —
+                    clear notice + links, no checkbox (see the Phase 30 report). */}
+                <div className="jr-help" style={{ marginTop: 12, textAlign: "center" }}>
+                  By creating an account, you agree to the{" "}
+                  <LinkBtn onClick={() => openLegal("terms")} style={{ display: "inline", color: "var(--blue-dark)", fontWeight: 600, cursor: "pointer" }}>Terms of Service</LinkBtn>{" "}
+                  and acknowledge the{" "}
+                  <LinkBtn onClick={() => openLegal("privacy")} style={{ display: "inline", color: "var(--blue-dark)", fontWeight: 600, cursor: "pointer" }}>Privacy Policy</LinkBtn>.
+                </div>
               </Card>
               <div style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 16, textAlign: "center" }}>
                 Already have an account?{" "}
@@ -5831,9 +5955,18 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
               </div>
             </>
           )}
+          <LegalFooter openLegal={openLegal} />
         </div>
         );
       })()}
+
+      {/* ---------------- LEGAL (public, no auth) ---------------- */}
+      {screen === "privacy" && (
+        <LegalPage doc={PRIVACY_POLICY} onBack={() => setScreen(legalReturn)} openLegal={openLegal} />
+      )}
+      {screen === "terms" && (
+        <LegalPage doc={TERMS_OF_SERVICE} onBack={() => setScreen(legalReturn)} openLegal={openLegal} />
+      )}
 
       {/* ---------------- DASHBOARD ---------------- */}
       {screen === "dashboard" && user && (
