@@ -150,8 +150,9 @@ describe("Competency trends panel is a thin render of candidateState.js's own tr
 
   it("is gated on having at least one completed interview, same as the other deterministic Progress sections", () => {
     // The FIRST "Competency trends" occurrence is the section's own explanatory comment, which
-    // sits ABOVE the gate — search from the JSX heading (">Competency trends</div>") instead.
-    const idx = PROGRESS_SRC.indexOf(">Competency trends</div>");
+    // sits ABOVE the gate — search from the JSX heading instead. Phase 28 renders the heading
+    // through <SectionHeading>, so match the closing tag loosely (</span> now, was </div>).
+    const idx = PROGRESS_SRC.indexOf(">Competency trends</");
     expect(idx).toBeGreaterThan(-1);
     const nearby = PROGRESS_SRC.slice(Math.max(0, idx - 1500), idx);
     expect(nearby).toMatch(/\{interviewList\.length > 0 && \(\(\) => \{/);

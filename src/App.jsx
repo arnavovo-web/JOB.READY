@@ -2401,6 +2401,20 @@ function Select({ id, value, onChange, children, ...rest }) {
   return <select id={id} className="jr-input jr-select" value={value} onChange={onChange} {...rest}>{children}</select>;
 }
 
+// Phase 28: the "eyebrow" section label used dozens of times across the
+// authenticated screens (an optional lucide icon + an uppercase metadata
+// label). Presentation only — collapses ~20 slightly-divergent inline
+// copies (12/13px, 700/600 weight, 0.03–0.05em tracking) onto the single
+// .jr-meta scale. `tone` only recolours the icon + label.
+function SectionHeading({ icon: Icon, tone, children, style }) {
+  return (
+    <div className="flex items-center gap-2" style={{ marginBottom: 12, ...style }}>
+      {Icon ? <Icon size={15} color={tone || "var(--text-faint)"} aria-hidden="true" /> : null}
+      <span className="jr-meta" style={tone ? { color: tone } : undefined}>{children}</span>
+    </div>
+  );
+}
+
 function ScoreBar({ label, value, max = 100, color }) {
   const pct = Math.max(0, Math.min(100, (value / max) * 100));
   const c = color || (pct >= 75 ? "var(--good)" : pct >= 50 ? "var(--blue)" : "var(--warn)");
@@ -5690,7 +5704,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
             <Card style={{ padding: 20 }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-faint)", marginBottom: 8 }}>INTERVIEW READINESS</div>
+              <div className="jr-meta" style={{ marginBottom: 8 }}>Interview readiness</div>
               <div style={{ fontSize: 30, fontWeight: 800, color: "var(--navy)" }}>{interviewList.length ? interviewList[interviewList.length - 1].overall_score : "—"}<span style={{ fontSize: 15, color: "var(--text-faint)" }}>/100</span></div>
               {interviewList.length > 1 && (
                 <div style={{ fontSize: 12, color: "var(--good)", fontWeight: 600, marginTop: 4 }}>
@@ -5699,11 +5713,11 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
               )}
             </Card>
             <Card style={{ padding: 20 }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-faint)", marginBottom: 8 }}>INTERVIEWS COMPLETED</div>
+              <div className="jr-meta" style={{ marginBottom: 8 }}>Interviews completed</div>
               <div style={{ fontSize: 30, fontWeight: 800, color: "var(--navy)" }}>{interviewList.length}</div>
             </Card>
             <Card style={{ padding: 20 }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-faint)", marginBottom: 8 }}>NEXT UP</div>
+              <div className="jr-meta" style={{ marginBottom: 8 }}>Next up</div>
               {/* Phase 4 (Dashboard "what should I do next"): the single highest-priority item
                   from the SAME deterministic Candidate Strategy the scheduler itself would
                   nudge toward (interviewStrategy.js, untouched) — grounded in real stored
@@ -5727,7 +5741,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
             <div style={{ marginBottom: 20 }}>
               {resumableReady.map((r) => (
                 <Card key={r.id} style={{ padding: 22, marginBottom: 10, borderLeft: "4px solid var(--violet)" }}>
-                  <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>🎤 Continue your interview</div>
+                  <div className="jr-meta flex items-center gap-2" style={{ color: "var(--violet)", marginBottom: 8 }}><Mic size={13} aria-hidden="true" /> Continue your interview</div>
                   <div style={{ fontSize: 15.5, fontWeight: 700, color: "var(--navy)" }}>{r.company || "Interview"}{r.role ? ` — ${r.role}` : ""}</div>
                   <div style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 4 }}>
                     {resumableProgressLabel(r)}
@@ -5754,9 +5768,12 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
               application. You have not been tested on this yet." No AI call. */}
           {continuePreparing && (
             <Card style={{ padding: 22, marginBottom: 20, borderLeft: `4px solid ${continuePreparing.evidenceType === "demonstrated" ? "var(--bad)" : "var(--blue)"}` }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>Continue preparing</div>
-              <div style={{ fontSize: 15.5, fontWeight: 700, color: "var(--navy)" }}>
-                {continuePreparing.evidenceType === "demonstrated" ? "🔴 " : "📚 "}{continuePreparing.title}
+              <div className="jr-meta" style={{ marginBottom: 8 }}>Continue preparing</div>
+              <div className="flex items-center gap-2" style={{ fontSize: 15.5, fontWeight: 700, color: "var(--navy)" }}>
+                {continuePreparing.evidenceType === "demonstrated"
+                  ? <AlertCircle size={16} color="var(--bad)" aria-hidden="true" style={{ flexShrink: 0 }} />
+                  : <BookOpen size={16} color="var(--blue)" aria-hidden="true" style={{ flexShrink: 0 }} />}
+                {continuePreparing.title}
               </div>
               {(continuePreparing.company || continuePreparing.role) && (
                 <div style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 2 }}>{[continuePreparing.company, continuePreparing.role].filter(Boolean).join(" — ")}</div>
@@ -5775,7 +5792,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
 
           {perf?.weaknesses?.length > 0 && (
             <Card style={{ padding: 22, marginBottom: 20, borderLeft: "4px solid var(--blue)" }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "var(--blue)", marginBottom: 12, textTransform: "uppercase" }}>Your focus areas</div>
+              <div className="jr-meta" style={{ color: "var(--blue)", marginBottom: 12 }}>Your focus areas</div>
               {perf.weaknesses.slice(0, 3).map((w, i) => (
                 <div key={i} className="flex gap-3 mb-2" style={{ fontSize: 14.5, color: "var(--text)" }}>
                   <span style={{ fontWeight: 700, color: "var(--navy)" }}>{i + 1}.</span> {w}
@@ -5823,11 +5840,13 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
               was, and — critically — a draft they started but never turned into an interview,
               which previously had no UI presence anywhere at all. */}
           <div className="flex justify-between items-center mb-3">
-            <div style={{ fontSize: 17, fontWeight: 700, color: "var(--navy)" }}>Your applications</div>
+            <h3 className="jr-h2">Your applications</h3>
             {interviewList.length > 0 && <Btn variant="ghost" onClick={() => setScreen("progress")} style={{ padding: "6px 4px" }}><BarChart3 size={14} /> View progress</Btn>}
           </div>
           {applicationsWithInterviews.length === 0 ? (
-            <Card style={{ padding: 36, textAlign: "center", color: "var(--text-faint)", fontSize: 14 }}>No applications yet. Start your first one to see your readiness score here.</Card>
+            <Card style={{ padding: 28 }}>
+              <EmptyState icon={Briefcase} title="No applications yet">Start your first one and your readiness score will show up here.</EmptyState>
+            </Card>
           ) : (
             <div className="grid grid-cols-1 gap-3">
               {applicationsWithInterviews.map((app) => {
@@ -5891,17 +5910,17 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
           </div>
 
           {applicationsWithInterviews.length === 0 ? (
-            <Card style={{ padding: 40, textAlign: "center" }}>
-              <Briefcase size={26} color="var(--text-faint)" style={{ margin: "0 auto 14px" }} />
-              <div style={{ fontSize: 15, fontWeight: 700, color: "var(--navy)", marginBottom: 6 }}>No applications yet</div>
-              <div style={{ fontSize: 13.5, color: "var(--text-dim)", marginBottom: 18 }}>Add a company and role you're preparing for. You can analyse it and start practising whenever you're ready.</div>
-              <Btn variant="accent" onClick={() => openApplicationForm(null)}><Plus size={15} /> Add Application</Btn>
+            <Card style={{ padding: 32 }}>
+              <EmptyState icon={Briefcase} title="No applications yet"
+                action={<Btn variant="accent" onClick={() => openApplicationForm(null)}><Plus size={15} /> Add Application</Btn>}>
+                Add a company and role you're preparing for. You can analyse it and start practising whenever you're ready.
+              </EmptyState>
             </Card>
           ) : (
             [["Upcoming interviews", applicationsUpcoming], ["Other applications", applicationsOther]].map(([heading, list]) => (
               list.length > 0 && (
                 <div key={heading} style={{ marginBottom: 24 }}>
-                  <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 10 }}>{heading}</div>
+                  <div className="jr-meta" style={{ marginBottom: 10 }}>{heading}</div>
                   <div className="grid grid-cols-1 gap-3">
                     {list.map((app) => {
                       const cd = interviewCountdown(app.interviewDate);
@@ -7004,20 +7023,23 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
       {screen === "progress" && (
         <div className="jr-fade jr-page">
           <Btn variant="ghost" onClick={() => setScreen("dashboard")} style={{ marginBottom: 16, padding: "6px 4px" }}><ArrowLeft size={14} /> Dashboard</Btn>
-          <h2 style={{ fontSize: 25, fontWeight: 800, color: "var(--navy)", marginBottom: 6 }}>Your progress</h2>
-          <p style={{ fontSize: 14, color: "var(--text-dim)", marginBottom: 24 }}>How JOB.READY sees you across every interview so far.</p>
-
-          <div className="flex items-center gap-2 mb-3">
-            <Sparkles size={16} color="var(--violet)" />
-            <div style={{ fontSize: 15, fontWeight: 700, color: "var(--navy)" }}>Your Interview DNA</div>
+          <div className="jr-page-header">
+            <div className="jr-page-header-text">
+              <h2 className="jr-h1">Your progress</h2>
+              <div className="jr-text" style={{ marginTop: 4 }}>How JOB.READY sees you across every interview so far.</div>
+            </div>
           </div>
+
+          <h3 className="jr-h2 flex items-center gap-2" style={{ marginBottom: 12 }}><Sparkles size={16} color="var(--violet)" aria-hidden="true" /> Your Interview DNA</h3>
           {compKeys.length === 0 ? (
-            <Card style={{ padding: 24, marginBottom: 24, textAlign: "center", color: "var(--text-faint)", fontSize: 13.5 }}>Complete an interview to start building your Interview DNA.</Card>
+            <Card style={{ padding: 28, marginBottom: 28 }}>
+              <EmptyState icon={Sparkles} title="No Interview DNA yet">Complete an interview and your competency strengths, weaknesses and trends will build here.</EmptyState>
+            </Card>
           ) : (
             <>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-                <Card style={{ padding: 18 }}>
-                  <div style={{ fontSize: 12, fontWeight: 700, color: "var(--good)", marginBottom: 10, textTransform: "uppercase" }}>Strengths</div>
+                <Card style={{ padding: 20 }}>
+                  <div className="jr-meta" style={{ color: "var(--good)", marginBottom: 10 }}>Strengths</div>
                   {dnaStrengths.map((c) => (
                     <div key={c.key} className="flex items-center justify-between mb-2" style={{ fontSize: 13.5 }}>
                       <span className="flex items-center gap-2" style={{ color: "var(--navy)", textTransform: "capitalize" }}><span style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--good)", display: "inline-block" }} />{c.key.replace(/_/g, " ")}</span>
@@ -7025,8 +7047,8 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                     </div>
                   ))}
                 </Card>
-                <Card style={{ padding: 18 }}>
-                  <div style={{ fontSize: 12, fontWeight: 700, color: "var(--bad)", marginBottom: 10, textTransform: "uppercase" }}>Weaknesses</div>
+                <Card style={{ padding: 20 }}>
+                  <div className="jr-meta" style={{ color: "var(--bad)", marginBottom: 10 }}>Weaknesses</div>
                   {dnaWeaknesses.map((c) => (
                     <div key={c.key} className="flex items-center justify-between mb-2" style={{ fontSize: 13.5 }}>
                       <span className="flex items-center gap-2" style={{ color: "var(--navy)", textTransform: "capitalize" }}><span style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--bad)", display: "inline-block" }} />{c.key.replace(/_/g, " ")}</span>
@@ -7037,22 +7059,22 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
                 {dnaBiggestImprovement && (
-                  <Card style={{ padding: 18 }}>
-                    <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", marginBottom: 6 }}>Biggest improvement</div>
+                  <Card style={{ padding: 20 }}>
+                    <div className="jr-meta" style={{ marginBottom: 6 }}>Biggest improvement</div>
                     <div style={{ fontSize: 14, fontWeight: 700, color: "var(--navy)", textTransform: "capitalize", marginBottom: 4 }}>{dnaBiggestImprovement.key.replace(/_/g, " ")}</div>
                     <div style={{ fontSize: 13, color: "var(--text-dim)" }}>{dnaBiggestImprovement.history.join(" → ")}</div>
                   </Card>
                 )}
                 {dnaPriority && (
-                  <Card style={{ padding: 18 }}>
-                    <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", marginBottom: 6 }}>Current priority</div>
+                  <Card style={{ padding: 20 }}>
+                    <div className="jr-meta" style={{ marginBottom: 6 }}>Current priority</div>
                     <div style={{ fontSize: 14, fontWeight: 700, color: "var(--navy)", textTransform: "capitalize" }}>{dnaPriority.key.replace(/_/g, " ")}</div>
                   </Card>
                 )}
               </div>
               {perf?.style_notes?.length > 0 && (
-                <Card style={{ padding: 18, marginBottom: 24 }}>
-                  <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", marginBottom: 10 }}>Interview style</div>
+                <Card style={{ padding: 20, marginBottom: 24 }}>
+                  <div className="jr-meta" style={{ marginBottom: 10 }}>Interview style</div>
                   {perf.style_notes.map((s, i) => <div key={i} style={{ fontSize: 13.5, color: "var(--text-dim)", marginBottom: 6 }}>· {s}</div>)}
                 </Card>
               )}
@@ -7067,7 +7089,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
               and grounded in real stored evidence; nothing here is invented. */}
           {interviewList.length > 0 && (
             <Card style={{ padding: 22, marginBottom: 20 }}>
-              <div className="flex items-center gap-2 mb-3"><Target size={15} color="var(--violet)" /><div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase" }}>Recommended next practice</div></div>
+              <SectionHeading icon={Target} tone="var(--violet)">Recommended next practice</SectionHeading>
               {nextPriorities.length === 0 ? (
                 <div style={{ fontSize: 13.5, color: "var(--text-faint)" }}>Nothing stands out as urgent right now — your coverage looks solid so far.</div>
               ) : (
@@ -7087,7 +7109,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
               before now. */}
           {interviewList.length > 0 && (
             <Card style={{ padding: 22, marginBottom: 20 }}>
-              <div className="flex items-center gap-2 mb-3"><BarChart3 size={15} color="var(--blue)" /><div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase" }}>Interview area coverage</div></div>
+              <SectionHeading icon={BarChart3} tone="var(--blue)">Interview area coverage</SectionHeading>
               {Object.entries(globalCandidateState?.categories || {}).map(([cat, info]) => {
                 const meta = { unknown: { text: "Not yet tested", color: "var(--text-faint)" }, insufficient: { text: "Needs more evidence", color: "var(--warn)" }, demonstrated: { text: "Demonstrated", color: "var(--good)" } }[info.status] || { text: "—", color: "var(--text-faint)" };
                 return (
@@ -7124,7 +7146,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
             if (!competencyTrends.length) return null;
             return (
               <Card style={{ padding: 22, marginBottom: 20 }}>
-                <div className="flex items-center gap-2 mb-3"><Clock size={15} color="var(--blue)" /><div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase" }}>Competency trends</div></div>
+                <SectionHeading icon={Clock} tone="var(--blue)">Competency trends</SectionHeading>
                 {competencyTrends.map(([comp, info]) => {
                   const meta = TREND_META[info.trend];
                   return (
@@ -7139,29 +7161,42 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
           })()}
 
           <Card style={{ padding: 22, marginBottom: 20 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-faint)", marginBottom: 14, textTransform: "uppercase" }}>Score over time</div>
+            <SectionHeading icon={BarChart3} tone="var(--blue)">Score over time</SectionHeading>
             {interviewList.length === 0 ? (
               <div style={{ color: "var(--text-faint)", fontSize: 14, textAlign: "center", padding: 24 }}>No interviews yet.</div>
             ) : (
-              <div className="flex items-end gap-3" style={{ height: 150 }}>
-                {interviewList.map((iv, i) => (
-                  <div key={iv.id} role={iv.report ? "button" : undefined} tabIndex={iv.report ? 0 : undefined}
-                    onClick={() => openInterviewReport(iv, "progress")}
-                    onKeyDown={iv.report ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openInterviewReport(iv, "progress"); } } : undefined}
-                    title={iv.report ? `${iv.company} — view full report` : iv.company}
-                    style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end", height: "100%", cursor: iv.report ? "pointer" : "default" }}>
-                    <div style={{ fontSize: 12, fontWeight: 700, color: "var(--navy)", marginBottom: 6 }}>{iv.overall_score}</div>
-                    <div className="jr-bar" style={{ width: "65%", height: (iv.overall_score / 100) * 110, background: i === interviewList.length - 1 ? "var(--blue)" : "var(--highlight)", borderRadius: "6px 6px 0 0" }} />
-                    <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 6 }}>#{i + 1}</div>
+              <div style={{ display: "flex", gap: 12 }}>
+                <div aria-hidden="true" style={{ display: "flex", flexDirection: "column", justifyContent: "space-between", paddingBottom: 24, fontSize: 10, fontWeight: 600, color: "var(--text-faint)", textAlign: "right", minWidth: 20 }}>
+                  <span>100</span><span>50</span><span>0</span>
+                </div>
+                <div style={{ position: "relative", flex: 1 }}>
+                  <div aria-hidden="true" style={{ position: "absolute", left: 0, right: 0, top: 20, bottom: 24 }}>
+                    <div style={{ position: "absolute", left: 0, right: 0, top: "0%", borderTop: "1px dashed var(--border)" }} />
+                    <div style={{ position: "absolute", left: 0, right: 0, top: "50%", borderTop: "1px dashed var(--border)" }} />
+                    <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, borderTop: "1px solid var(--border)" }} />
                   </div>
-                ))}
+                  <div className="flex items-end gap-3" style={{ position: "relative", height: 150 }}>
+                    {interviewList.map((iv, i) => (
+                      <div key={iv.id} role={iv.report ? "button" : undefined} tabIndex={iv.report ? 0 : undefined}
+                        onClick={() => openInterviewReport(iv, "progress")}
+                        onKeyDown={iv.report ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openInterviewReport(iv, "progress"); } } : undefined}
+                        aria-label={`Attempt ${i + 1}, ${iv.company}, score ${iv.overall_score} out of 100${iv.report ? " — view full report" : ""}`}
+                        title={iv.report ? `${iv.company} — view full report` : iv.company}
+                        style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end", height: "100%", cursor: iv.report ? "pointer" : "default" }}>
+                        <div style={{ fontSize: 12, fontWeight: 700, color: "var(--navy)", marginBottom: 6 }}>{iv.overall_score}</div>
+                        <div className="jr-bar" style={{ width: "65%", height: (iv.overall_score / 100) * 110, background: i === interviewList.length - 1 ? "var(--blue)" : "var(--highlight)", borderRadius: "6px 6px 0 0" }} />
+                        <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 6 }}>#{i + 1}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
             )}
           </Card>
 
           {memoryLog.length > 0 && (
             <Card style={{ padding: 22, marginBottom: 20 }}>
-              <div className="flex items-center gap-2 mb-4"><History size={15} color="var(--teal)" /><div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase" }}>Interview Memory — recent re-attempts</div></div>
+              <SectionHeading icon={History} tone="var(--teal)">Interview Memory — recent re-attempts</SectionHeading>
               {memoryLog.slice(0, 5).map((c, i) => {
                 const delta = (c.current_score ?? 0) - (c.previous_score ?? 0);
                 return (
@@ -7178,9 +7213,9 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
 
           {acAttempts.length > 0 && (
             <Card style={{ padding: 22, marginBottom: 20 }}>
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-2"><Briefcase size={15} color="var(--teal)" /><div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase" }}>Assessment Centre readiness</div></div>
-                <div style={{ fontSize: 20, fontWeight: 800, color: "var(--navy)" }}>{acReadiness}%</div>
+              <div className="flex items-center justify-between">
+                <SectionHeading icon={Briefcase} tone="var(--teal)">Assessment Centre readiness</SectionHeading>
+                <div style={{ fontSize: 20, fontWeight: 800, color: "var(--navy)", marginBottom: 12 }}>{acReadiness}%</div>
               </div>
               {EXERCISE_TYPES.map((t) => {
                 const attempts = acAttempts.filter((a) => a.type === t.key);
@@ -7194,7 +7229,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
 
           {claimsOverview.length > 0 && (
             <Card style={{ padding: 22, marginBottom: 20 }}>
-              <div className="flex items-center gap-2 mb-1"><Target size={15} color="var(--violet)" /><div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase" }}>Career claims JOB.READY is tracking</div></div>
+              <SectionHeading icon={Target} tone="var(--violet)" style={{ marginBottom: 4 }}>Career claims JOB.READY is tracking</SectionHeading>
               <div style={{ fontSize: 12.5, color: "var(--text-dim)", marginBottom: 14 }}>Specific things you've said in a CV or interview — how well each one holds up gets re-tested and updated as you do more interviews, across every application.</div>
               {claimsOverview.slice(0, 8).map((c, i) => {
                 const meta = claimStatusMeta(c.status);
@@ -7216,12 +7251,12 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
           )}
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <Card style={{ padding: 18 }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: "var(--good)", marginBottom: 8, textTransform: "uppercase" }}>Current strengths</div>
+            <Card style={{ padding: 20 }}>
+              <div className="jr-meta" style={{ color: "var(--good)", marginBottom: 8 }}>Current strengths</div>
               {(perf?.strengths || []).length === 0 ? <div style={{ fontSize: 13, color: "var(--text-faint)" }}>—</div> : perf.strengths.map((s, i) => <div key={i} style={{ fontSize: 13.5, marginBottom: 6, color: "var(--text-dim)" }}>· {s}</div>)}
             </Card>
-            <Card style={{ padding: 18 }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: "var(--bad)", marginBottom: 8, textTransform: "uppercase" }}>Current focus</div>
+            <Card style={{ padding: 20 }}>
+              <div className="jr-meta" style={{ color: "var(--bad)", marginBottom: 8 }}>Current focus</div>
               {(perf?.weaknesses || []).length === 0 ? <div style={{ fontSize: 13, color: "var(--text-faint)" }}>—</div> : perf.weaknesses.map((s, i) => <div key={i} style={{ fontSize: 13.5, marginBottom: 6, color: "var(--text-dim)" }}>· {s}</div>)}
             </Card>
           </div>
@@ -7232,26 +7267,29 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
       {/* ---------------- CLASSROOM DASHBOARD ---------------- */}
       {screen === "classroom" && (
         <div className="jr-fade jr-page">
-          <div className="flex items-center gap-3 mb-2">
-            <div style={{ width: 34, height: 34, borderRadius: 9, background: "#F1E9FE", display: "flex", alignItems: "center", justifyContent: "center" }}><GraduationCap size={18} color="var(--violet)" /></div>
-            <h2 style={{ fontSize: 25, fontWeight: 800, color: "var(--navy)" }}>Classroom</h2>
+          <div className="jr-page-header">
+            <div className="jr-page-header-text">
+              <div className="flex items-center gap-3" style={{ marginBottom: 6 }}>
+                <div style={{ width: 34, height: 34, borderRadius: 9, background: "#F1E9FE", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><GraduationCap size={18} color="var(--violet)" /></div>
+                <h2 className="jr-h1">Classroom</h2>
+              </div>
+              <div className="jr-text">Personalised recommendations for a specific application, plus lessons built from real weaknesses spotted in your interviews and assessment-centre exercises. Study, then retest.</div>
+            </div>
           </div>
-          <p style={{ fontSize: 14, color: "var(--text-dim)", marginBottom: 24 }}>Personalised recommendations for a specific application, plus lessons built from real weaknesses spotted in your interviews and assessment-centre exercises. Study, then retest.</p>
 
           {pendingModuleSave && (
-            <Card style={{ padding: 14, marginBottom: 16, borderLeft: "4px solid var(--bad)", background: "#FEF2F2" }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "var(--bad)", marginBottom: 3 }}>"{pendingModuleSave.topic}" was generated but not saved</div>
-              <div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.5, marginBottom: 10 }}>Retry saving it — you won't be charged to generate it again.</div>
-              <Btn variant="accent" onClick={() => guarded(retrySaveModule)}>Retry saving</Btn>
-            </Card>
+            <Alert variant="error" title={`"${pendingModuleSave.topic}" was generated but not saved`} style={{ marginBottom: 16 }}>
+              Retry saving it — you won't be charged to generate it again.
+              <div style={{ marginTop: 10 }}><Btn variant="accent" onClick={() => guarded(retrySaveModule)}>Retry saving</Btn></div>
+            </Alert>
           )}
 
           {/* Phase 13B: application-specific development recommendations. Reads the
               persisted Phase 13A intelligence + the already-computed candidate
               state — no AI call is made when this screen renders. */}
           {classroomApps.length > 0 && (
-            <div style={{ marginBottom: 36 }}>
-              <h3 style={{ fontSize: 16.5, fontWeight: 800, color: "var(--navy)", marginBottom: 4 }}>🎯 Recommended for your application</h3>
+            <div style={{ marginBottom: 32 }}>
+              <h3 className="jr-h2 flex items-center gap-2" style={{ marginBottom: 4 }}><Target size={16} color="var(--violet)" aria-hidden="true" /> Recommended for your application</h3>
               <p style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.5, marginBottom: 12 }}>
                 Ranked by how much the role emphasises each area and how much you have shown so far. Areas you have not been asked about yet are marked as preparation — not weaknesses.
               </p>
@@ -7260,9 +7298,10 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                 <span style={{ fontSize: 13, color: "var(--text-faint)", fontWeight: 600 }}>Development for:</span>
                 <select
                   aria-label="Choose which application to see recommendations for"
+                  className="jr-input jr-select"
                   value={activeClassroomApp?.id || ""}
                   onChange={(e) => setClassroomAppId(e.target.value)}
-                  style={{ fontSize: 13.5, fontWeight: 600, color: "var(--navy)", background: "var(--card)", border: "1px solid var(--border)", borderRadius: 8, padding: "7px 10px" }}
+                  style={{ width: "auto", maxWidth: "100%", fontSize: 13.5, fontWeight: 600, color: "var(--navy)" }}
                 >
                   {classroomApps.map((a) => (
                     <option key={a.id} value={a.id}>{(a.company || "Untitled") + " — " + (a.role || "role")}</option>
@@ -7271,12 +7310,9 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
               </div>
 
               {classroomRecs.limitedContext && (
-                <Card style={{ padding: 14, marginBottom: 14, background: "var(--highlight)" }}>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: "var(--navy)", marginBottom: 3 }}>Limited context for this application</div>
-                  <div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.5 }}>
-                    JOB.READY only has thin information about this company and role, so these recommendations lean on general expectations for the role type. Add the job description or more application detail to sharpen them.
-                  </div>
-                </Card>
+                <Alert variant="info" title="Limited context for this application" style={{ marginBottom: 14 }}>
+                  JOB.READY only has thin information about this company and role, so these recommendations lean on general expectations for the role type. Add the job description or more application detail to sharpen them.
+                </Alert>
               )}
 
               {!classroomRecs.hasAny ? (
@@ -7289,7 +7325,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                 [["technical", "Technical"], ["behavioural", "Behavioural"], ["motivational", "Motivational"]].map(([dim, dimLabel]) => (
                   classroomRecs[dim].length > 0 && (
                     <div key={dim} style={{ marginBottom: 18 }}>
-                      <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 8 }}>{dimLabel}</div>
+                      <div className="jr-meta" style={{ marginBottom: 8 }}>{dimLabel}</div>
                       {classroomRecs[dim].map((r) => {
                         // Phase 14.1: application-aware match — reuse a Classroom topic only
                         // when it belongs to THIS application (or has no application at all).
@@ -7328,15 +7364,15 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
               )}
 
               {classroomExperienceHints.length > 0 && (
-                <Card style={{ padding: 16, marginTop: 4 }}>
-                  <div style={{ fontSize: 13, fontWeight: 800, color: "var(--navy)", marginBottom: 3 }}>Experiences to explore</div>
+                <Card style={{ padding: 20, marginTop: 4 }}>
+                  <h4 className="jr-h3" style={{ marginBottom: 3 }}>Experiences to explore</h4>
                   <div style={{ fontSize: 12, color: "var(--text-faint)", lineHeight: 1.5, marginBottom: 10 }}>Possible connections to explore — prompts, not conclusions. Check each one honestly before you rely on it.</div>
                   {classroomExperienceHints.map((h, i) => (
                     <div key={i} style={{ padding: "8px 0", borderTop: i ? "1px solid var(--border)" : "none" }}>
                       {/* Phase 21: "Your CV" label only for a verified verbatim CV attribution. */}
-                      <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.03em", marginBottom: 2 }}>{h.attributed ? "Your CV" : "Focus area"}</div>
+                      <div className="jr-meta" style={{ marginBottom: 2 }}>{h.attributed ? "Your CV" : "Focus area"}</div>
                       <div style={{ fontSize: 12.5, color: "var(--navy)", fontStyle: "italic", marginBottom: 5 }}>{h.fact}</div>
-                      <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.03em", marginBottom: 2 }}>Suggestion</div>
+                      <div className="jr-meta" style={{ marginBottom: 2 }}>Suggestion</div>
                       <div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.5 }}>{h.suggestion}</div>
                     </div>
                   ))}
@@ -7351,17 +7387,17 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
               not here, so it is never shown with a red "Needs work" badge. */}
           {(() => { const interviewClassroom = classroom.filter((t) => ((t.scores || []).length > 0) || t.lastInterviewId); return (
           interviewClassroom.length === 0 ? (
-            <Card style={{ padding: 40, textAlign: "center" }}>
-              <BookOpen size={28} color="var(--text-faint)" style={{ margin: "0 auto 14px" }} />
-              <div style={{ fontSize: 15, fontWeight: 600, color: "var(--navy)", marginBottom: 6 }}>No interview lessons yet</div>
-              <div style={{ fontSize: 13.5, color: "var(--text-dim)", marginBottom: 18 }}>Complete an interview and any real weaknesses we find will show up here as lessons.</div>
-              <Btn variant="accent" onClick={() => startCreateFlow(false)}><Sparkles size={15} /> Start an interview</Btn>
+            <Card style={{ padding: 32 }}>
+              <EmptyState icon={BookOpen} title="No interview lessons yet"
+                action={<Btn variant="accent" onClick={() => startCreateFlow(false)}><Sparkles size={15} /> Start an interview</Btn>}>
+                Complete an interview and any real weaknesses we find will show up here as lessons.
+              </EmptyState>
             </Card>
           ) : (
             <>
-              <div style={{ fontSize: 15, fontWeight: 700, color: "var(--navy)", marginBottom: 12 }}>From your interviews</div>
-              <Card style={{ padding: 18, marginBottom: 22 }}>
-                <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", marginBottom: 12 }}>My interviews</div>
+              <h3 className="jr-h2" style={{ marginBottom: 12 }}>From your interviews</h3>
+              <Card style={{ padding: 20, marginBottom: 22 }}>
+                <div className="jr-meta" style={{ marginBottom: 12 }}>My interviews</div>
                 {Object.entries(interviewClassroom.reduce((acc, t) => { const key = t.company + " — " + t.role; acc[key] = acc[key] || []; acc[key].push(t); return acc; }, {})).map(([key, topics]) => (
                   <div key={key} className="flex items-center justify-between" style={{ padding: "8px 0", borderBottom: "1px solid var(--border)" }}>
                     <span style={{ fontSize: 13.5, color: "var(--navy)", fontWeight: 500 }}>{key}</span>
@@ -7372,7 +7408,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                 ))}
               </Card>
 
-              <div style={{ fontSize: 15, fontWeight: 700, color: "var(--navy)", marginBottom: 12 }}>Your learning areas</div>
+              <h3 className="jr-h2" style={{ marginBottom: 12 }}>Your learning areas</h3>
               {[...interviewClassroom].sort((a, b) => (a.scores[a.scores.length - 1] ?? 0) - (b.scores[b.scores.length - 1] ?? 0)).map((t) => {
                 const st = statusFor(t.scores);
                 return (
@@ -7786,17 +7822,21 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
       {/* ---------------- ASSESSMENT CENTRE ---------------- */}
       {screen === "ac_home" && (
         <div className="jr-fade jr-page">
-          <div className="flex items-center gap-3 mb-2">
-            <div style={{ width: 34, height: 34, borderRadius: 9, background: "#E6FBF6", display: "flex", alignItems: "center", justifyContent: "center" }}><Briefcase size={18} color="var(--teal)" /></div>
-            <h2 style={{ fontSize: 25, fontWeight: 800, color: "var(--navy)" }}>Assessment Centre</h2>
+          <div className="jr-page-header">
+            <div className="jr-page-header-text">
+              <div className="flex items-center gap-3" style={{ marginBottom: 6 }}>
+                <div style={{ width: 34, height: 34, borderRadius: 9, background: "#E6FBF6", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><Briefcase size={18} color="var(--teal)" /></div>
+                <h2 className="jr-h1">Assessment Centre</h2>
+              </div>
+              <div className="jr-text">Practise the exercises that come after the interview — group exercises, case studies, presentations, written tasks and inbox triage.</div>
+            </div>
           </div>
-          <p style={{ fontSize: 14, color: "var(--text-dim)", marginBottom: 24 }}>Practise the exercises that come after the interview — group exercises, case studies, presentations, written tasks and inbox triage.</p>
 
           {acAttempts.length > 0 && (
-            <Card style={{ padding: 20, marginBottom: 22 }}>
-              <div className="flex items-center justify-between mb-3">
-                <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase" }}>Assessment Centre readiness</div>
-                <div style={{ fontSize: 22, fontWeight: 800, color: "var(--navy)" }}>{acReadiness}%</div>
+            <Card style={{ padding: 22, marginBottom: 20 }}>
+              <div className="flex items-center justify-between">
+                <SectionHeading icon={Briefcase} tone="var(--teal)">Assessment Centre readiness</SectionHeading>
+                <div style={{ fontSize: 22, fontWeight: 800, color: "var(--navy)", marginBottom: 12 }}>{acReadiness}%</div>
               </div>
               {EXERCISE_TYPES.map((t) => {
                 const attempts = acAttempts.filter((a) => a.type === t.key);
@@ -7812,8 +7852,8 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
               attempt's own scenario/submission/scorecard is already durably persisted (see
               loadFullUserState). Most recent first. */}
           {acAttempts.length > 0 && (
-            <Card style={{ padding: 20, marginBottom: 22 }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", marginBottom: 12 }}>Recent attempts</div>
+            <Card style={{ padding: 22, marginBottom: 20 }}>
+              <div className="jr-meta" style={{ marginBottom: 12 }}>Recent attempts</div>
               {[...acAttempts].reverse().slice(0, 6).map((a) => (
                 <div key={a.id} className="flex justify-between items-center" role={a.result ? "button" : undefined} tabIndex={a.result ? 0 : undefined}
                   onClick={() => openAcAttempt(a, "ac_home")}
@@ -7829,8 +7869,8 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
             </Card>
           )}
 
-          <Card style={{ padding: 22, marginBottom: 22 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)", marginBottom: 10 }}>Company & role for this exercise</div>
+          <Card style={{ padding: 22, marginBottom: 20 }}>
+            <div className="jr-meta" style={{ marginBottom: 10 }}>Company &amp; role for this exercise</div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <input aria-label="Company" value={acCompany} onChange={(e) => setAcCompany(e.target.value)} placeholder="Company" style={inputStyle} />
               <input aria-label="Role" value={acRole} onChange={(e) => setAcRole(e.target.value)} placeholder="Role" style={inputStyle} />
@@ -7843,13 +7883,13 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
             )}
           </Card>
 
-          <div style={{ fontSize: 15, fontWeight: 700, color: "var(--navy)", marginBottom: 12 }}>Choose an exercise</div>
+          <h3 className="jr-h2" style={{ marginBottom: 12 }}>Choose an exercise</h3>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {EXERCISE_TYPES.map((t) => {
               const Icon = t.icon;
               const enabled = acCompany.trim() && acRole.trim();
               return (
-                <Card key={t.key} onClick={() => enabled && guarded(() => startAssessmentCentre(t.key))} style={{ padding: 20, cursor: enabled ? "pointer" : "not-allowed", opacity: enabled ? 1 : 0.55 }}>
+                <Card key={t.key} onClick={enabled ? () => guarded(() => startAssessmentCentre(t.key)) : undefined} style={{ padding: 20, cursor: enabled ? "pointer" : "not-allowed", opacity: enabled ? 1 : 0.55 }}>
                   <div style={{ width: 32, height: 32, borderRadius: 8, background: "var(--highlight)", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 10 }}>
                     <Icon size={16} color="var(--blue)" />
                   </div>
@@ -7860,7 +7900,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
             })}
           </div>
           {(!acCompany.trim() || !acRole.trim()) && <div style={{ fontSize: 12, color: "var(--text-faint)", marginTop: 12 }}>Enter a company and role above to unlock an exercise.</div>}
-          {error && <div style={{ color: "var(--bad)", fontSize: 13, marginTop: 14 }}>{error}</div>}
+          {error && <Alert variant="error" style={{ marginTop: 14 }}>{error}</Alert>}
         </div>
       )}
 
