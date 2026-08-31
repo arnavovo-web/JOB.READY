@@ -365,6 +365,52 @@ const TOKENS = `
   }
   @keyframes jrSpin{ to{ transform: rotate(360deg); } }
   .animate-spin{ animation: jrSpin 1s linear infinite; }
+
+  /* ---------------------------------------------------------------- *
+   * Phase 34: landing-page atmospheric colour (LANDING PAGE ONLY).
+   * Consumed exclusively by LandingPage in App.jsx. Every layer is a
+   * large, faint, blurred radial wash of the product palette (navy /
+   * blue / violet, a touch of cyan; one warm accent in the learning
+   * band only), painted as a background-image or a ::before pseudo so
+   * it adds no DOM and never enters the accessibility tree. The page
+   * wrapper clips every layer (overflow:hidden) so nothing can cause
+   * horizontal overflow on mobile. Static only, no animation.
+   * Restraint budget: ~80% plain surface, ~15% atmosphere, ~5% accent.
+   * Selectors are plain classes / ::before only, so the Phase 2H
+   * CSS-utility guard parses every rule. No child combinators.
+   * ---------------------------------------------------------------- */
+  .jr-landing-atmosphere{ position:relative; isolation:isolate; overflow:hidden; }
+  .jr-landing-atmosphere::before{ content:""; position:absolute; left:0; right:0; top:0; height:2600px; z-index:-1; pointer-events:none; background-image:radial-gradient(1180px 720px at 84% -4%, rgba(124,58,237,0.11), rgba(124,58,237,0) 60%), radial-gradient(1040px 640px at 4% 28%, rgba(37,99,235,0.06), rgba(37,99,235,0) 58%), radial-gradient(1000px 720px at 94% 72%, rgba(34,211,238,0.05), rgba(34,211,238,0) 62%); background-repeat:no-repeat; }
+
+  .jr-landing-hero{ position:relative; overflow:hidden; background-image:linear-gradient(180deg, rgba(235,240,255,0.82), rgba(243,246,255,0.30) 44%, rgba(248,250,252,0) 86%), radial-gradient(900px 640px at 88% -8%, rgba(124,58,237,0.22), rgba(124,58,237,0) 60%), radial-gradient(820px 620px at 102% 52%, rgba(56,189,248,0.20), rgba(37,99,235,0.05) 46%, rgba(37,99,235,0) 74%), radial-gradient(560px 520px at 6% 108%, rgba(37,99,235,0.10), rgba(37,99,235,0) 66%); background-repeat:no-repeat; }
+
+  .jr-landing-frame{ position:relative; padding:1.5px; border-radius:20px; background:linear-gradient(135deg, rgba(37,99,235,0.55), rgba(124,58,237,0.50) 54%, rgba(56,189,248,0.34)); box-shadow:0 26px 64px -20px rgba(37,99,235,0.30), 0 12px 34px -16px rgba(124,58,237,0.24); }
+
+  .jr-landing-orb{ position:absolute; pointer-events:none; z-index:0; border-radius:50%; filter:blur(2px); }
+  .jr-landing-orb-violet{ background:radial-gradient(closest-side, rgba(124,58,237,0.30), rgba(124,58,237,0) 78%); }
+  .jr-landing-orb-blue{ background:radial-gradient(closest-side, rgba(56,189,248,0.30), rgba(37,99,235,0) 80%); }
+  .jr-landing-orb-warm{ background:radial-gradient(closest-side, rgba(245,158,11,0.24), rgba(245,158,11,0) 80%); }
+
+  .jr-landing-band-role{ position:relative; overflow:hidden; background-color:var(--card); background-image:linear-gradient(180deg, rgba(237,242,255,0.55), rgba(255,255,255,0) 62%); background-repeat:no-repeat; }
+  .jr-landing-band-toolkit{ position:relative; overflow:hidden; background-color:var(--card); background-image:radial-gradient(900px 520px at 14% -12%, rgba(37,99,235,0.045), rgba(37,99,235,0) 60%), radial-gradient(760px 460px at 100% 6%, rgba(124,58,237,0.05), rgba(124,58,237,0) 64%); background-repeat:no-repeat; }
+  .jr-landing-band-feedback{ position:relative; overflow:hidden; background-image:radial-gradient(820px 520px at 100% -6%, rgba(37,99,235,0.06), rgba(37,99,235,0) 58%), radial-gradient(720px 480px at -4% 100%, rgba(34,211,238,0.05), rgba(34,211,238,0) 62%); background-repeat:no-repeat; }
+  .jr-landing-band-learning{ position:relative; overflow:hidden; background-color:var(--card); background-image:radial-gradient(740px 460px at 96% 2%, rgba(245,158,11,0.07), rgba(245,158,11,0) 62%), radial-gradient(820px 520px at 2% 100%, rgba(37,99,235,0.05), rgba(37,99,235,0) 60%); background-repeat:no-repeat; }
+  .jr-landing-band-ac{ position:relative; overflow:hidden; background-image:radial-gradient(900px 560px at 50% -14%, rgba(124,58,237,0.07), rgba(124,58,237,0) 58%), radial-gradient(780px 520px at 92% 100%, rgba(37,99,235,0.05), rgba(37,99,235,0) 62%); background-repeat:no-repeat; }
+  .jr-landing-band-progress{ position:relative; overflow:hidden; background-color:var(--card); background-image:radial-gradient(840px 520px at 2% -4%, rgba(37,99,235,0.06), rgba(37,99,235,0) 58%), radial-gradient(760px 480px at 98% 58%, rgba(34,211,238,0.055), rgba(34,211,238,0) 62%), radial-gradient(680px 480px at 58% 100%, rgba(124,58,237,0.05), rgba(124,58,237,0) 64%); background-repeat:no-repeat; }
+  .jr-landing-band-univ{ position:relative; overflow:hidden; background-color:var(--card); background-image:linear-gradient(180deg, rgba(255,255,255,0) 55%, rgba(16,24,40,0.05)); background-repeat:no-repeat; }
+
+  .jr-landing-band-showcase{ position:relative; overflow:hidden; background-color:var(--navy); background-image:radial-gradient(760px 520px at 10% 6%, rgba(56,189,248,0.16), rgba(37,99,235,0) 60%), radial-gradient(840px 560px at 94% 96%, rgba(124,58,237,0.26), rgba(124,58,237,0) 62%), linear-gradient(180deg, rgba(37,99,235,0.10), rgba(16,24,40,0) 42%); background-repeat:no-repeat; }
+  .jr-landing-band-inventory{ position:relative; overflow:hidden; background-color:var(--navy); background-image:radial-gradient(900px 540px at 50% -24%, rgba(124,58,237,0.22), rgba(124,58,237,0) 60%), radial-gradient(760px 520px at 100% 100%, rgba(56,189,248,0.12), rgba(37,99,235,0) 64%); background-repeat:no-repeat; }
+
+  .jr-landing-cta{ position:relative; overflow:hidden; background-color:#0B1220; background-image:radial-gradient(620px 380px at 50% 40%, rgba(37,99,235,0.30), rgba(37,99,235,0) 68%), radial-gradient(720px 520px at 10% -6%, rgba(124,58,237,0.32), rgba(124,58,237,0) 62%), radial-gradient(720px 520px at 94% 100%, rgba(56,189,248,0.16), rgba(56,189,248,0) 64%), linear-gradient(135deg, #0B1220, #16233B 55%, #1B2450); background-repeat:no-repeat; }
+  .jr-landing-cta::before{ content:""; position:absolute; left:50%; top:36%; width:520px; height:340px; margin-left:-260px; pointer-events:none; background:radial-gradient(closest-side, rgba(219,234,254,0.20), rgba(219,234,254,0) 72%); }
+
+  @media (max-width:600px){
+    .jr-landing-hero{ background-image:linear-gradient(180deg, rgba(235,240,255,0.72), rgba(248,250,252,0) 72%), radial-gradient(460px 380px at 96% -2%, rgba(124,58,237,0.18), rgba(124,58,237,0) 64%), radial-gradient(420px 380px at 4% 104%, rgba(56,189,248,0.14), rgba(37,99,235,0) 70%); }
+    .jr-landing-atmosphere::before{ height:1600px; }
+    .jr-landing-orb{ opacity:0.5; }
+    .jr-landing-cta::before{ width:340px; margin-left:-170px; }
+  }
 `;
 
 const MODEL = "claude-sonnet-4-6";
@@ -3173,7 +3219,11 @@ function LegalPage({ doc, onBack, openLegal }) {
 
 // Full-bleed section band. `tone`: "plain" (page bg) | "surface" (white) |
 // "navy" | "gradient". Inner content is width-capped and side-guttered.
-function LandingBand({ tone = "plain", children, style }) {
+// Phase 34: an optional `className` (one of the jr-landing-band-* atmosphere
+// classes) takes over the background with a faint layered gradient; when it is
+// present the flat `tone` fill is dropped so the class fully owns the surface.
+// Border / padding / structure are unchanged.
+function LandingBand({ tone = "plain", children, style, className }) {
   const bg =
     tone === "surface" ? "var(--card)"
     : tone === "navy" ? "var(--navy)"
@@ -3181,7 +3231,7 @@ function LandingBand({ tone = "plain", children, style }) {
     : "transparent";
   const border = tone === "surface" || tone === "navy" ? "1px solid var(--border)" : "none";
   return (
-    <div style={{ background: bg, borderTop: border, borderBottom: tone === "surface" ? border : "none", ...style }}>
+    <div className={className} style={{ ...(className ? {} : { background: bg }), borderTop: border, borderBottom: tone === "surface" ? border : "none", ...style }}>
       <div style={{ maxWidth: 1080, margin: "0 auto", padding: "clamp(56px, 9vw, 88px) 24px" }}>
         {children}
       </div>
@@ -3286,9 +3336,14 @@ function LandingPage({ onStart, onHow, onUniversities }) {
   ];
 
   return (
-    <div>
+    <div className="jr-landing-atmosphere">
       {/* ============ SECTION 1 — HERO ============ */}
-      <div style={{ maxWidth: 1080, margin: "0 auto", padding: "clamp(48px, 8vw, 76px) 24px clamp(36px, 6vw, 52px)" }}>
+      {/* Phase 34: `jr-landing-hero` is a full-bleed wrapper painting the
+          strongest atmospheric treatment — a subtly tinted gradient base plus
+          a soft violet wash (upper-right) and an electric-blue / cyan glow
+          (behind the product preview). Everything is clipped by the wrapper. */}
+      <div className="jr-landing-hero">
+        <div style={{ maxWidth: 1080, margin: "0 auto", padding: "clamp(48px, 8vw, 76px) 24px clamp(36px, 6vw, 52px)" }}>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
           <div>
             <Pill>Interview &amp; career preparation, in one place</Pill>
@@ -3309,13 +3364,18 @@ function LandingPage({ onStart, onHow, onUniversities }) {
           </div>
 
           {/* Hero visual — a layered product-style composition using real product
-              concepts. Sample data only; clearly a preview, not a real result. */}
-          <div style={{ position: "relative" }} aria-hidden="true">
-            <Card hover={false} style={{ position: "absolute", inset: "26px -10px -18px 34px", background: "var(--featured-violet-bg)", border: "1px solid var(--featured-violet-border)", borderRadius: 18 }} />
-            <Card hover={false} style={{ position: "relative", padding: 20, borderRadius: 18 }}>
+              concepts. Sample data only; clearly a preview, not a real result.
+              Phase 34: two soft decorative orbs (clipped by the hero) sit behind
+              a gradient-framed, translucent preview panel with a coloured
+              layered shadow. Everything decorative is aria-hidden. */}
+          <div style={{ position: "relative", overflow: "visible" }} aria-hidden="true">
+            <div aria-hidden="true" className="jr-landing-orb jr-landing-orb-violet" style={{ width: 260, height: 260, right: 2, top: -70 }} />
+            <div aria-hidden="true" className="jr-landing-orb jr-landing-orb-blue" style={{ width: 300, height: 230, right: 6, bottom: -46 }} />
+            <div className="jr-landing-frame">
+              <Card hover={false} style={{ position: "relative", padding: 20, borderRadius: 18, background: "linear-gradient(180deg, rgba(255,255,255,0.98), rgba(247,249,255,0.95))", border: "1px solid rgba(255,255,255,0.7)", boxShadow: "0 1px 2px rgba(16,24,40,0.04)" }}>
               <div className="flex items-center justify-between mb-4">
                 <span className="flex items-center gap-2" style={{ fontSize: 12, fontWeight: 700, color: "var(--text-faint)" }}>
-                  <span className="jr-badge jr-badge-info" style={{ padding: "3px 8px" }}>Adaptive interview</span>
+                  <span style={{ padding: "3px 9px", borderRadius: 999, fontSize: 12, fontWeight: 700, color: "var(--blue-dark)", background: "linear-gradient(135deg, var(--highlight), #ECE4FE)", border: "1px solid rgba(124,58,237,0.20)" }}>Adaptive interview</span>
                 </span>
                 <span style={{ fontSize: 11.5, color: "var(--text-faint)", fontVariantNumeric: "tabular-nums" }}>Question 4 / 12</span>
               </div>
@@ -3325,7 +3385,10 @@ function LandingPage({ onStart, onHow, onUniversities }) {
                 <div style={{ fontSize: 14.5, fontWeight: 600, color: "var(--navy)", lineHeight: 1.4 }}>"Tell me about a time you had to solve a difficult problem under pressure."</div>
               </div>
               <div className="flex items-center gap-4" style={{ borderTop: "1px solid var(--border)", paddingTop: 14 }}>
-                <RingScore value={78} size={78} label="readiness" />
+                <span style={{ position: "relative", display: "inline-flex", flexShrink: 0 }}>
+                  <span aria-hidden="true" style={{ position: "absolute", inset: -14, borderRadius: "50%", background: "radial-gradient(closest-side, rgba(37,99,235,0.20), rgba(124,58,237,0) 78%)", pointerEvents: "none" }} />
+                  <RingScore value={78} size={78} label="readiness" />
+                </span>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <ScoreBar label="Structure" value={84} />
                   <ScoreBar label="Specificity" value={71} />
@@ -3333,13 +3396,15 @@ function LandingPage({ onStart, onHow, onUniversities }) {
                 </div>
               </div>
               <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 10, textAlign: "right" }}>Illustrative preview · sample data</div>
-            </Card>
+              </Card>
+            </div>
           </div>
+        </div>
         </div>
       </div>
 
       {/* ============ ROLE BAND ============ */}
-      <LandingBand tone="surface" style={{ borderTop: "1px solid var(--border)" }}>
+      <LandingBand tone="surface" className="jr-landing-band-role" style={{ borderTop: "1px solid var(--border)" }}>
         <div style={{ fontSize: 12, color: "var(--text-faint)", textAlign: "center", marginBottom: 18, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase" }}>
           Built for the interviews students actually sit
         </div>
@@ -3380,14 +3445,17 @@ function LandingPage({ onStart, onHow, onUniversities }) {
       </div>
 
       {/* ============ SECTION 3 — FULL PRODUCT TOOLKIT ============ */}
-      <LandingBand tone="surface">
+      {/* Phase 34: mostly clean white; a very faint blue/violet radial wash
+          only becomes visible on closer inspection, plus a soft glow on the
+          lead AI-interview tile so it reads first. */}
+      <LandingBand tone="surface" className="jr-landing-band-toolkit">
         <div style={{ textAlign: "center", maxWidth: 640, margin: "0 auto 40px" }}>
           <LandingEyebrow tone="var(--violet)">The full toolkit</LandingEyebrow>
           <LandingH2>Everything you need to prepare for the opportunity ahead.</LandingH2>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4" style={{ alignItems: "start" }}>
           {/* wide lead tile */}
-          <Card style={{ padding: 24, gridColumn: "1 / -1", display: "flex", flexWrap: "wrap", gap: 20, alignItems: "center", justifyContent: "space-between" }}>
+          <Card style={{ padding: 24, gridColumn: "1 / -1", display: "flex", flexWrap: "wrap", gap: 20, alignItems: "center", justifyContent: "space-between", position: "relative", overflow: "hidden", background: "radial-gradient(460px 300px at 4% 0%, rgba(37,99,235,0.09), rgba(37,99,235,0) 70%), radial-gradient(440px 300px at 100% 100%, rgba(124,58,237,0.09), rgba(124,58,237,0) 72%), var(--card)", border: "1px solid rgba(124,58,237,0.20)", boxShadow: "0 18px 44px -20px rgba(37,99,235,0.24)" }}>
             <div style={{ flex: "1 1 300px", minWidth: 0 }}>
               <IconBadge icon={Sparkles} tone="blue" lg />
               <div style={{ fontSize: 18, fontWeight: 800, color: "var(--navy)", margin: "10px 0 6px" }}>AI mock interviews, built around your role</div>
@@ -3434,7 +3502,11 @@ function LandingPage({ onStart, onHow, onUniversities }) {
       </div>
 
       {/* ============ SECTION 5 — AI INTERVIEW SHOWCASE ============ */}
-      <LandingBand tone="navy">
+      {/* Phase 34: the strongest visual moment after the hero — a deep navy
+          band with a blue radial glow (top-left), a violet depth layer
+          (bottom-right) and a faint blue top wash, with a gradient-framed
+          mock panel. Text stays high-contrast light-on-navy. */}
+      <LandingBand tone="navy" className="jr-landing-band-showcase">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
           <div>
             <LandingEyebrow tone="var(--teal)">The interview</LandingEyebrow>
@@ -3453,16 +3525,17 @@ function LandingPage({ onStart, onHow, onUniversities }) {
               </div>
             ))}
           </div>
-          <Card hover={false} style={{ padding: 20, borderRadius: 16 }}>
+          <div className="jr-landing-frame">
+          <Card hover={false} style={{ position: "relative", padding: 20, borderRadius: 15, border: "1px solid rgba(255,255,255,0.7)", boxShadow: "0 1px 2px rgba(16,24,40,0.05)" }}>
             <div className="flex items-center justify-between mb-3">
-              <span className="jr-badge jr-badge-info" style={{ padding: "3px 9px" }}>Behavioural / competency</span>
+              <span style={{ padding: "3px 9px", borderRadius: 999, fontSize: 12, fontWeight: 700, color: "var(--blue-dark)", background: "linear-gradient(135deg, var(--highlight), #ECE4FE)", border: "1px solid rgba(124,58,237,0.20)" }}>Behavioural / competency</span>
               <span style={{ fontSize: 11.5, color: "var(--text-faint)", fontVariantNumeric: "tabular-nums" }}>Question 6 / 12</span>
             </div>
             <div style={{ background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 12, padding: 15, marginBottom: 12 }}>
               <div style={{ fontSize: 14.5, fontWeight: 600, color: "var(--navy)", lineHeight: 1.4 }}>"Walk me through a time you disagreed with a teammate. How did you handle it?"</div>
             </div>
             <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase", color: "var(--text-faint)", marginBottom: 6 }}>Feedback preview</div>
-            <div style={{ background: "var(--featured-blue-bg)", border: "1px solid var(--featured-blue-border)", borderRadius: 10, padding: 12, fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.5 }}>
+            <div style={{ background: "linear-gradient(135deg, var(--featured-blue-bg), #F3EEFF)", border: "1px solid var(--featured-blue-border)", borderRadius: 10, padding: 12, fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.5 }}>
               Clear structure and a specific example. Strengthen the outcome — quantify the result and name what you learned.
             </div>
             <div className="flex items-center justify-between mt-4" style={{ fontSize: 12, color: "var(--text-faint)" }}>
@@ -3470,11 +3543,15 @@ function LandingPage({ onStart, onHow, onUniversities }) {
               <span>Illustrative</span>
             </div>
           </Card>
+          </div>
         </div>
       </LandingBand>
 
       {/* ============ SECTION 6 — FEEDBACK + IMPROVEMENT ============ */}
-      <div style={{ maxWidth: 1080, margin: "0 auto", padding: "clamp(56px, 9vw, 88px) 24px" }}>
+      {/* Phase 34: a quiet analytical feel — faint blue (top-right) and cyan
+          (bottom-left) depth behind a report-style card lifted on a soft
+          blue/violet shadow. */}
+      <div className="jr-landing-band-feedback" style={{ maxWidth: 1080, margin: "0 auto", padding: "clamp(56px, 9vw, 88px) 24px" }}>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
           <div>
             <LandingEyebrow>Feedback that's actually useful</LandingEyebrow>
@@ -3483,7 +3560,7 @@ function LandingPage({ onStart, onHow, onUniversities }) {
               Every interview produces a report scored against the competencies your role demands — with strengths, weaknesses and a recommended next step. Your weak spots carry into your next interview and into your Classroom.
             </p>
           </div>
-          <Card style={{ padding: 22 }}>
+          <Card style={{ padding: 22, boxShadow: "0 20px 50px -24px rgba(37,99,235,0.26), 0 8px 24px -14px rgba(124,58,237,0.18)" }}>
             <div className="flex items-center gap-4 mb-4">
               <RingScore value={74} size={84} label="readiness" />
               <div>
@@ -3504,7 +3581,10 @@ function LandingPage({ onStart, onHow, onUniversities }) {
       </div>
 
       {/* ============ SECTION 7 — LEARN, DON'T JUST PRACTISE ============ */}
-      <LandingBand tone="surface">
+      {/* Phase 34: the one place a warm accent is allowed — a restrained soft
+          amber wash (top-right) alongside the usual blue, plus a faint warm
+          glow on the flashcard and a warm edge on the quiz panel. */}
+      <LandingBand tone="surface" className="jr-landing-band-learning">
         <div style={{ maxWidth: 640, marginBottom: 36 }}>
           <LandingEyebrow tone="var(--good)">Learning built in</LandingEyebrow>
           <LandingH2>Don't just practise. Learn what you're missing.</LandingH2>
@@ -3514,12 +3594,14 @@ function LandingPage({ onStart, onHow, onUniversities }) {
         </div>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <FeatureTile icon={BookOpen} tone="good" title="Lessons & modules" body="Focused, readable material generated for the specific weakness — with worked examples and common mistakes." />
-          <Card style={{ padding: 20 }}>
+          <div style={{ position: "relative" }}>
+            <div aria-hidden="true" className="jr-landing-orb jr-landing-orb-warm" style={{ width: 190, height: 160, right: 6, top: -34 }} />
+          <Card style={{ position: "relative", padding: 20, border: "1px solid rgba(245,158,11,0.22)", boxShadow: "0 16px 40px -20px rgba(245,158,11,0.30), 0 6px 18px -12px rgba(16,24,40,0.10)" }}>
             <div className="flex items-center justify-between mb-3">
               <span style={{ fontSize: 12.5, fontWeight: 700, color: "var(--navy)" }}>Flashcards</span>
               <span style={{ fontSize: 11, color: "var(--text-faint)" }}>Card 2 / 8</span>
             </div>
-            <div style={{ background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 10, padding: 14, fontSize: 13, color: "var(--navy)", fontWeight: 600, lineHeight: 1.4 }}>
+            <div style={{ background: "linear-gradient(180deg, #FFFDF7, var(--bg))", border: "1px solid var(--border)", borderRadius: 10, padding: 14, fontSize: 13, color: "var(--navy)", fontWeight: 600, lineHeight: 1.4 }}>
               What does EV / EBITDA tell you that a P/E ratio doesn't?
             </div>
             <div className="flex gap-2 mt-4">
@@ -3527,7 +3609,8 @@ function LandingPage({ onStart, onHow, onUniversities }) {
               <span className="jr-badge jr-badge-neutral">Next</span>
             </div>
           </Card>
-          <Card style={{ padding: 20 }}>
+          </div>
+          <Card style={{ padding: 20, borderTop: "2px solid rgba(245,158,11,0.35)" }}>
             <div className="flex items-center justify-between mb-3">
               <span style={{ fontSize: 12.5, fontWeight: 700, color: "var(--navy)" }}>Quick quiz</span>
               <span style={{ fontSize: 11, color: "var(--text-faint)" }}>Q3 / 5</span>
@@ -3543,7 +3626,10 @@ function LandingPage({ onStart, onHow, onUniversities }) {
       </LandingBand>
 
       {/* ============ SECTION 8 — ASSESSMENT CENTRE ============ */}
-      <div style={{ maxWidth: 1080, margin: "0 auto", padding: "clamp(56px, 9vw, 88px) 24px" }}>
+      {/* Phase 34: a shared restrained violet -> blue atmosphere behind the five
+          exercise cards — the cards themselves stay clean and identical, so the
+          section reads as one substantial group, never colour-coded per card. */}
+      <div className="jr-landing-band-ac" style={{ maxWidth: 1080, margin: "0 auto", padding: "clamp(56px, 9vw, 88px) 24px" }}>
         <div style={{ textAlign: "center", maxWidth: 620, margin: "0 auto 40px" }}>
           <LandingEyebrow tone="var(--violet)">Assessment Centre</LandingEyebrow>
           <LandingH2>Prepare for more than the interview.</LandingH2>
@@ -3566,15 +3652,17 @@ function LandingPage({ onStart, onHow, onUniversities }) {
       </div>
 
       {/* ============ SECTION 9 — PROGRESS / LONG-TERM ============ */}
-      <LandingBand tone="surface">
+      {/* Phase 34: a subtle blue -> cyan -> violet analytical wash; the final
+          chart bar carries a blue->violet gradient to read as "now". */}
+      <LandingBand tone="surface" className="jr-landing-band-progress">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
-          <Card style={{ padding: 24 }}>
+          <Card style={{ padding: 24, boxShadow: "0 20px 50px -24px rgba(37,99,235,0.24), 0 8px 24px -14px rgba(34,211,238,0.16)" }}>
             <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase", color: "var(--text-faint)", marginBottom: 14 }}>Readiness across attempts</div>
             <div className="flex items-end gap-3" style={{ height: 140 }}>
               {[58, 63, 71, 77, 84].map((v, i, a) => (
                 <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end", height: "100%" }}>
                   <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--navy)", marginBottom: 6, fontVariantNumeric: "tabular-nums" }}>{v}</div>
-                  <div className="jr-chartbar" style={{ width: "58%", height: (v / 100) * 110, background: i === a.length - 1 ? "var(--blue)" : "#C7DBFF", borderRadius: "6px 6px 0 0" }} />
+                  <div className="jr-chartbar" style={{ width: "58%", height: (v / 100) * 110, background: i === a.length - 1 ? "linear-gradient(180deg, var(--blue), var(--violet))" : "#C7DBFF", borderRadius: "6px 6px 0 0" }} />
                   <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 6 }}>#{i + 1}</div>
                 </div>
               ))}
@@ -3636,7 +3724,7 @@ function LandingPage({ onStart, onHow, onUniversities }) {
       </div>
 
       {/* ============ SECTION 11 — COMPACT FEATURE INVENTORY ============ */}
-      <LandingBand tone="navy">
+      <LandingBand tone="navy" className="jr-landing-band-inventory">
         <div style={{ textAlign: "center", maxWidth: 560, margin: "0 auto 28px" }}>
           <LandingEyebrow tone="var(--teal)">The whole toolkit</LandingEyebrow>
           <LandingH2 light>One account. A lot more than mock interviews.</LandingH2>
@@ -3649,7 +3737,7 @@ function LandingPage({ onStart, onHow, onUniversities }) {
       </LandingBand>
 
       {/* ============ UNIVERSITIES STRIP ============ */}
-      <LandingBand tone="surface">
+      <LandingBand tone="surface" className="jr-landing-band-univ">
         <div style={{ textAlign: "center", maxWidth: 560, margin: "0 auto" }}>
           <LandingH2 style={{ fontSize: "clamp(20px, 3vw, 24px)" }}>Careers teams: give every student interview practice.</LandingH2>
           <p style={{ color: "var(--text-dim)", fontSize: 14, lineHeight: 1.6, margin: "12px 0 20px" }}>
@@ -3660,14 +3748,18 @@ function LandingPage({ onStart, onHow, onUniversities }) {
       </LandingBand>
 
       {/* ============ SECTION 12 — FINAL CTA ============ */}
-      <div style={{ background: "linear-gradient(135deg, var(--navy), #1E293B)", padding: "clamp(64px, 10vw, 92px) 24px", textAlign: "center" }}>
-        <h2 style={{ fontSize: "clamp(26px, 5vw, 36px)", fontWeight: 800, color: "#fff", marginBottom: 14, letterSpacing: "-0.02em", textWrap: "balance", maxWidth: 640, marginLeft: "auto", marginRight: "auto" }}>
+      {/* Phase 34: the visual culmination — a rich navy -> blue -> violet
+          atmospheric gradient with a soft radial light behind the headline
+          (::before). Copy is unchanged and product-accurate: no outcome or
+          hiring promises. Text stays white on the darkest area for contrast. */}
+      <div className="jr-landing-cta" style={{ padding: "clamp(64px, 10vw, 92px) 24px", textAlign: "center" }}>
+        <h2 style={{ position: "relative", fontSize: "clamp(26px, 5vw, 36px)", fontWeight: 800, color: "#fff", marginBottom: 14, letterSpacing: "-0.02em", textWrap: "balance", maxWidth: 640, marginLeft: "auto", marginRight: "auto" }}>
           Your next interview deserves more than a Google search.
         </h2>
-        <p style={{ color: "#94A3B8", fontSize: 15.5, marginBottom: 28, maxWidth: 520, marginLeft: "auto", marginRight: "auto" }}>
+        <p style={{ position: "relative", color: "#AFC4E6", fontSize: 15.5, marginBottom: 28, maxWidth: 520, marginLeft: "auto", marginRight: "auto" }}>
           Know what to expect. Practise realistically. Learn from every answer.
         </p>
-        <Btn variant="accent" onClick={onStart} style={{ padding: "14px 28px", fontSize: 15.5 }}>Start preparing <ChevronRight size={16} /></Btn>
+        <Btn variant="accent" onClick={onStart} style={{ position: "relative", padding: "14px 28px", fontSize: 15.5, boxShadow: "0 18px 40px -14px rgba(37,99,235,0.55)" }}>Start preparing <ChevronRight size={16} /></Btn>
       </div>
     </div>
   );
