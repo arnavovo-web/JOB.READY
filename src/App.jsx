@@ -2542,10 +2542,10 @@ function IconBadge({ icon: Icon, tone = "neutral", size = 18, lg = false }) {
 function MetricCard({ icon, tone = "neutral", label, value, unit, sub, visual, className }) {
   return (
     <div className={className ? "jr-metric " + className : "jr-metric"}>
-      <div className="flex items-center justify-between gap-2">
-        <span className="jr-meta">{label}</span>
-        {icon ? <IconBadge icon={icon} tone={tone} size={16} /> : null}
-      </div>
+      {/* icon sits on its own top row so a long uppercase label never has to
+          fight it for width — every metric card keeps the same vertical rhythm */}
+      {icon ? <div className="flex" style={{ justifyContent: "flex-end", marginBottom: -2 }}><IconBadge icon={icon} tone={tone} size={16} /></div> : null}
+      <span className="jr-meta">{label}</span>
       {visual ? visual : (
         <div className="flex items-baseline gap-2" style={{ minHeight: 32 }}>
           <span className="jr-metric-value">{value}</span>
@@ -5896,9 +5896,11 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
           {(resumableReady.length > 0 || resumableLegacy.length > 0) && (
             <div style={{ marginBottom: 20 }}>
               {/* Phase 29: the half-finished interview is the single most time-sensitive
-                  thing a returning user has — promoted to a featured surface with a
-                  deterministic progress meter (answeredCount / targetQuestions). */}
-              {resumableReady.map((r) => (
+                  thing a returning user has. Only the most recent one gets the full
+                  featured surface + deterministic progress meter (answeredCount /
+                  targetQuestions); any others sit below as compact violet-tabbed rows
+                  so the Dashboard never turns into a wall of featured cards. */}
+              {resumableReady.map((r, idx) => idx === 0 ? (
                 <FeaturedCard key={r.id} style={{ marginBottom: 10 }}>
                   <div className="flex items-center gap-2" style={{ marginBottom: 10 }}>
                     <span className="jr-icon-badge jr-ib-violet"><Mic size={16} aria-hidden="true" /></span>
@@ -5911,6 +5913,19 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                   <div className="jr-text-sm" style={{ marginTop: 8 }}>{resumableProgressLabel(r)}</div>
                   <Btn variant="accent" style={{ marginTop: 14 }} onClick={() => guarded(() => resumeInterviewById(r.id))}>Continue interview <ArrowRight size={15} /></Btn>
                 </FeaturedCard>
+              ) : (
+                <Card key={r.id} onClick={() => guarded(() => resumeInterviewById(r.id))} style={{ padding: 16, marginBottom: 10, borderLeft: "3px solid var(--violet)" }}>
+                  <div className="flex items-center justify-between gap-3">
+                    <div style={{ minWidth: 0 }}>
+                      <div className="flex items-center gap-2" style={{ fontSize: 14, fontWeight: 700, color: "var(--navy)" }}>
+                        <Mic size={13} color="var(--violet)" aria-hidden="true" style={{ flexShrink: 0 }} />
+                        {r.company || "Interview"}{r.role ? ` — ${r.role}` : ""}
+                      </div>
+                      <div className="jr-text-sm" style={{ marginTop: 3 }}>{resumableProgressLabel(r)}</div>
+                    </div>
+                    <ArrowRight size={16} color="var(--text-faint)" aria-hidden="true" style={{ flexShrink: 0 }} />
+                  </div>
+                </Card>
               ))}
               {resumableLegacy.map((r) => (
                 <Card key={r.id} style={{ padding: 18, marginBottom: 10 }}>
@@ -7344,7 +7359,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                     <div style={{ position: "absolute", left: 0, right: 0, top: "50%", borderTop: "1px dashed var(--border)" }} />
                     <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, borderTop: "1px solid var(--border)" }} />
                   </div>
-                  <div className="flex items-end gap-3" style={{ position: "relative", height: 150 }}>
+                  <div className="flex items-end gap-3" style={{ position: "relative", height: 150, justifyContent: interviewList.length < 4 ? "flex-start" : "space-between" }}>
                     {interviewList.map((iv, i) => {
                       const isLast = i === interviewList.length - 1;
                       // Phase 29: the most recent bar is emphasised — green when the
@@ -7356,9 +7371,9 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                         onKeyDown={iv.report ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openInterviewReport(iv, "progress"); } } : undefined}
                         aria-label={`Attempt ${i + 1}, ${iv.company}, score ${iv.overall_score} out of 100${iv.report ? " — view full report" : ""}`}
                         title={iv.report ? `${iv.company} — view full report` : iv.company}
-                        style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end", height: "100%", cursor: iv.report ? "pointer" : "default" }}>
+                        style={{ flex: 1, maxWidth: 84, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end", height: "100%", cursor: iv.report ? "pointer" : "default" }}>
                         <div style={{ fontSize: 12, fontWeight: 700, color: isLast ? "var(--navy)" : "var(--text-dim)", marginBottom: 6, fontVariantNumeric: "tabular-nums" }}>{iv.overall_score}</div>
-                        <div className="jr-bar" style={{ width: "62%", height: (iv.overall_score / 100) * 110, background: improved ? "var(--good)" : isLast ? "var(--blue)" : "var(--highlight)", borderRadius: "6px 6px 0 0" }} />
+                        <div className="jr-bar" style={{ width: "100%", maxWidth: 40, height: (iv.overall_score / 100) * 110, background: improved ? "var(--good)" : isLast ? "var(--blue)" : "var(--highlight)", borderRadius: "6px 6px 0 0" }} />
                         <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 6 }}>#{i + 1}</div>
                       </div>
                     );
