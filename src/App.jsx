@@ -4,7 +4,11 @@ import {
   Target, BarChart3, AlertCircle, Upload, Mic, Menu, X,
   GraduationCap, BookOpen, Globe, HelpCircle, XCircle,
   Users, Briefcase, Mail, FileText, History, Clock, Plus, CalendarClock,
-  Eye, EyeOff
+  Eye, EyeOff,
+  // Phase 32 — landing-page product showcase icons (lucide-react is already a
+  // dependency; these are additional names from the same package, no new dep).
+  MessageSquare, ListChecks, Layers, LineChart, Presentation, Inbox, NotebookPen,
+  ScanLine, Route, ClipboardList, Compass,
 } from "lucide-react";
 // Phase 2A/2B: canonical taxonomy / anchor-source / stage-methodology
 // engine. A companion layer to the Phase 4A INTERVIEW_STAGES/
@@ -3145,6 +3149,530 @@ function LegalPage({ doc, onBack, openLegal }) {
 /* ================================================================== */
 /* MAIN APP                                                             */
 /* ================================================================== */
+/* ================================================================== */
+/* PHASE 32 — PUBLIC LANDING PAGE (full product showcase)              */
+/* ------------------------------------------------------------------ */
+/* Presentation only. No state, no effects, no data access, no AI, no  */
+/* Supabase — every handler is a navigation callback passed in from    */
+/* App() (onStart -> "login", onHow -> "how", onUniversities ->        */
+/* "universities"). The legal footer is still rendered by App() inside */
+/* the landing screen block so the Phase 30 footer guards keep passing.*/
+/*                                                                     */
+/* FEATURE ACCURACY: every capability named on this page maps to a     */
+/* real, inspected feature of JOB.READY on this branch — AI mock       */
+/* interviews (adaptive + set-length), question mix, per-answer        */
+/* evaluation, interview reports, interview history, Applications +     */
+/* Application Intelligence, career claims, Classroom lessons,         */
+/* development modules, flashcards, quizzes, knowledge checks,         */
+/* Progress, competency history, Interview DNA, Interview Memory,       */
+/* Assessment Centre exercises, interview-invitation analysis. No      */
+/* testimonials, user counts, success rates, hiring outcomes, employer */
+/* endorsements or university partnerships are claimed. Numbers in the */
+/* preview panels are clearly labelled illustrative sample data.       */
+/* ================================================================== */
+
+// Full-bleed section band. `tone`: "plain" (page bg) | "surface" (white) |
+// "navy" | "gradient". Inner content is width-capped and side-guttered.
+function LandingBand({ tone = "plain", children, style }) {
+  const bg =
+    tone === "surface" ? "var(--card)"
+    : tone === "navy" ? "var(--navy)"
+    : tone === "gradient" ? "linear-gradient(135deg, var(--navy), #1E293B)"
+    : "transparent";
+  const border = tone === "surface" || tone === "navy" ? "1px solid var(--border)" : "none";
+  return (
+    <div style={{ background: bg, borderTop: border, borderBottom: tone === "surface" ? border : "none", ...style }}>
+      <div style={{ maxWidth: 1080, margin: "0 auto", padding: "clamp(56px, 9vw, 88px) 24px" }}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function LandingEyebrow({ children, tone = "var(--blue)" }) {
+  return (
+    <div style={{ fontSize: 12.5, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: tone, marginBottom: 12 }}>
+      {children}
+    </div>
+  );
+}
+
+function LandingH2({ children, light = false, style }) {
+  return (
+    <h2 style={{ fontSize: "clamp(25px, 4vw, 33px)", lineHeight: 1.2, fontWeight: 800, letterSpacing: "-0.02em", color: light ? "#fff" : "var(--navy)", margin: 0, textWrap: "balance", ...style }}>
+      {children}
+    </h2>
+  );
+}
+
+// One feature in the toolkit grid. Real feature name + one accurate sentence.
+function FeatureTile({ icon: Icon, tone, title, body, span = false }) {
+  return (
+    <Card style={{ padding: 22, display: "flex", flexDirection: "column", gap: 10, gridColumn: span ? "1 / -1" : undefined }}>
+      <IconBadge icon={Icon} tone={tone} lg />
+      <div style={{ fontSize: 16, fontWeight: 700, color: "var(--navy)" }}>{title}</div>
+      <div style={{ fontSize: 13.5, color: "var(--text-dim)", lineHeight: 1.55 }}>{body}</div>
+    </Card>
+  );
+}
+
+// A small labelled competency row for the feedback / progress previews. State
+// is carried by a text label + icon, never colour alone.
+function LandingCompetencyRow({ label, state, value, light = false }) {
+  const map = {
+    strong: { text: "Strong", color: "var(--good)", Icon: CheckCircle2 },
+    improving: { text: "Improving", color: "var(--blue)", Icon: TrendingDown },
+    needswork: { text: "Needs work", color: "var(--warn)", Icon: Target },
+  };
+  const m = map[state] || map.improving;
+  return (
+    <div className="flex items-center justify-between" style={{ padding: "9px 0", borderBottom: "1px solid " + (light ? "rgba(255,255,255,0.12)" : "var(--border)") }}>
+      <span style={{ fontSize: 13.5, color: light ? "#E2E8F0" : "var(--text-dim)" }}>{label}</span>
+      <span className="flex items-center gap-2" style={{ fontSize: 12.5, fontWeight: 700, color: m.color }}>
+        <m.Icon size={13} aria-hidden="true" />
+        {m.text}
+        {typeof value === "number" && (
+          <span style={{ color: light ? "#94A3B8" : "var(--text-faint)", fontVariantNumeric: "tabular-nums", marginLeft: 2 }}>{value}</span>
+        )}
+      </span>
+    </div>
+  );
+}
+
+function LandingPage({ onStart, onHow, onUniversities }) {
+  const roleTags = ["Investment Banking", "Consulting", "Technology", "Asset Management", "Law", "Graduate Schemes", "Marketing", "Engineering"];
+
+  const toolkit = [
+    { icon: MessageSquare, tone: "blue", title: "AI mock interviews", body: "Role-specific interviews built from the company, role and job description. Choose an adaptive interview that follows up on your answers, or a fixed-length set." },
+    { icon: Target, tone: "violet", title: "Personalised feedback", body: "Every answer is evaluated against the competencies your target role actually tests — with specific strengths and what to fix." },
+    { icon: BarChart3, tone: "teal", title: "Progress tracking", body: "Interview history, competency scores over time and a readiness view so you can see whether you're actually improving." },
+    { icon: GraduationCap, tone: "good", title: "Classroom", body: "Lessons and development modules generated for the exact gaps your interviews expose — not a generic syllabus." },
+    { icon: Layers, tone: "warn", title: "Flashcards & quizzes", body: "Each development module comes with flashcards, quizzes and written knowledge checks so you actively practise, not just read." },
+    { icon: Briefcase, tone: "blue", title: "Assessment Centre", body: "Case studies, group exercises, presentations, written tasks and inbox exercises — scored with a competency breakdown." },
+    { icon: Compass, tone: "violet", title: "Interview DNA", body: "A picture of your recurring strengths, weak spots and answering style, built from every interview you complete." },
+    { icon: ScanLine, tone: "teal", title: "Invitation analysis", body: "Paste an interview invitation email and JOB.READY pulls out the company, role, stage and format, then helps you set up practice around it." },
+  ];
+
+  const steps = [
+    { n: "01", title: "Add your opportunity", body: "Enter the company, role and stage, and add the job description and your CV.", icon: Briefcase },
+    { n: "02", title: "Build your preparation", body: "JOB.READY reads the role, maps the competencies it tests and structures your practice around it.", icon: Route },
+    { n: "03", title: "Practise realistically", body: "Sit interviews, work through Assessment Centre exercises and test your knowledge with quizzes and flashcards.", icon: MessageSquare },
+    { n: "04", title: "Learn and improve", body: "Use per-answer feedback, reports and progress data to focus on what genuinely needs work.", icon: LineChart },
+  ];
+
+  const acTypes = [
+    { icon: ClipboardList, label: "Case Study", body: "Analyse a business problem and recommend a course of action." },
+    { icon: Users, label: "Group Exercise", body: "Work a scenario with simulated teammates toward a recommendation." },
+    { icon: Presentation, label: "Presentation", body: "Prepare and deliver a short, structured recommendation." },
+    { icon: NotebookPen, label: "Written Exercise", body: "Produce a professional written output under time pressure." },
+    { icon: Inbox, label: "Inbox Exercise", body: "Prioritise competing tasks and justify your order." },
+  ];
+
+  const inventory = [
+    "AI mock interviews", "Adaptive interviews", "Set-length interviews", "Question mix control",
+    "Per-answer evaluation", "Interview reports", "Interview history", "Applications workspace",
+    "Application Intelligence", "Career claims", "Classroom lessons", "Development modules",
+    "Flashcards", "Quizzes", "Written knowledge checks", "Recommended learning",
+    "Progress tracking", "Competency history", "Interview DNA", "Interview Memory",
+    "Assessment Centre", "Interview invitation analysis",
+  ];
+
+  const pains = [
+    "Not knowing which questions to expect for your role",
+    "Practising with no useful feedback on your answers",
+    "Repeating the same mistakes without realising",
+    "No idea which weakness to prioritise first",
+    "Preparing for interviews and assessment centres separately",
+  ];
+
+  return (
+    <div>
+      {/* ============ SECTION 1 — HERO ============ */}
+      <div style={{ maxWidth: 1080, margin: "0 auto", padding: "clamp(48px, 8vw, 76px) 24px clamp(36px, 6vw, 52px)" }}>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
+          <div>
+            <Pill>Interview &amp; career preparation, in one place</Pill>
+            <h1 style={{ fontSize: "clamp(33px, 6vw, 52px)", lineHeight: 1.1, fontWeight: 800, letterSpacing: "-0.03em", margin: "18px 0 16px", color: "var(--navy)", textWrap: "balance" }}>
+              Walk into your next interview ready.
+            </h1>
+            <p style={{ fontSize: "clamp(15px, 2.2vw, 17.5px)", color: "var(--text-dim)", lineHeight: 1.6, marginBottom: 26, maxWidth: 460 }}>
+              Practise realistic interviews. Get personalised feedback. Find your weaknesses. Learn what you're missing, and track your improvement over time.
+            </p>
+            <div className="flex flex-wrap gap-3">
+              <Btn variant="accent" onClick={onStart} style={{ padding: "13px 24px", fontSize: 15 }}>Start preparing <ChevronRight size={16} /></Btn>
+              <Btn variant="secondary" onClick={onHow}>See how it works</Btn>
+            </div>
+            <div className="flex flex-wrap gap-4 mt-6" style={{ fontSize: 12.5, color: "var(--text-faint)", fontWeight: 600 }}>
+              <span className="flex items-center gap-2"><CheckCircle2 size={13} aria-hidden="true" /> Built around your specific role</span>
+              <span className="flex items-center gap-2"><CheckCircle2 size={13} aria-hidden="true" /> Feedback on every answer</span>
+            </div>
+          </div>
+
+          {/* Hero visual — a layered product-style composition using real product
+              concepts. Sample data only; clearly a preview, not a real result. */}
+          <div style={{ position: "relative" }} aria-hidden="true">
+            <Card hover={false} style={{ position: "absolute", inset: "26px -10px -18px 34px", background: "var(--featured-violet-bg)", border: "1px solid var(--featured-violet-border)", borderRadius: 18 }} />
+            <Card hover={false} style={{ position: "relative", padding: 20, borderRadius: 18 }}>
+              <div className="flex items-center justify-between mb-4">
+                <span className="flex items-center gap-2" style={{ fontSize: 12, fontWeight: 700, color: "var(--text-faint)" }}>
+                  <span className="jr-badge jr-badge-info" style={{ padding: "3px 8px" }}>Adaptive interview</span>
+                </span>
+                <span style={{ fontSize: 11.5, color: "var(--text-faint)", fontVariantNumeric: "tabular-nums" }}>Question 4 / 12</span>
+              </div>
+              <div style={{ fontSize: 11.5, color: "var(--text-faint)", marginBottom: 2 }}>Global Markets Summer Analyst</div>
+              <div style={{ background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 12, padding: 15, marginBottom: 14 }}>
+                <div style={{ fontSize: 10.5, color: "var(--blue)", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 6 }}>Behavioural / competency</div>
+                <div style={{ fontSize: 14.5, fontWeight: 600, color: "var(--navy)", lineHeight: 1.4 }}>"Tell me about a time you had to solve a difficult problem under pressure."</div>
+              </div>
+              <div className="flex items-center gap-4" style={{ borderTop: "1px solid var(--border)", paddingTop: 14 }}>
+                <RingScore value={78} size={78} label="readiness" />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <ScoreBar label="Structure" value={84} />
+                  <ScoreBar label="Specificity" value={71} />
+                  <ScoreBar label="Commercial awareness" value={82} />
+                </div>
+              </div>
+              <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 10, textAlign: "right" }}>Illustrative preview · sample data</div>
+            </Card>
+          </div>
+        </div>
+      </div>
+
+      {/* ============ ROLE BAND ============ */}
+      <LandingBand tone="surface" style={{ borderTop: "1px solid var(--border)" }}>
+        <div style={{ fontSize: 12, color: "var(--text-faint)", textAlign: "center", marginBottom: 18, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase" }}>
+          Built for the interviews students actually sit
+        </div>
+        <div className="flex justify-center flex-wrap gap-3">
+          {roleTags.map((c) => (
+            <span key={c} style={{ fontSize: 13, fontWeight: 600, color: "var(--text-dim)", background: "var(--bg)", border: "1px solid var(--border)", padding: "8px 15px", borderRadius: 999 }}>{c}</span>
+          ))}
+        </div>
+      </LandingBand>
+
+      {/* ============ SECTION 2 — VALUE / TRANSFORMATION ============ */}
+      <div style={{ maxWidth: 1080, margin: "0 auto", padding: "clamp(56px, 9vw, 88px) 24px" }}>
+        <div style={{ maxWidth: 620, marginBottom: 36 }}>
+          <LandingEyebrow>More than practice</LandingEyebrow>
+          <LandingH2>A structured way to prepare — not just a question generator.</LandingH2>
+          <p style={{ fontSize: 15, color: "var(--text-dim)", lineHeight: 1.6, marginTop: 12 }}>
+            JOB.READY helps you understand what to expect, practise it realistically, get honest feedback, learn the knowledge you're missing, and see your progress build up over time.
+          </p>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          {[
+            { icon: Compass, t: "Understand what to expect", d: "The competencies, themes and question types your specific role tends to test." },
+            { icon: MessageSquare, t: "Practise it for real", d: "Adaptive and set-length interviews, plus full Assessment Centre exercises." },
+            { icon: Target, t: "Get precise feedback", d: "Per-answer evaluation and a scored report that says what to fix next." },
+            { icon: GraduationCap, t: "Learn what's missing", d: "Lessons, modules, flashcards and quizzes aimed at your actual gaps." },
+            { icon: LineChart, t: "Track your improvement", d: "Competency history, Interview Memory and a readiness view over time." },
+            { icon: Briefcase, t: "Prepare per opportunity", d: "Organise everything around each company and role you're applying to." },
+          ].map((x, i) => (
+            <div key={i} className="flex gap-3">
+              <IconBadge icon={x.icon} tone="blue" />
+              <div>
+                <div style={{ fontSize: 14.5, fontWeight: 700, color: "var(--navy)", marginBottom: 4 }}>{x.t}</div>
+                <div style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.5 }}>{x.d}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ============ SECTION 3 — FULL PRODUCT TOOLKIT ============ */}
+      <LandingBand tone="surface">
+        <div style={{ textAlign: "center", maxWidth: 640, margin: "0 auto 40px" }}>
+          <LandingEyebrow tone="var(--violet)">The full toolkit</LandingEyebrow>
+          <LandingH2>Everything you need to prepare for the opportunity ahead.</LandingH2>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4" style={{ alignItems: "start" }}>
+          {/* wide lead tile */}
+          <Card style={{ padding: 24, gridColumn: "1 / -1", display: "flex", flexWrap: "wrap", gap: 20, alignItems: "center", justifyContent: "space-between" }}>
+            <div style={{ flex: "1 1 300px", minWidth: 0 }}>
+              <IconBadge icon={Sparkles} tone="blue" lg />
+              <div style={{ fontSize: 18, fontWeight: 800, color: "var(--navy)", margin: "10px 0 6px" }}>AI mock interviews, built around your role</div>
+              <div style={{ fontSize: 13.5, color: "var(--text-dim)", lineHeight: 1.55 }}>
+                Adaptive interviews that follow up on what you say, or fixed-length sets. Pick your question mix — technical knowledge, behavioural / competency, motivational — and every question is grounded in the company, role and job description.
+              </div>
+            </div>
+            <div style={{ flex: "0 1 240px", minWidth: 0 }}>
+              <div style={{ background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 12, padding: 14 }}>
+                {["Technical knowledge", "Behavioural / competency", "Motivational"].map((q, i) => (
+                  <div key={q} className="flex items-center gap-2" style={{ padding: "7px 0", borderBottom: i < 2 ? "1px solid var(--border)" : "none", fontSize: 12.5, color: "var(--text-dim)" }}>
+                    <CheckCircle2 size={13} color="var(--blue)" aria-hidden="true" /> {q}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </Card>
+          {toolkit.slice(1).map((f, i) => (
+            <FeatureTile key={i} icon={f.icon} tone={f.tone} title={f.title} body={f.body} />
+          ))}
+        </div>
+      </LandingBand>
+
+      {/* ============ SECTION 4 — HOW IT WORKS ============ */}
+      <div style={{ maxWidth: 1080, margin: "0 auto", padding: "clamp(56px, 9vw, 88px) 24px" }}>
+        <div style={{ textAlign: "center", maxWidth: 600, margin: "0 auto 44px" }}>
+          <LandingEyebrow>How it works</LandingEyebrow>
+          <LandingH2>From application to interview-ready.</LandingH2>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          {steps.map((s) => (
+            <Card key={s.n} style={{ padding: 22, display: "flex", gap: 16 }}>
+              <div style={{ fontSize: 13, fontWeight: 800, color: "var(--blue)", fontVariantNumeric: "tabular-nums", flexShrink: 0, paddingTop: 2 }}>{s.n}</div>
+              <div>
+                <div className="flex items-center gap-2" style={{ marginBottom: 6 }}>
+                  <IconBadge icon={s.icon} tone="neutral" size={15} />
+                  <div style={{ fontSize: 16, fontWeight: 700, color: "var(--navy)" }}>{s.title}</div>
+                </div>
+                <div style={{ fontSize: 13.5, color: "var(--text-dim)", lineHeight: 1.55 }}>{s.body}</div>
+              </div>
+            </Card>
+          ))}
+        </div>
+      </div>
+
+      {/* ============ SECTION 5 — AI INTERVIEW SHOWCASE ============ */}
+      <LandingBand tone="navy">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
+          <div>
+            <LandingEyebrow tone="var(--teal)">The interview</LandingEyebrow>
+            <LandingH2 light>Practise like the interview is real.</LandingH2>
+            <p style={{ color: "#94A3B8", fontSize: 15, lineHeight: 1.6, margin: "14px 0 20px" }}>
+              A live, adaptive interview — the next question depends on how you answered the last one. Each answer is evaluated as you go, against the competency it's meant to show.
+            </p>
+            {[
+              "Adaptive follow-ups, not a fixed script",
+              "Question type and competency focus shown for every question",
+              "Per-answer feedback the moment you submit",
+              "A scored report at the end, saved to your history",
+            ].map((t, i) => (
+              <div key={i} className="flex items-center gap-3" style={{ marginBottom: 10, color: "#E2E8F0", fontSize: 14 }}>
+                <CheckCircle2 size={15} color="var(--teal)" aria-hidden="true" style={{ flexShrink: 0 }} /> {t}
+              </div>
+            ))}
+          </div>
+          <Card hover={false} style={{ padding: 20, borderRadius: 16 }}>
+            <div className="flex items-center justify-between mb-3">
+              <span className="jr-badge jr-badge-info" style={{ padding: "3px 9px" }}>Behavioural / competency</span>
+              <span style={{ fontSize: 11.5, color: "var(--text-faint)", fontVariantNumeric: "tabular-nums" }}>Question 6 / 12</span>
+            </div>
+            <div style={{ background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 12, padding: 15, marginBottom: 12 }}>
+              <div style={{ fontSize: 14.5, fontWeight: 600, color: "var(--navy)", lineHeight: 1.4 }}>"Walk me through a time you disagreed with a teammate. How did you handle it?"</div>
+            </div>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase", color: "var(--text-faint)", marginBottom: 6 }}>Feedback preview</div>
+            <div style={{ background: "var(--featured-blue-bg)", border: "1px solid var(--featured-blue-border)", borderRadius: 10, padding: 12, fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.5 }}>
+              Clear structure and a specific example. Strengthen the outcome — quantify the result and name what you learned.
+            </div>
+            <div className="flex items-center justify-between mt-4" style={{ fontSize: 12, color: "var(--text-faint)" }}>
+              <span>Competency focus: <strong style={{ color: "var(--text-dim)" }}>Influencing</strong></span>
+              <span>Illustrative</span>
+            </div>
+          </Card>
+        </div>
+      </LandingBand>
+
+      {/* ============ SECTION 6 — FEEDBACK + IMPROVEMENT ============ */}
+      <div style={{ maxWidth: 1080, margin: "0 auto", padding: "clamp(56px, 9vw, 88px) 24px" }}>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
+          <div>
+            <LandingEyebrow>Feedback that's actually useful</LandingEyebrow>
+            <LandingH2>Know exactly what to improve next.</LandingH2>
+            <p style={{ fontSize: 15, color: "var(--text-dim)", lineHeight: 1.6, margin: "12px 0 0" }}>
+              Every interview produces a report scored against the competencies your role demands — with strengths, weaknesses and a recommended next step. Your weak spots carry into your next interview and into your Classroom.
+            </p>
+          </div>
+          <Card style={{ padding: 22 }}>
+            <div className="flex items-center gap-4 mb-4">
+              <RingScore value={74} size={84} label="readiness" />
+              <div>
+                <div style={{ fontSize: 12.5, color: "var(--text-dim)" }}>Interview readiness</div>
+                <div className="jr-badge jr-badge-success" style={{ marginTop: 5 }}><span className="jr-badge-dot" /> On track</div>
+              </div>
+            </div>
+            <LandingCompetencyRow label="Communication" state="strong" value={82} />
+            <LandingCompetencyRow label="Commercial awareness" state="improving" value={64} />
+            <LandingCompetencyRow label="Technical knowledge" state="needswork" value={48} />
+            <div style={{ background: "var(--featured-violet-bg)", border: "1px solid var(--featured-violet-border)", borderRadius: 10, padding: "10px 12px", marginTop: 14 }}>
+              <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase", color: "var(--violet)", marginBottom: 3 }}>Recommended next step</div>
+              <div style={{ fontSize: 12.5, color: "var(--text-dim)" }}>Do a technical-knowledge module on valuation basics, then re-test.</div>
+            </div>
+            <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 10, textAlign: "right" }}>Illustrative preview · sample data</div>
+          </Card>
+        </div>
+      </div>
+
+      {/* ============ SECTION 7 — LEARN, DON'T JUST PRACTISE ============ */}
+      <LandingBand tone="surface">
+        <div style={{ maxWidth: 640, marginBottom: 36 }}>
+          <LandingEyebrow tone="var(--good)">Learning built in</LandingEyebrow>
+          <LandingH2>Don't just practise. Learn what you're missing.</LandingH2>
+          <p style={{ fontSize: 15, color: "var(--text-dim)", lineHeight: 1.6, marginTop: 12 }}>
+            When an interview or exercise exposes a gap, JOB.READY turns it into a Classroom topic with a lesson and a development module — then gives you flashcards, a quiz and a written knowledge check to lock it in.
+          </p>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <FeatureTile icon={BookOpen} tone="good" title="Lessons & modules" body="Focused, readable material generated for the specific weakness — with worked examples and common mistakes." />
+          <Card style={{ padding: 20 }}>
+            <div className="flex items-center justify-between mb-3">
+              <span style={{ fontSize: 12.5, fontWeight: 700, color: "var(--navy)" }}>Flashcards</span>
+              <span style={{ fontSize: 11, color: "var(--text-faint)" }}>Card 2 / 8</span>
+            </div>
+            <div style={{ background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 10, padding: 14, fontSize: 13, color: "var(--navy)", fontWeight: 600, lineHeight: 1.4 }}>
+              What does EV / EBITDA tell you that a P/E ratio doesn't?
+            </div>
+            <div className="flex gap-2 mt-4">
+              <span className="jr-badge jr-badge-neutral">Reveal</span>
+              <span className="jr-badge jr-badge-neutral">Next</span>
+            </div>
+          </Card>
+          <Card style={{ padding: 20 }}>
+            <div className="flex items-center justify-between mb-3">
+              <span style={{ fontSize: 12.5, fontWeight: 700, color: "var(--navy)" }}>Quick quiz</span>
+              <span style={{ fontSize: 11, color: "var(--text-faint)" }}>Q3 / 5</span>
+            </div>
+            {["A written check", "A multiple-choice item", "A recall prompt"].map((o, i) => (
+              <div key={i} className="flex items-center gap-2" style={{ padding: "7px 0", fontSize: 12.5, color: "var(--text-dim)" }}>
+                <span style={{ width: 14, height: 14, borderRadius: 999, border: "1.5px solid " + (i === 1 ? "var(--blue)" : "var(--border)"), background: i === 1 ? "var(--blue)" : "transparent", flexShrink: 0 }} /> {o}
+              </div>
+            ))}
+          </Card>
+        </div>
+        <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 14 }}>Illustrative previews · sample content</div>
+      </LandingBand>
+
+      {/* ============ SECTION 8 — ASSESSMENT CENTRE ============ */}
+      <div style={{ maxWidth: 1080, margin: "0 auto", padding: "clamp(56px, 9vw, 88px) 24px" }}>
+        <div style={{ textAlign: "center", maxWidth: 620, margin: "0 auto 40px" }}>
+          <LandingEyebrow tone="var(--violet)">Assessment Centre</LandingEyebrow>
+          <LandingH2>Prepare for more than the interview.</LandingH2>
+          <p style={{ fontSize: 15, color: "var(--text-dim)", lineHeight: 1.6, marginTop: 12 }}>
+            Graduate schemes rarely stop at an interview. Practise the exercises that come with an assessment centre — each one scored with a competency breakdown.
+          </p>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {acTypes.map((x) => (
+            <Card key={x.label} style={{ padding: 20, display: "flex", flexDirection: "column", gap: 8 }}>
+              <IconBadge icon={x.icon} tone="teal" />
+              <div style={{ fontSize: 14.5, fontWeight: 700, color: "var(--navy)" }}>{x.label}</div>
+              <div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.5 }}>{x.body}</div>
+            </Card>
+          ))}
+          <div className="flex items-center" style={{ padding: 20 }}>
+            <Btn variant="secondary" onClick={onStart}>Explore the Assessment Centre <ArrowRight size={15} /></Btn>
+          </div>
+        </div>
+      </div>
+
+      {/* ============ SECTION 9 — PROGRESS / LONG-TERM ============ */}
+      <LandingBand tone="surface">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
+          <Card style={{ padding: 24 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase", color: "var(--text-faint)", marginBottom: 14 }}>Readiness across attempts</div>
+            <div className="flex items-end gap-3" style={{ height: 140 }}>
+              {[58, 63, 71, 77, 84].map((v, i, a) => (
+                <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end", height: "100%" }}>
+                  <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--navy)", marginBottom: 6, fontVariantNumeric: "tabular-nums" }}>{v}</div>
+                  <div className="jr-chartbar" style={{ width: "58%", height: (v / 100) * 110, background: i === a.length - 1 ? "var(--blue)" : "#C7DBFF", borderRadius: "6px 6px 0 0" }} />
+                  <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 6 }}>#{i + 1}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 10 }}>Illustrative preview · sample data</div>
+          </Card>
+          <div>
+            <LandingEyebrow>Progress</LandingEyebrow>
+            <LandingH2>See the progress you're actually making.</LandingH2>
+            <p style={{ fontSize: 15, color: "var(--text-dim)", lineHeight: 1.6, margin: "12px 0 18px" }}>
+              Every completed interview adds to your history. JOB.READY tracks your competency scores over time and remembers how you did on similar questions before.
+            </p>
+            <div className="flex flex-col gap-3">
+              <div className="flex gap-3">
+                <IconBadge icon={Compass} tone="violet" />
+                <div><div style={{ fontSize: 14, fontWeight: 700, color: "var(--navy)" }}>Interview DNA</div><div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.5 }}>Your recurring strengths, weak spots and answering style.</div></div>
+              </div>
+              <div className="flex gap-3">
+                <IconBadge icon={History} tone="teal" />
+                <div><div style={{ fontSize: 14, fontWeight: 700, color: "var(--navy)" }}>Interview Memory</div><div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.5 }}>Re-attempt a similar question and see whether your score improved.</div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </LandingBand>
+
+      {/* ============ SECTION 10 — STUDENT PROBLEM ============ */}
+      <div style={{ maxWidth: 1080, margin: "0 auto", padding: "clamp(56px, 9vw, 88px) 24px" }}>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-12 items-start">
+          <div>
+            <LandingEyebrow tone="var(--warn)">The usual way</LandingEyebrow>
+            <LandingH2>Preparation shouldn't mean guessing what to do next.</LandingH2>
+            <div style={{ marginTop: 18 }}>
+              {pains.map((p, i) => (
+                <div key={i} className="flex items-start gap-3" style={{ marginBottom: 12 }}>
+                  <XCircle size={17} color="var(--bad)" aria-hidden="true" style={{ flexShrink: 0, marginTop: 1 }} />
+                  <span style={{ fontSize: 14, color: "var(--text-dim)", lineHeight: 1.5 }}>{p}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <Card style={{ padding: 24 }}>
+            <LandingEyebrow tone="var(--good)">With JOB.READY</LandingEyebrow>
+            <div style={{ fontSize: 17, fontWeight: 800, color: "var(--navy)", margin: "2px 0 14px" }}>A structured plan, not a guessing game.</div>
+            {[
+              "Role-specific questions, drawn from the actual job description",
+              "Feedback on every answer, scored against real competencies",
+              "A recommended next step after each interview",
+              "Weaknesses tracked and turned into learning",
+              "Interviews and assessment centres prepared in one place",
+            ].map((t, i) => (
+              <div key={i} className="flex items-start gap-3" style={{ marginBottom: 11 }}>
+                <CheckCircle2 size={16} color="var(--good)" aria-hidden="true" style={{ flexShrink: 0, marginTop: 1 }} />
+                <span style={{ fontSize: 13.5, color: "var(--text-dim)", lineHeight: 1.5 }}>{t}</span>
+              </div>
+            ))}
+          </Card>
+        </div>
+      </div>
+
+      {/* ============ SECTION 11 — COMPACT FEATURE INVENTORY ============ */}
+      <LandingBand tone="navy">
+        <div style={{ textAlign: "center", maxWidth: 560, margin: "0 auto 28px" }}>
+          <LandingEyebrow tone="var(--teal)">The whole toolkit</LandingEyebrow>
+          <LandingH2 light>One account. A lot more than mock interviews.</LandingH2>
+        </div>
+        <div className="flex flex-wrap justify-center gap-2">
+          {inventory.map((t) => (
+            <span key={t} style={{ fontSize: 12.5, fontWeight: 600, color: "#E2E8F0", background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.14)", padding: "7px 13px", borderRadius: 999 }}>{t}</span>
+          ))}
+        </div>
+      </LandingBand>
+
+      {/* ============ UNIVERSITIES STRIP ============ */}
+      <LandingBand tone="surface">
+        <div style={{ textAlign: "center", maxWidth: 560, margin: "0 auto" }}>
+          <LandingH2 style={{ fontSize: "clamp(20px, 3vw, 24px)" }}>Careers teams: give every student interview practice.</LandingH2>
+          <p style={{ color: "var(--text-dim)", fontSize: 14, lineHeight: 1.6, margin: "12px 0 20px" }}>
+            Personalised interview practice at a scale one-to-one coaching can't reach.
+          </p>
+          <Btn variant="secondary" onClick={onUniversities}>For universities <ArrowRight size={15} /></Btn>
+        </div>
+      </LandingBand>
+
+      {/* ============ SECTION 12 — FINAL CTA ============ */}
+      <div style={{ background: "linear-gradient(135deg, var(--navy), #1E293B)", padding: "clamp(64px, 10vw, 92px) 24px", textAlign: "center" }}>
+        <h2 style={{ fontSize: "clamp(26px, 5vw, 36px)", fontWeight: 800, color: "#fff", marginBottom: 14, letterSpacing: "-0.02em", textWrap: "balance", maxWidth: 640, marginLeft: "auto", marginRight: "auto" }}>
+          Your next interview deserves more than a Google search.
+        </h2>
+        <p style={{ color: "#94A3B8", fontSize: 15.5, marginBottom: 28, maxWidth: 520, marginLeft: "auto", marginRight: "auto" }}>
+          Know what to expect. Practise realistically. Learn from every answer.
+        </p>
+        <Btn variant="accent" onClick={onStart} style={{ padding: "14px 28px", fontSize: 15.5 }}>Start preparing <ChevronRight size={16} /></Btn>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [screen, setScreen] = useState("landing");
   const [user, setUser] = useState(null); // { id, email, first_name, last_name }
@@ -5771,191 +6299,15 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
       <style>{TOKENS}</style>
       {showNav && <NavBar screen={screen} setScreen={setScreen} user={user} classroomNeedsWorkCount={classroomNeedsWorkCount} onSignOut={() => guarded(handleSignOut)} />}
 
-      {/* ---------------- LANDING ---------------- */}
+      {/* ---------------- LANDING (Phase 32: full product showcase) ---------------- */}
       {screen === "landing" && (
         <div className="jr-fade">
-          <div style={{ maxWidth: 1080, margin: "0 auto", padding: "72px 24px 40px" }}>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
-              <div>
-                <Pill>Built for role-specific interview prep</Pill>
-                <h1 style={{ fontSize: 46, lineHeight: 1.12, fontWeight: 800, letterSpacing: "-0.02em", margin: "18px 0 16px", color: "var(--navy)" }}>
-                  Practise the interview you're actually going to face.
-                </h1>
-                <p style={{ fontSize: 17, color: "var(--text-dim)", lineHeight: 1.6, marginBottom: 28 }}>
-                  Upload your CV and job description. JOB.READY builds a personalised, adaptive interview around the role you're applying for — then tells you exactly how to improve.
-                </p>
-                <div className="flex flex-wrap gap-3">
-                  <Btn variant="accent" onClick={() => setScreen("login")}>Start practising <ChevronRight size={16} /></Btn>
-                  <Btn variant="secondary" onClick={() => setScreen("how")}>See how it works</Btn>
-                </div>
-              </div>
-              <div style={{ position: "relative" }}>
-                <div style={{ position: "absolute", width: 200, height: 200, background: "var(--violet)", opacity: 0.12, borderRadius: "50%", top: -30, right: -20, filter: "blur(10px)" }} />
-                <div style={{ position: "absolute", width: 160, height: 160, background: "var(--teal)", opacity: 0.14, borderRadius: "50%", bottom: -20, left: -20, filter: "blur(10px)" }} />
-                <Card style={{ position: "relative", padding: 22, borderRadius: 18 }} hover={false}>
-                  <div className="flex items-center justify-between mb-4">
-                    <JobReadyLogo size={20} />
-                    <Pill color="var(--violet)" bg="#F1E9FE">Mixed interview</Pill>
-                  </div>
-                  <div style={{ fontSize: 12, color: "var(--text-faint)", marginBottom: 2 }}>JPMorgan</div>
-                  <div style={{ fontSize: 14, fontWeight: 600, color: "var(--navy)", marginBottom: 14 }}>Global Markets Summer Analyst</div>
-                  <div style={{ background: "#F8FAFC", border: "1px solid var(--border)", borderRadius: 10, padding: 16, marginBottom: 16 }}>
-                    <div style={{ fontSize: 11, color: "var(--blue)", fontWeight: 600, textTransform: "uppercase", marginBottom: 6 }}>Motivation / Fit</div>
-                    <div style={{ fontSize: 15, fontWeight: 600, color: "var(--navy)" }}>"Why are you interested in Global Markets?"</div>
-                  </div>
-                  <div style={{ borderTop: "1px solid var(--border)", paddingTop: 14 }}>
-                    <div className="flex items-center justify-between mb-2">
-                      <span style={{ fontSize: 12, color: "var(--text-dim)" }}>Interview readiness</span>
-                      <span style={{ fontSize: 18, fontWeight: 800, color: "var(--navy)" }}>78%</span>
-                    </div>
-                    <ScoreBar label="Structure" value={84} />
-                    <ScoreBar label="Specificity" value={71} />
-                    <ScoreBar label="Commercial awareness" value={82} />
-                  </div>
-                </Card>
-              </div>
-            </div>
-          </div>
-
-          <div style={{ borderTop: "1px solid var(--border)", borderBottom: "1px solid var(--border)", background: "#fff" }}>
-            <div style={{ maxWidth: 1080, margin: "0 auto", padding: "32px 24px" }}>
-              <div style={{ fontSize: 13, color: "var(--text-faint)", textAlign: "center", marginBottom: 18, fontWeight: 600, letterSpacing: "0.02em" }}>BUILT FOR THE INTERVIEWS THAT MATTER</div>
-              <div className="flex justify-center flex-wrap gap-3">
-                {["Investment Banking", "Consulting", "Technology", "Asset Management", "Law", "Graduate Schemes"].map((c) => (
-                  <span key={c} style={{ fontSize: 13.5, fontWeight: 600, color: "var(--text-dim)", background: "var(--bg)", border: "1px solid var(--border)", padding: "8px 16px", borderRadius: 999 }}>{c}</span>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          <div style={{ maxWidth: 1080, margin: "0 auto", padding: "72px 24px" }}>
-            <h2 style={{ fontSize: 32, fontWeight: 800, color: "var(--navy)", textAlign: "center", marginBottom: 40, letterSpacing: "-0.01em" }}>Generic interview practice isn't enough.</h2>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              {[
-                ["Generic questions", "Most interview practice gives everyone the same questions, regardless of the role."],
-                ["No personal feedback", "Candidates don't know exactly why their answers aren't strong enough."],
-                ["No progression", "Candidates practise repeatedly without knowing whether they're actually improving."],
-              ].map(([t, d], i) => (
-                <Card key={i} style={{ padding: 24 }}>
-                  <div style={{ width: 34, height: 34, borderRadius: 9, background: "#FEF2F2", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 14 }}>
-                    <XCircle size={17} color="var(--bad)" />
-                  </div>
-                  <div style={{ fontWeight: 700, fontSize: 15.5, color: "var(--navy)", marginBottom: 6 }}>{t}</div>
-                  <div style={{ fontSize: 13.5, color: "var(--text-dim)", lineHeight: 1.5 }}>{d}</div>
-                </Card>
-              ))}
-            </div>
-          </div>
-
-          <div style={{ background: "#fff", borderTop: "1px solid var(--border)", borderBottom: "1px solid var(--border)" }}>
-            <div style={{ maxWidth: 1080, margin: "0 auto", padding: "72px 24px" }}>
-              <h2 style={{ fontSize: 32, fontWeight: 800, color: "var(--navy)", textAlign: "center", marginBottom: 44, letterSpacing: "-0.01em" }}>How it works</h2>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-                {[
-                  ["01", "Upload your application", "Add your CV and the job description."],
-                  ["02", "Take your interview", "JOB.READY asks realistic questions based on your role, company and experience."],
-                  ["03", "Improve", "Get detailed feedback and track your interview readiness over time."],
-                ].map(([n, t, d], i) => (
-                  <div key={i}>
-                    <div style={{ fontSize: 13, fontWeight: 800, color: "var(--blue)", marginBottom: 10 }}>{n}</div>
-                    <div style={{ fontSize: 19, fontWeight: 700, color: "var(--navy)", marginBottom: 8 }}>{t}</div>
-                    <div style={{ fontSize: 14, color: "var(--text-dim)", lineHeight: 1.55 }}>{d}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          <div style={{ maxWidth: 860, margin: "0 auto", padding: "72px 24px" }}>
-            <h2 style={{ fontSize: 32, fontWeight: 800, color: "var(--navy)", textAlign: "center", marginBottom: 12, letterSpacing: "-0.01em" }}>Not another chatbot.</h2>
-            <p style={{ textAlign: "center", color: "var(--text-dim)", fontSize: 15, marginBottom: 36 }}>A real interview simulation, not a Q&A window.</p>
-            <Card style={{ overflow: "hidden" }} hover={false}>
-              <div className="grid grid-cols-1 md:grid-cols-2">
-                <div style={{ padding: "16px 22px", fontSize: 13, fontWeight: 700, color: "var(--text-faint)", borderBottom: "1px solid var(--border)" }}>TRADITIONAL AI CHAT</div>
-                <div style={{ padding: "16px 22px", fontSize: 13, fontWeight: 700, color: "var(--blue)", borderBottom: "1px solid var(--border)" }}>JOB.READY</div>
-                {[
-                  ["Generic questions", "Role-specific questions"],
-                  ["Static conversation", "Adaptive interview"],
-                  ["Generic feedback", "Competency-based feedback"],
-                  ["No memory", "Remembers weaknesses"],
-                  ["No progression", "Tracks improvement"],
-                ].map((row, i) => (
-                  <React.Fragment key={i}>
-                    <div style={{ padding: "14px 22px", fontSize: 14, color: "var(--text-dim)", borderBottom: i < 4 ? "1px solid var(--border)" : "none" }}>{row[0]}</div>
-                    <div style={{ padding: "14px 22px", fontSize: 14, fontWeight: 600, color: "var(--navy)", borderBottom: i < 4 ? "1px solid var(--border)" : "none", display: "flex", alignItems: "center", gap: 8 }}>
-                      <CheckCircle2 size={14} color="var(--good)" /> {row[1]}
-                    </div>
-                  </React.Fragment>
-                ))}
-              </div>
-            </Card>
-          </div>
-
-          <div style={{ background: "var(--navy)", padding: "80px 24px" }}>
-            <div style={{ maxWidth: 1080, margin: "0 auto" }}>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
-                <div>
-                  <h2 style={{ fontSize: 30, fontWeight: 800, color: "#fff", marginBottom: 14, letterSpacing: "-0.01em" }}>Your interview. Your role. Your weaknesses.</h2>
-                  <p style={{ color: "#94A3B8", fontSize: 15, lineHeight: 1.6, marginBottom: 20 }}>Every report is scored against the actual competencies your target role demands — and tells you precisely what to fix next.</p>
-                  <div style={{ fontSize: 13, color: "var(--teal)", fontWeight: 700, marginBottom: 10, textTransform: "uppercase" }}>Focus next time</div>
-                  {["Quantify your achievements", "Reduce answer length", "Make motivation more company-specific"].map((t, i) => (
-                    <div key={i} style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 10, color: "#fff", fontSize: 14.5 }}>
-                      <div style={{ width: 20, height: 20, borderRadius: 6, background: "var(--blue)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, flexShrink: 0 }}>{i + 1}</div>
-                      {t}
-                    </div>
-                  ))}
-                </div>
-                <Card style={{ padding: 24 }} hover={false}>
-                  <div className="flex items-center gap-6 mb-5">
-                    <RingScore value={78} size={100} />
-                    <div>
-                      <div style={{ fontSize: 13, color: "var(--text-dim)" }}>Interview readiness</div>
-                      <div style={{ fontSize: 13, fontWeight: 700, color: "var(--good)", marginTop: 4 }}>Interview ready</div>
-                    </div>
-                  </div>
-                  <ScoreBar label="Communication" value={82} />
-                  <ScoreBar label="Structure" value={74} />
-                  <ScoreBar label="Specificity" value={68} />
-                  <ScoreBar label="Commercial awareness" value={84} />
-                </Card>
-              </div>
-            </div>
-          </div>
-
-          <div style={{ maxWidth: 1080, margin: "0 auto", padding: "80px 24px" }}>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
-              <Card style={{ padding: 26 }}>
-                <div className="flex items-end gap-4" style={{ height: 140 }}>
-                  {[62, 69, 77, 84].map((v, i) => (
-                    <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end", height: "100%" }}>
-                      <div style={{ fontSize: 12, fontWeight: 700, color: "var(--navy)", marginBottom: 6 }}>{v}</div>
-                      <div style={{ width: "60%", height: v, background: i === 3 ? "var(--blue)" : "#DBEAFE", borderRadius: "6px 6px 0 0" }} />
-                      <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 6 }}>#{i + 1}</div>
-                    </div>
-                  ))}
-                </div>
-              </Card>
-              <div>
-                <h2 style={{ fontSize: 30, fontWeight: 800, color: "var(--navy)", marginBottom: 14, letterSpacing: "-0.01em" }}>Get better with every interview.</h2>
-                <p style={{ color: "var(--text-dim)", fontSize: 15, lineHeight: 1.6 }}>JOB.READY remembers where you struggle and adapts future interviews around the areas you need to improve.</p>
-              </div>
-            </div>
-          </div>
-
-          <div style={{ background: "#fff", borderTop: "1px solid var(--border)" }}>
-            <div style={{ maxWidth: 780, margin: "0 auto", padding: "64px 24px", textAlign: "center" }}>
-              <h2 style={{ fontSize: 25, fontWeight: 800, color: "var(--navy)", marginBottom: 12 }}>Give every student access to interview preparation.</h2>
-              <p style={{ color: "var(--text-dim)", fontSize: 14.5, marginBottom: 20, maxWidth: 520, margin: "0 auto 22px" }}>Careers teams can give students personalised interview practice at a scale that one-to-one coaching cannot match.</p>
-              <Btn variant="secondary" onClick={() => setScreen("universities")}>For universities <ArrowRight size={15} /></Btn>
-            </div>
-          </div>
-
-          <div style={{ background: "linear-gradient(135deg, var(--navy), #1E293B)", padding: "84px 24px", textAlign: "center" }}>
-            <h2 style={{ fontSize: 34, fontWeight: 800, color: "#fff", marginBottom: 14, letterSpacing: "-0.01em" }}>Your next interview starts here.</h2>
-            <p style={{ color: "#94A3B8", fontSize: 15.5, marginBottom: 28 }}>Stop guessing what you'll be asked. Start practising for the interview you're actually going to face.</p>
-            <Btn variant="accent" onClick={() => setScreen("login")} style={{ padding: "14px 28px", fontSize: 15.5 }}>Start practising <ChevronRight size={16} /></Btn>
-          </div>
-          <div style={{ maxWidth: 1080, margin: "0 auto", padding: "0 24px" }}>
+          <LandingPage
+            onStart={() => setScreen("login")}
+            onHow={() => setScreen("how")}
+            onUniversities={() => setScreen("universities")}
+          />
+          <div style={{ maxWidth: 1120, margin: "0 auto", padding: "0 24px" }}>
             <LegalFooter openLegal={openLegal} />
           </div>
         </div>
