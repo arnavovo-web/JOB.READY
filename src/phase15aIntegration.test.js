@@ -83,7 +83,7 @@ describe("Development Module persistence is a hard durability boundary", () => {
     expect(calls.length).toBe(1);
   });
   it("the Classroom shows an inline error + retry when a module couldn't be saved", () => {
-    const CLASS = fn('{screen === "classroom" && (', "🎯 Recommended for your application");
+    const CLASS = fn('{screen === "classroom" && (', "Recommended for your application");
     expect(CLASS).toMatch(/pendingModuleSave &&/);
     expect(CLASS).toMatch(/was generated but not saved/);
     expect(CLASS).toMatch(/guarded\(retrySaveModule\)/);
@@ -124,7 +124,10 @@ describe("returning-user Continue preparing surface", () => {
   });
   it("the card keeps demonstrated vs preparation distinct and routes through the EXISTING open paths", () => {
     const CARD = fn("{/* Phase 15A: returning-user re-entry", "{perf?.weaknesses?.length > 0 && (");
-    expect(CARD).toMatch(/continuePreparing\.evidenceType === "demonstrated" \? "🔴 " : "📚 "/);
+    // Phase 28: the demonstrated-vs-preparation distinction is now carried by a
+    // lucide icon (AlertCircle / BookOpen) instead of a 🔴 / 📚 emoji prefix —
+    // the branching contract is unchanged.
+    expect(CARD).toMatch(/continuePreparing\.evidenceType === "demonstrated"[\s\S]*?AlertCircle[\s\S]*?BookOpen/);
     expect(CARD).toMatch(/\{continuePreparing\.sublabel\}/);
     expect(CARD).toMatch(/startLearningFromRecommendation\(continuePreparing\.recommendation/);
     expect(CARD).toMatch(/openDevelopmentModule\(t\)/);
