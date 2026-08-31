@@ -78,7 +78,10 @@ describe("Phase 28 — interface emoji replaced by lucide on the audited surface
   it("the Dashboard resume / continue-preparing cards no longer use 🎤 🔴 📚 as icons", () => {
     const region = DASH.slice(DASH.indexOf("resumableReady.map"), DASH.indexOf("perf?.weaknesses?.length > 0"));
     expect(region).not.toMatch(/[\u{1F3A4}\u{1F534}\u{1F4DA}]/u);
-    expect(region).toMatch(/<Mic size=/);
+    // Phase 28 replaced the 🎤 emoji with a lucide <Mic>; Phase 29 then swapped
+    // that for <History> ("resume", not audio — voice answers aren't a feature).
+    // The contract here is unchanged: a lucide icon, never an emoji.
+    expect(region).toMatch(/<History size=/);
     expect(region).toMatch(/continuePreparing\.evidenceType === "demonstrated"[\s\S]*?AlertCircle[\s\S]*?BookOpen/);
   });
   it("the Classroom recommendations heading no longer uses 🎯", () => {

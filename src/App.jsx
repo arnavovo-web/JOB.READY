@@ -5902,8 +5902,10 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                   so the Dashboard never turns into a wall of featured cards. */}
               {resumableReady.map((r, idx) => idx === 0 ? (
                 <FeaturedCard key={r.id} style={{ marginBottom: 10 }}>
+                  {/* Phase 29: a "resume" mark, not a microphone — voice answers are not a
+                      feature yet, so nothing on the dashboard should imply audio. */}
                   <div className="flex items-center gap-2" style={{ marginBottom: 10 }}>
-                    <span className="jr-icon-badge jr-ib-violet"><Mic size={16} aria-hidden="true" /></span>
+                    <span className="jr-icon-badge jr-ib-violet"><History size={16} aria-hidden="true" /></span>
                     <span className="jr-meta" style={{ color: "var(--violet)" }}>Continue your interview</span>
                   </div>
                   <div style={{ fontSize: 16, fontWeight: 700, color: "var(--navy)" }}>{r.company || "Interview"}{r.role ? ` — ${r.role}` : ""}</div>
@@ -5918,7 +5920,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                   <div className="flex items-center justify-between gap-3">
                     <div style={{ minWidth: 0 }}>
                       <div className="flex items-center gap-2" style={{ fontSize: 14, fontWeight: 700, color: "var(--navy)" }}>
-                        <Mic size={13} color="var(--violet)" aria-hidden="true" style={{ flexShrink: 0 }} />
+                        <History size={13} color="var(--violet)" aria-hidden="true" style={{ flexShrink: 0 }} />
                         {r.company || "Interview"}{r.role ? ` — ${r.role}` : ""}
                       </div>
                       <div className="jr-text-sm" style={{ marginTop: 3 }}>{resumableProgressLabel(r)}</div>
