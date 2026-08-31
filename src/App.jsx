@@ -125,6 +125,7 @@ const TOKENS = `
     --shadow-sm: 0 1px 2px rgba(16,24,40,0.06); --shadow-md: 0 4px 16px rgba(16,24,40,0.08); --shadow-lg: 0 12px 32px rgba(16,24,40,0.12);
     --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   }
+  html, body{ margin:0; }
   .jr-btn{ transition: transform .12s ease, box-shadow .12s ease, background .12s ease; }
   .jr-btn:hover{ transform: translateY(-1px); box-shadow: var(--shadow-md); }
   .jr-btn:active{ transform: translateY(0); }
@@ -178,6 +179,82 @@ const TOKENS = `
   }
   @keyframes jrSpin{ to{ transform: rotate(360deg); } }
   .animate-spin{ animation: jrSpin 1s linear infinite; }
+
+  /* ---------------------------------------------------------------- *
+   * Phase 24: AUTHENTICATION PAGES — two-column premium layout.
+   * Scoped .jr-auth-* classes only; nothing else in the app is affected.
+   * Mobile-first: a compact brand band on top of a full-width form.
+   * At >= 960px it becomes a fixed dark brand panel + a centred form.
+   * ---------------------------------------------------------------- */
+  .jr-auth, .jr-auth *, .jr-auth *::before, .jr-auth *::after{ box-sizing:border-box; }
+  .jr-auth{ display:flex; flex-direction:column; width:100%; min-height:100vh; min-height:100dvh; background:var(--bg); }
+  .jr-auth-brand{ position:relative; overflow:hidden; color:#fff;
+    background:linear-gradient(165deg,#0B1220 0%,#16213E 58%,#1D2939 100%);
+    padding:clamp(24px,7vw,40px) clamp(20px,6vw,32px) clamp(28px,8vw,44px); }
+  .jr-auth-brand-inner{ position:relative; z-index:1; max-width:520px; margin:0 auto; width:100%; }
+  .jr-auth-orb{ position:absolute; border-radius:50%; filter:blur(28px); pointer-events:none; z-index:0; }
+  .jr-auth-eyebrow{ display:inline-flex; align-items:center; gap:7px; font-size:12px; font-weight:600;
+    letter-spacing:.04em; text-transform:uppercase; color:rgba(255,255,255,.62);
+    border:1px solid rgba(255,255,255,.16); background:rgba(255,255,255,.04);
+    padding:5px 11px; border-radius:999px; }
+  .jr-auth-headline{ font-weight:800; letter-spacing:-0.02em; color:#fff; line-height:1.12;
+    font-size:clamp(22px,5.4vw,30px); margin:16px 0 10px; }
+  .jr-auth-sub{ font-size:clamp(13.5px,3.4vw,15px); line-height:1.6; color:rgba(255,255,255,.72); margin:0; max-width:44ch; }
+  .jr-auth-mock{ display:none; }
+  .jr-auth-pillrow{ display:flex; flex-wrap:wrap; gap:8px; margin-top:20px; }
+  .jr-auth-pill{ font-size:12px; font-weight:600; color:rgba(255,255,255,.8);
+    background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.14); padding:6px 12px; border-radius:999px; }
+  .jr-auth-brand-foot{ display:none; margin-top:36px; }
+
+  .jr-auth-main{ flex:1; display:flex; flex-direction:column; min-width:0; }
+  .jr-auth-formwrap{ flex:1; display:flex; flex-direction:column; align-items:center; justify-content:flex-start;
+    padding:clamp(24px,7vw,40px) 20px 56px; width:100%; }
+  .jr-auth-card{ width:100%; max-width:452px; background:var(--card); border:1px solid var(--border);
+    border-radius:18px; box-shadow:var(--shadow-md); padding:clamp(24px,5.5vw,36px); }
+  .jr-auth-title{ font-size:clamp(21px,4.6vw,26px); font-weight:800; letter-spacing:-0.01em; color:var(--navy); margin:0; }
+  .jr-auth-desc{ font-size:14.5px; line-height:1.55; color:var(--text-dim); margin:8px 0 0; }
+  .jr-auth-foot{ text-align:center; font-size:13.5px; color:var(--text-dim); margin-top:20px; }
+  .jr-auth-back{ display:inline-flex; align-items:center; gap:6px; font-size:13px; font-weight:600;
+    color:var(--text-dim); background:none; border:none; cursor:pointer; padding:8px; margin-top:14px; }
+  .jr-auth-back:hover{ color:var(--navy); }
+
+  .jr-field{ margin-bottom:16px; }
+  .jr-field-label{ display:block; font-size:13px; font-weight:600; color:var(--text); margin-bottom:7px; }
+  .jr-field-input{ width:100%; padding:12px 14px; font-size:15px; font-family:var(--font); color:var(--text);
+    background:var(--card); border:1.5px solid var(--border); border-radius:10px; transition:border-color .12s ease, box-shadow .12s ease; }
+  .jr-field-row{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:7px; }
+
+  .jr-pwfield{ display:flex; align-items:stretch; width:100%; background:var(--card);
+    border:1.5px solid var(--border); border-radius:10px; overflow:hidden;
+    transition:border-color .12s ease, box-shadow .12s ease; }
+  .jr-pwfield:focus-within{ border-color:var(--blue); box-shadow:0 0 0 3px var(--highlight); }
+  .jr-pwfield input{ flex:1; min-width:0; border:none; background:transparent;
+    padding:12px 14px; font-size:15px; font-family:var(--font); color:var(--text); }
+  .jr-pwfield input:focus{ outline:none; border:none !important; box-shadow:none !important; }
+  .jr-pwtoggle{ flex-shrink:0; width:46px; display:flex; align-items:center; justify-content:center;
+    background:transparent; border:none; border-left:1px solid var(--border); color:var(--text-faint);
+    cursor:pointer; transition:background .12s ease, color .12s ease; }
+  .jr-pwtoggle:hover{ background:var(--bg); color:var(--text-dim); }
+
+  .jr-authbtn{ box-shadow:0 1px 2px rgba(37,99,235,.28); }
+  .jr-authbtn:disabled{ opacity:.62; box-shadow:none; }
+
+  @media (min-width:960px){
+    .jr-auth{ flex-direction:row; height:100vh; height:100dvh; overflow:hidden; }
+    .jr-auth-brand{ width:44%; max-width:560px; flex-shrink:0; display:flex; flex-direction:column;
+      justify-content:center; padding:40px clamp(36px,4vw,56px); }
+    .jr-auth-brand-inner{ margin:0; }
+    .jr-auth-headline{ font-size:clamp(22px,2vw,28px); margin:14px 0 10px; }
+    .jr-auth-mock{ display:block; margin-top:22px; background:rgba(255,255,255,.06);
+      border:1px solid rgba(255,255,255,.14); border-radius:16px; padding:16px; backdrop-filter:blur(6px); }
+    .jr-auth-brand-foot{ display:block; margin-top:24px; font-size:12.5px; color:rgba(255,255,255,.5); }
+    .jr-auth-main{ overflow-y:auto; }
+    .jr-auth-formwrap{ justify-content:center; padding:48px; }
+    .jr-auth-card{ max-width:428px; }
+  }
+  @media (min-width:1440px){
+    .jr-auth-brand{ padding:48px 68px; }
+  }
 `;
 
 const MODEL = "claude-sonnet-4-6";
@@ -2131,7 +2208,7 @@ function JobReadyLogo({ variant = "full", background = "light", size = 28 }) {
 /* ================================================================== */
 /* SHARED UI PRIMITIVES                                                 */
 /* ================================================================== */
-function Btn({ children, onClick, disabled, variant = "primary", style, full }) {
+function Btn({ children, onClick, disabled, variant = "primary", style, full, className }) {
   const base = { fontFamily: "var(--font)", fontSize: 14.5, fontWeight: 600, border: "none", cursor: disabled ? "not-allowed" : "pointer", padding: "12px 22px", borderRadius: "var(--radius-sm)", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8, width: full ? "100%" : "auto" };
   const variants = {
     primary: { background: disabled ? "#CBD5E1" : "var(--navy)", color: "#fff" },
@@ -2139,7 +2216,7 @@ function Btn({ children, onClick, disabled, variant = "primary", style, full }) 
     secondary: { background: "#fff", color: "var(--navy)", border: "1.5px solid var(--border)" },
     ghost: { background: "transparent", color: "var(--text-dim)" },
   };
-  return <button className="jr-btn" onClick={onClick} disabled={disabled} style={{ ...base, ...variants[variant], ...style }}>{children}</button>;
+  return <button className={className ? `jr-btn ${className}` : "jr-btn"} onClick={onClick} disabled={disabled} style={{ ...base, ...variants[variant], ...style }}>{children}</button>;
 }
 
 function Card({ children, style, hover = true, onClick }) {
@@ -2171,24 +2248,27 @@ function Pill({ children, color = "var(--blue)", bg = "var(--highlight)" }) {
   return <span style={{ fontFamily: "var(--font)", fontSize: 12, fontWeight: 600, color, background: bg, padding: "4px 11px", borderRadius: 999, display: "inline-block" }}>{children}</span>;
 }
 
-// Phase 23: shared base style for the auth text/password inputs (mirrors the
-// per-App `inputStyle`; kept at module scope so PasswordInput can use it).
-const AUTH_INPUT_STYLE = { width: "100%", padding: "11px 13px", border: "1.5px solid var(--border)", borderRadius: "var(--radius-sm)", fontSize: 14 };
+// Phase 23 / 24: shared base style for the plain auth text inputs (email, name).
+// Scoped to the auth screens only — NOT the app-wide `inputStyle`.
+const AUTH_INPUT_STYLE = { width: "100%", padding: "12px 14px", border: "1.5px solid var(--border)", borderRadius: 10, fontSize: 15, fontFamily: "var(--font)", color: "var(--text)", background: "var(--card)" };
 
 // Phase 23: a password field with its OWN independent show/hide toggle.
 // Toggling flips ONLY the <input type> (password <-> text) via
 // passwordInputType() — `value`/`onChange` pass straight through, so the typed
 // password is never cleared or transformed. The toggle is a real <button>
 // (keyboard-operable by default), carries a dynamic accessible label
-// ("Show password" / "Hide password") plus aria-pressed, and sits inside the
-// field so it is usable on desktop and mobile. Nothing here logs, stores or
-// copies the password. Each rendered instance holds its own `visible` state,
-// so multiple password fields on one screen toggle independently.
+// ("Show password" / "Hide password") plus aria-pressed. Each rendered instance
+// holds its own `visible` state, so multiple password fields on one screen
+// toggle independently. Nothing here logs, stores or copies the password.
+//
+// Phase 24 (visual only): the input + toggle now live inside ONE bordered field
+// (.jr-pwfield) with a hairline divider and a :focus-within ring, so the toggle
+// reads as part of the control rather than bolted on. Behaviour is unchanged.
 function PasswordInput({ id, value, onChange, onKeyDown, autoComplete, placeholder, style }) {
   const [visible, setVisible] = useState(false);
   const label = visibilityToggleLabel(visible);
   return (
-    <div style={{ position: "relative", ...style }}>
+    <div className="jr-pwfield" style={style}>
       <input
         id={id}
         type={passwordInputType(visible)}
@@ -2197,21 +2277,16 @@ function PasswordInput({ id, value, onChange, onKeyDown, autoComplete, placehold
         onChange={onChange}
         onKeyDown={onKeyDown}
         placeholder={placeholder}
-        style={{ ...AUTH_INPUT_STYLE, paddingRight: 44, display: "block" }}
       />
       <button
         type="button"
+        className="jr-pwtoggle"
         onClick={() => setVisible((v) => !v)}
         aria-label={label}
         aria-pressed={visible}
         title={label}
-        style={{
-          position: "absolute", top: 0, right: 0, height: "100%", width: 40,
-          display: "flex", alignItems: "center", justifyContent: "center",
-          background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--text-faint)",
-        }}
       >
-        {visible ? <EyeOff size={16} aria-hidden="true" /> : <Eye size={16} aria-hidden="true" />}
+        {visible ? <EyeOff size={17} aria-hidden="true" /> : <Eye size={17} aria-hidden="true" />}
       </button>
     </div>
   );
@@ -4949,7 +5024,9 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
   }
 
   /* ---------------- DERIVED VALUES ---------------- */
-  const showNav = ["landing", "how", "universities", "login", "dashboard", "applications", "application", "application_form", "create", "create_choose", "resume_choice", "invitation_paste", "invitation_review", "preview", "progress", "report", "report_view", "classroom", "lesson", "ac_home", "ac_exercise", "ac_scorecard", "ac_attempt_view"].includes(screen);
+  // Phase 24: the auth screen ("login") is its own full-bleed branded surface and
+  // deliberately does NOT render the marketing NavBar (the form is the focus).
+  const showNav = ["landing", "how", "universities", "dashboard", "applications", "application", "application_form", "create", "create_choose", "resume_choice", "invitation_paste", "invitation_review", "preview", "progress", "report", "report_view", "classroom", "lesson", "ac_home", "ac_exercise", "ac_scorecard", "ac_attempt_view"].includes(screen);
   // Only interview-evidenced topics count toward the nav "needs work" badge —
   // a recommendation-materialised topic (no scores yet) is "to start", not "needs work".
   const classroomNeedsWorkCount = classroom.filter((t) => (t.scores || []).length > 0 && statusFor(t.scores).label !== "Mastered").length;
@@ -5368,115 +5445,182 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
         // Phase 23: one place to reset the auth sub-state when switching views, so a stale
         // error / success banner / in-flight flag never bleeds across signin↔signup↔forgot.
         const goAuth = (view) => { recoveryErrorRef.current = false; setError(""); setAuthNotice(""); setResetEmailSent(false); setAuthBusy(false); setAuthView(view); };
+        // Phase 24: shared field markup. These are plain functions INVOKED inline
+        // (field({...})), never rendered as <Component/> — defining a component inside
+        // render would remount the input on every keystroke and reset PasswordInput's
+        // show/hide state. Invoking a function just inlines the JSX, so identity,
+        // focus and toggle state are all preserved.
+        const labelBlock = (id, label, right) => (right
+          ? <div className="jr-field-row"><label htmlFor={id} className="jr-field-label" style={{ marginBottom: 0 }}>{label}</label>{right}</div>
+          : <label htmlFor={id} className="jr-field-label">{label}</label>);
+        const field = ({ id, label, right, ...inputProps }) => (
+          <div className="jr-field" key={id}>{labelBlock(id, label, right)}<input id={id} className="jr-field-input" {...inputProps} /></div>
+        );
+        const pwField = ({ id, label, right, ...pwProps }) => (
+          <div className="jr-field" key={id}>{labelBlock(id, label, right)}<PasswordInput id={id} {...pwProps} /></div>
+        );
+        const alertMsg = () => (error ? <div role="alert" style={{ color: "var(--bad)", fontSize: 13, lineHeight: 1.5, margin: "2px 0 14px" }}>{error}</div> : null);
+        const noticeMsg = () => (authNotice ? <div role="status" style={{ color: "var(--good)", fontSize: 13, lineHeight: 1.5, margin: "2px 0 14px" }}>{authNotice}</div> : null);
+        const submitBtn = (onClick, busyLabel, label) => (
+          <Btn variant="accent" full className="jr-authbtn" disabled={authBusy} onClick={onClick}
+            style={{ padding: "13px 20px", fontSize: 15, fontWeight: 700, borderRadius: 10, marginTop: 4 }}>
+            {authBusy
+              ? <><Loader2 size={16} className="animate-spin" /> {busyLabel}</>
+              : <>{label} <ChevronRight size={16} /></>}
+          </Btn>
+        );
+        const switcher = (prompt, action, onClick) => (
+          <div className="jr-auth-foot">{prompt}{" "}
+            <LinkBtn onClick={onClick} style={{ display: "inline", color: "var(--blue)", fontWeight: 700, cursor: "pointer" }}>{action}</LinkBtn>
+          </div>
+        );
+
         return (
-        <div className="jr-fade" style={{ maxWidth: 420, margin: "0 auto", padding: "72px 24px" }}>
-          {authView === "signup" && (
-            <>
-              <h2 style={{ fontSize: 24, fontWeight: 800, color: "var(--navy)", marginBottom: 20 }}>Create your account</h2>
-              <Card style={{ padding: 24 }}>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3" style={{ marginBottom: 16 }}>
-                  <div>
-                    <label htmlFor="signup-first-name" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>First name</label>
-                    <input id="signup-first-name" value={firstNameInput} onChange={(e) => setFirstNameInput(e.target.value)} placeholder="Alex" style={{ ...inputStyle, marginTop: 6 }} />
-                  </div>
-                  <div>
-                    <label htmlFor="signup-last-name" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Last name</label>
-                    <input id="signup-last-name" value={lastNameInput} onChange={(e) => setLastNameInput(e.target.value)} placeholder="Chen" style={{ ...inputStyle, marginTop: 6 }} />
-                  </div>
-                </div>
-                <label htmlFor="signup-email" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Email</label>
-                <input id="signup-email" type="email" autoComplete="email" value={emailInput} onChange={(e) => setEmailInput(e.target.value)} placeholder="alex@university.ac.uk" style={{ ...inputStyle, marginTop: 6, marginBottom: 16 }} />
-                <label htmlFor="signup-password" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Password</label>
-                <PasswordInput id="signup-password" autoComplete="new-password" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} placeholder={`At least ${PASSWORD_MIN_LENGTH} characters`} style={{ marginTop: 6, marginBottom: 16 }} />
-                <label htmlFor="signup-confirm-password" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Confirm password</label>
-                <PasswordInput id="signup-confirm-password" autoComplete="new-password" value={confirmPasswordInput} onChange={(e) => setConfirmPasswordInput(e.target.value)} onKeyDown={onEnterKey(handleSignUp)} style={{ marginTop: 6, marginBottom: 8 }} />
-                {error && <div role="alert" style={{ color: "var(--bad)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
-                {authNotice && <div role="status" style={{ color: "var(--good)", fontSize: 13, marginBottom: 10 }}>{authNotice}</div>}
-                <Btn variant="accent" full disabled={authBusy} onClick={() => guarded(handleSignUp)} style={{ marginTop: 8 }}>{authBusy ? "Creating account…" : <>Create account <ChevronRight size={16} /></>}</Btn>
-              </Card>
-              <div style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 16, textAlign: "center" }}>
-                Already have an account?{" "}
-                <LinkBtn onClick={() => goAuth("signin")} style={{ display: "inline", color: "var(--blue)", fontWeight: 600, cursor: "pointer" }}>Sign in</LinkBtn>
+        <div className="jr-auth jr-fade">
+          {/* -------- LEFT / TOP: brand panel -------- */}
+          <aside className="jr-auth-brand">
+            <div className="jr-auth-orb" style={{ width: 260, height: 260, background: "var(--violet)", opacity: 0.5, top: -80, right: -70 }} />
+            <div className="jr-auth-orb" style={{ width: 220, height: 220, background: "var(--teal)", opacity: 0.32, bottom: -90, left: -60 }} />
+            <div className="jr-auth-brand-inner">
+              <button onClick={() => setScreen("landing")} aria-label="JOB.READY home"
+                style={{ background: "none", border: "none", padding: 0, cursor: "pointer", display: "inline-flex" }}>
+                <JobReadyLogo size={26} background="dark" />
+              </button>
+              <div style={{ marginTop: "clamp(16px,6vw,40px)" }}>
+                <span className="jr-auth-eyebrow"><Sparkles size={12} /> AI interview practice</span>
+                <h2 className="jr-auth-headline">Practise the interview you're actually going to face.</h2>
+                <p className="jr-auth-sub">AI-powered interview practice built around your application, your experience and the role you're applying for.</p>
               </div>
-            </>
-          )}
 
-          {authView === "signin" && (
-            <>
-              <h2 style={{ fontSize: 24, fontWeight: 800, color: "var(--navy)", marginBottom: 20 }}>Sign in</h2>
-              <Card style={{ padding: 24 }}>
-                <label htmlFor="signin-email" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Email</label>
-                <input id="signin-email" type="email" autoComplete="email" value={emailInput} onChange={(e) => setEmailInput(e.target.value)} placeholder="alex@university.ac.uk" style={{ ...inputStyle, marginTop: 6, marginBottom: 16 }} />
-                <label htmlFor="signin-password" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Password</label>
-                <PasswordInput id="signin-password" autoComplete="current-password" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} onKeyDown={onEnterKey(handleSignIn)} style={{ marginTop: 6, marginBottom: 8 }} />
-                <div className="flex justify-end" style={{ marginBottom: 8 }}>
-                  <LinkBtn onClick={() => goAuth("forgot")} style={{ fontSize: 12.5, color: "var(--blue)", cursor: "pointer", fontWeight: 600 }}>Forgot password?</LinkBtn>
+              <div className="jr-auth-mock" aria-hidden="true">
+                <div className="flex items-center justify-between" style={{ marginBottom: 12 }}>
+                  <span style={{ fontSize: 11.5, fontWeight: 600, letterSpacing: "0.03em", color: "rgba(255,255,255,0.55)" }}>MOCK INTERVIEW</span>
+                  <span style={{ fontSize: 11, fontWeight: 600, color: "#C4B5FD", background: "rgba(124,58,237,0.22)", border: "1px solid rgba(124,58,237,0.35)", padding: "3px 9px", borderRadius: 999 }}>Mixed</span>
                 </div>
-                {error && <div role="alert" style={{ color: "var(--bad)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
-                {authNotice && <div role="status" style={{ color: "var(--good)", fontSize: 13, marginBottom: 10 }}>{authNotice}</div>}
-                <Btn variant="accent" full disabled={authBusy} onClick={() => guarded(handleSignIn)} style={{ marginTop: 8 }}>{authBusy ? "Signing in…" : <>Sign in <ChevronRight size={16} /></>}</Btn>
-              </Card>
-              <div style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 16, textAlign: "center" }}>
-                New to JOB.READY?{" "}
-                <LinkBtn onClick={() => goAuth("signup")} style={{ display: "inline", color: "var(--blue)", fontWeight: 600, cursor: "pointer" }}>Create account</LinkBtn>
+                <div style={{ fontSize: 12, color: "rgba(255,255,255,0.5)" }}>JPMorgan</div>
+                <div style={{ fontSize: 13.5, fontWeight: 600, color: "#fff", marginBottom: 12 }}>Global Markets Summer Analyst</div>
+                <div style={{ background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, padding: "12px 13px", marginBottom: 14 }}>
+                  <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: "0.04em", color: "#93C5FD", marginBottom: 5 }}>MOTIVATION / FIT</div>
+                  <div style={{ fontSize: 13.5, fontWeight: 600, color: "#fff", lineHeight: 1.4 }}>"Why are you interested in Global Markets?"</div>
+                </div>
+                <div className="flex items-center justify-between" style={{ marginBottom: 7 }}>
+                  <span style={{ fontSize: 11.5, color: "rgba(255,255,255,0.6)" }}>Interview readiness</span>
+                  <span style={{ fontSize: 15, fontWeight: 800, color: "#fff" }}>78%</span>
+                </div>
+                <div style={{ height: 5, borderRadius: 999, background: "rgba(255,255,255,0.12)" }}>
+                  <div style={{ width: "78%", height: "100%", borderRadius: 999, background: "linear-gradient(90deg,var(--blue),var(--teal))" }} />
+                </div>
               </div>
-            </>
-          )}
 
-          {authView === "forgot" && (
-            <>
-              <h2 style={{ fontSize: 24, fontWeight: 800, color: "var(--navy)", marginBottom: 20 }}>Reset your password</h2>
-              {resetEmailSent ? (
-                <Card style={{ padding: 24 }}>
-                  <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
-                    <CheckCircle2 size={20} color="var(--good)" style={{ flexShrink: 0, marginTop: 1 }} />
-                    <div>
-                      <div style={{ fontSize: 14.5, fontWeight: 700, color: "var(--navy)", marginBottom: 4 }}>Check your email</div>
-                      <div role="status" style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.5 }}>{authNotice || resetEmailSentMessage()}</div>
+              <div className="jr-auth-pillrow">
+                {["Investment Banking", "Consulting", "Technology", "Law"].map((c) => (
+                  <span key={c} className="jr-auth-pill">{c}</span>
+                ))}
+              </div>
+              <div className="jr-auth-brand-foot">Your interview. Your role. Your weaknesses.</div>
+            </div>
+          </aside>
+
+          {/* -------- RIGHT / BELOW: auth form -------- */}
+          <div className="jr-auth-main">
+            <div className="jr-auth-formwrap">
+              <div className="jr-auth-card">
+
+                {authView === "signin" && (
+                  <>
+                    <h1 className="jr-auth-title">Welcome back</h1>
+                    <p className="jr-auth-desc">Sign in to continue your interview preparation.</p>
+                    <div style={{ marginTop: 24 }}>
+                      {field({ id: "signin-email", label: "Email", type: "email", autoComplete: "email", placeholder: "you@university.ac.uk",
+                        value: emailInput, onChange: (e) => setEmailInput(e.target.value) })}
+                      {pwField({ id: "signin-password", label: "Password", autoComplete: "current-password",
+                        value: passwordInput, onChange: (e) => setPasswordInput(e.target.value), onKeyDown: onEnterKey(handleSignIn),
+                        right: <LinkBtn onClick={() => goAuth("forgot")} style={{ fontSize: 12.5, color: "var(--blue)", cursor: "pointer", fontWeight: 600 }}>Forgot password?</LinkBtn> })}
+                      {alertMsg()}{noticeMsg()}
+                      {submitBtn(() => guarded(handleSignIn), "Signing in…", "Sign in")}
                     </div>
-                  </div>
-                  <div className="flex flex-wrap gap-2" style={{ marginTop: 16 }}>
-                    <Btn variant="secondary" disabled={authBusy} onClick={() => guarded(handleForgotPassword)}>{authBusy ? "Sending…" : "Resend link"}</Btn>
-                    <Btn variant="secondary" onClick={() => { setResetEmailSent(false); setAuthNotice(""); setError(""); }}>Use a different email</Btn>
-                  </div>
-                </Card>
-              ) : (
-                <Card style={{ padding: 24 }}>
-                  <div style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.5, marginBottom: 14 }}>
-                    Enter the email address for your account and we'll send you a link to set a new password.
-                  </div>
-                  <label htmlFor="forgot-email" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Email</label>
-                  <input id="forgot-email" type="email" autoComplete="email" value={emailInput} onChange={(e) => setEmailInput(e.target.value)} onKeyDown={onEnterKey(handleForgotPassword)} placeholder="alex@university.ac.uk" style={{ ...inputStyle, marginTop: 6, marginBottom: 8 }} />
-                  {error && <div role="alert" style={{ color: "var(--bad)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
-                  <Btn variant="accent" full disabled={authBusy} onClick={() => guarded(handleForgotPassword)} style={{ marginTop: 8 }}>{authBusy ? "Sending…" : <>Send reset link <ChevronRight size={16} /></>}</Btn>
-                </Card>
-              )}
-              <div style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 16, textAlign: "center" }}>
-                <LinkBtn onClick={() => goAuth("signin")} style={{ color: "var(--blue)", fontWeight: 600, cursor: "pointer" }}>Back to sign in</LinkBtn>
-              </div>
-            </>
-          )}
+                    {switcher("Don't have an account?", "Create one", () => goAuth("signup"))}
+                  </>
+                )}
 
-          {authView === "reset" && (
-            <>
-              <h2 style={{ fontSize: 24, fontWeight: 800, color: "var(--navy)", marginBottom: 8 }}>Set a new password</h2>
-              <div style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.5, marginBottom: 20 }}>
-                You followed a valid password-reset link{session?.user?.email ? <> for <strong>{session.user.email}</strong></> : null}. Choose a new password below — you'll be signed in once it's saved.
+                {authView === "signup" && (
+                  <>
+                    <h1 className="jr-auth-title">Create your account</h1>
+                    <p className="jr-auth-desc">Start practising for the interviews that matter.</p>
+                    <div style={{ marginTop: 24 }}>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        {field({ id: "signup-first-name", label: "First name", placeholder: "Alex",
+                          value: firstNameInput, onChange: (e) => setFirstNameInput(e.target.value) })}
+                        {field({ id: "signup-last-name", label: "Last name", placeholder: "Chen",
+                          value: lastNameInput, onChange: (e) => setLastNameInput(e.target.value) })}
+                      </div>
+                      {field({ id: "signup-email", label: "Email", type: "email", autoComplete: "email", placeholder: "you@university.ac.uk",
+                        value: emailInput, onChange: (e) => setEmailInput(e.target.value) })}
+                      {pwField({ id: "signup-password", label: "Password", autoComplete: "new-password", placeholder: `At least ${PASSWORD_MIN_LENGTH} characters`,
+                        value: passwordInput, onChange: (e) => setPasswordInput(e.target.value) })}
+                      {pwField({ id: "signup-confirm-password", label: "Confirm password", autoComplete: "new-password",
+                        value: confirmPasswordInput, onChange: (e) => setConfirmPasswordInput(e.target.value), onKeyDown: onEnterKey(handleSignUp) })}
+                      {alertMsg()}{noticeMsg()}
+                      {submitBtn(() => guarded(handleSignUp), "Creating account…", "Create account")}
+                    </div>
+                    {switcher("Already have an account?", "Sign in", () => goAuth("signin"))}
+                  </>
+                )}
+
+                {authView === "forgot" && (
+                  <>
+                    {resetEmailSent ? (
+                      <>
+                        <div style={{ width: 44, height: 44, borderRadius: 12, background: "#E7F7F0", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 14 }}>
+                          <CheckCircle2 size={22} color="var(--good)" />
+                        </div>
+                        <h1 className="jr-auth-title">Check your email</h1>
+                        <p className="jr-auth-desc" role="status">{authNotice || resetEmailSentMessage()}</p>
+                        <div className="flex flex-wrap gap-2" style={{ marginTop: 22 }}>
+                          <Btn variant="secondary" disabled={authBusy} onClick={() => guarded(handleForgotPassword)} style={{ borderRadius: 10 }}>{authBusy ? "Sending…" : "Resend link"}</Btn>
+                          <Btn variant="secondary" onClick={() => { setResetEmailSent(false); setAuthNotice(""); setError(""); }} style={{ borderRadius: 10 }}>Use a different email</Btn>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <h1 className="jr-auth-title">Reset your password</h1>
+                        <p className="jr-auth-desc">Enter your email and we'll send you a link to reset your password.</p>
+                        <div style={{ marginTop: 24 }}>
+                          {field({ id: "forgot-email", label: "Email", type: "email", autoComplete: "email", placeholder: "you@university.ac.uk",
+                            value: emailInput, onChange: (e) => setEmailInput(e.target.value), onKeyDown: onEnterKey(handleForgotPassword) })}
+                          {alertMsg()}
+                          {submitBtn(() => guarded(handleForgotPassword), "Sending…", "Send reset link")}
+                        </div>
+                      </>
+                    )}
+                    {switcher("Remembered it?", "Back to sign in", () => goAuth("signin"))}
+                  </>
+                )}
+
+                {authView === "reset" && (
+                  <>
+                    <h1 className="jr-auth-title">Choose a new password</h1>
+                    <p className="jr-auth-desc">
+                      Enter and confirm your new password below{session?.user?.email ? <> for <strong style={{ color: "var(--text)" }}>{session.user.email}</strong></> : null}. You'll be signed in as soon as it's saved.
+                    </p>
+                    <div style={{ marginTop: 24 }}>
+                      {pwField({ id: "reset-password", label: "New password", autoComplete: "new-password", placeholder: `At least ${PASSWORD_MIN_LENGTH} characters`,
+                        value: passwordInput, onChange: (e) => setPasswordInput(e.target.value) })}
+                      {pwField({ id: "reset-confirm-password", label: "Confirm new password", autoComplete: "new-password",
+                        value: confirmPasswordInput, onChange: (e) => setConfirmPasswordInput(e.target.value), onKeyDown: onEnterKey(handleResetPassword) })}
+                      {alertMsg()}{noticeMsg()}
+                      {submitBtn(() => guarded(handleResetPassword), "Updating…", "Update password")}
+                    </div>
+                    <div className="jr-auth-foot">
+                      <LinkBtn onClick={() => { setResetEmailSent(false); setAuthBusy(false); setError(""); setAuthNotice(""); guarded(handleSignOut); setAuthView("signin"); }} style={{ color: "var(--blue)", fontWeight: 700, cursor: "pointer" }}>Cancel</LinkBtn>
+                    </div>
+                  </>
+                )}
               </div>
-              <Card style={{ padding: 24 }}>
-                <label htmlFor="reset-password" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>New password</label>
-                <PasswordInput id="reset-password" autoComplete="new-password" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} placeholder={`At least ${PASSWORD_MIN_LENGTH} characters`} style={{ marginTop: 6, marginBottom: 16 }} />
-                <label htmlFor="reset-confirm-password" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Confirm new password</label>
-                <PasswordInput id="reset-confirm-password" autoComplete="new-password" value={confirmPasswordInput} onChange={(e) => setConfirmPasswordInput(e.target.value)} onKeyDown={onEnterKey(handleResetPassword)} style={{ marginTop: 6, marginBottom: 8 }} />
-                {error && <div role="alert" style={{ color: "var(--bad)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
-                {authNotice && <div role="status" style={{ color: "var(--good)", fontSize: 13, marginBottom: 10 }}>{authNotice}</div>}
-                <Btn variant="accent" full disabled={authBusy} onClick={() => guarded(handleResetPassword)} style={{ marginTop: 8 }}>{authBusy ? "Updating…" : <>Update password <ChevronRight size={16} /></>}</Btn>
-              </Card>
-              <div style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 16, textAlign: "center" }}>
-                <LinkBtn onClick={() => { setResetEmailSent(false); setAuthBusy(false); setError(""); setAuthNotice(""); guarded(handleSignOut); setAuthView("signin"); }} style={{ color: "var(--blue)", fontWeight: 600, cursor: "pointer" }}>Cancel</LinkBtn>
-              </div>
-            </>
-          )}
+
+              <button className="jr-auth-back" onClick={() => setScreen("landing")}><ArrowLeft size={14} /> Back to home</button>
+            </div>
+          </div>
         </div>
         );
       })()}

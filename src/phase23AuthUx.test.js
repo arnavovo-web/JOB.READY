@@ -36,12 +36,17 @@ describe("Phase 23 FIX 1 — every password input uses the PasswordInput toggle"
   });
 
   it("all five auth password fields render through PasswordInput", () => {
+    // Phase 24: the auth form fields are emitted via an inline pwField({...}) helper
+    // (invoked, not a nested component — so no remount / toggle-state reset), and
+    // pwField renders <PasswordInput id={id} ...>. Every password field id must
+    // appear in a pwField(...) call, and pwField must wrap PasswordInput.
+    expect(SRC).toMatch(/const pwField = \(\{ id, label, right, \.\.\.pwProps \}\) => \([\s\S]*?<PasswordInput id=\{id\} \{\.\.\.pwProps\} \/>/);
     for (const id of [
       "signup-password", "signup-confirm-password",
       "signin-password",
       "reset-password", "reset-confirm-password",
     ]) {
-      expect(LOGIN).toMatch(new RegExp(`<PasswordInput id="${id}"`));
+      expect(LOGIN).toMatch(new RegExp(`pwField\\(\\{ id: "${id}"`));
     }
   });
 
@@ -93,13 +98,14 @@ describe("Phase 23 FIX 2 — forgot-password journey", () => {
 describe("Phase 23 FIX 2 — reset-password screen", () => {
   const reset = LOGIN.slice(LOGIN.indexOf('authView === "reset"'), LOGIN.lastIndexOf("</div>"));
 
-  it("clearly indicates the user is setting a NEW password via a valid link", () => {
-    expect(reset).toMatch(/Set a new password/);
-    expect(reset).toMatch(/valid password-reset link/i);
+  it("clearly indicates the user is setting a NEW password (Phase 24 copy)", () => {
+    expect(reset).toMatch(/Choose a new password/);
+    expect(reset).toMatch(/Enter and confirm your new password below/i);
+    expect(reset).toMatch(/signed in as soon as it's saved/i);
   });
   it("has New + Confirm password fields with show/hide, and a route back", () => {
-    expect(reset).toMatch(/<PasswordInput id="reset-password"/);
-    expect(reset).toMatch(/<PasswordInput id="reset-confirm-password"/);
+    expect(reset).toMatch(/pwField\(\{ id: "reset-password"/);
+    expect(reset).toMatch(/pwField\(\{ id: "reset-confirm-password"/);
     expect(reset).toMatch(/Cancel/);
   });
   it("handleResetPassword validates match+length, guards busy, and updates via Supabase", () => {
