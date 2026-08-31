@@ -175,7 +175,7 @@ describe("navigation/sign-out hygiene (STRUCTURAL)", () => {
   });
 
   it("clearAllUserState resets the history-view state on sign-out (ownership hygiene)", () => {
-    const CLEAR_SRC = extractFunctionSource("function clearAllUserState()", "async function handleSignUp()");
+    const CLEAR_SRC = extractFunctionSource("function clearAllUserState(", "async function handleSignUp()");
     expect(CLEAR_SRC).toMatch(/setViewedReport\(null\)/);
     expect(CLEAR_SRC).toMatch(/setViewedReportComparisons\(\[\]\)/);
     expect(CLEAR_SRC).toMatch(/setViewedAcAttempt\(null\)/);

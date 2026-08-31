@@ -133,7 +133,7 @@ describe("claimsTestedThisInterview/claimsOverview derivation (STRUCTURAL)", () 
 
 /* ============================== clearAllUserState (STRUCTURAL) ============================== */
 describe("clearAllUserState resets every per-user field (STRUCTURAL — ownership hygiene)", () => {
-  const CLEAR_SRC = extractFunctionSource("function clearAllUserState()", "async function handleSignUp()");
+  const CLEAR_SRC = extractFunctionSource("function clearAllUserState(", "async function handleSignUp()");
 
   it("resets Candidate Intelligence/Claims state on sign-out (previously missing)", () => {
     expect(CLEAR_SRC).toMatch(/setCandidateClaims\(\[\]\)/);
