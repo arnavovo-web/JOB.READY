@@ -3,7 +3,8 @@ import {
   ChevronRight, Loader2, TrendingDown, CheckCircle2, ArrowLeft, ArrowRight, Sparkles,
   Target, BarChart3, AlertCircle, Upload, Mic, Menu, X,
   GraduationCap, BookOpen, Globe, HelpCircle, XCircle,
-  Users, Briefcase, Mail, FileText, History, Clock, Plus, CalendarClock
+  Users, Briefcase, Mail, FileText, History, Clock, Plus, CalendarClock,
+  Eye, EyeOff
 } from "lucide-react";
 // Phase 2A/2B: canonical taxonomy / anchor-source / stage-methodology
 // engine. A companion layer to the Phase 4A INTERVIEW_STAGES/
@@ -99,6 +100,15 @@ import { interviewCountdown, sortApplicationsByUpcoming, partitionApplications, 
 // Phase 18: pure, offline reconstruction of an unfinished interview from its
 // persisted rows. No AI, no DB, no React. Resume = read + deterministic rebuild.
 import { reconstructInterviewState, sortResumableInterviews, summariseResumable, resumableProgressLabel } from "./resumeInterview";
+// Phase 23: pure auth-form helpers — show/hide-password type+label mapping,
+// new-password + reset-email validation, the password-reset redirect-URL
+// strategy (origin-based, no hardcoded host), and recovery-link
+// classification (valid / expired / errored). No React, no Supabase, no DOM.
+import {
+  PASSWORD_MIN_LENGTH, passwordInputType, visibilityToggleLabel,
+  validateEmailForReset, validateNewPassword, passwordResetRedirectTo,
+  classifyAuthRedirect, resetEmailSentMessage, expiredLinkMessage, friendlyAuthError,
+} from "./authForms";
 
 /* ================================================================== *
  * JOB.READY — DESIGN SYSTEM (unchanged from previous build)
@@ -2160,6 +2170,52 @@ function Pill({ children, color = "var(--blue)", bg = "var(--highlight)" }) {
   return <span style={{ fontFamily: "var(--font)", fontSize: 12, fontWeight: 600, color, background: bg, padding: "4px 11px", borderRadius: 999, display: "inline-block" }}>{children}</span>;
 }
 
+// Phase 23: shared base style for the auth text/password inputs (mirrors the
+// per-App `inputStyle`; kept at module scope so PasswordInput can use it).
+const AUTH_INPUT_STYLE = { width: "100%", padding: "11px 13px", border: "1.5px solid var(--border)", borderRadius: "var(--radius-sm)", fontSize: 14 };
+
+// Phase 23: a password field with its OWN independent show/hide toggle.
+// Toggling flips ONLY the <input type> (password <-> text) via
+// passwordInputType() — `value`/`onChange` pass straight through, so the typed
+// password is never cleared or transformed. The toggle is a real <button>
+// (keyboard-operable by default), carries a dynamic accessible label
+// ("Show password" / "Hide password") plus aria-pressed, and sits inside the
+// field so it is usable on desktop and mobile. Nothing here logs, stores or
+// copies the password. Each rendered instance holds its own `visible` state,
+// so multiple password fields on one screen toggle independently.
+function PasswordInput({ id, value, onChange, onKeyDown, autoComplete, placeholder, style }) {
+  const [visible, setVisible] = useState(false);
+  const label = visibilityToggleLabel(visible);
+  return (
+    <div style={{ position: "relative", ...style }}>
+      <input
+        id={id}
+        type={passwordInputType(visible)}
+        autoComplete={autoComplete}
+        value={value}
+        onChange={onChange}
+        onKeyDown={onKeyDown}
+        placeholder={placeholder}
+        style={{ ...AUTH_INPUT_STYLE, paddingRight: 44, display: "block" }}
+      />
+      <button
+        type="button"
+        onClick={() => setVisible((v) => !v)}
+        aria-label={label}
+        aria-pressed={visible}
+        title={label}
+        style={{
+          position: "absolute", top: 0, right: 0, height: "100%", width: 40,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--text-faint)",
+        }}
+      >
+        {visible ? <EyeOff size={16} aria-hidden="true" /> : <Eye size={16} aria-hidden="true" />}
+      </button>
+    </div>
+  );
+}
+
 function ScoreBar({ label, value, max = 100, color }) {
   const pct = Math.max(0, Math.min(100, (value / max) * 100));
   const c = color || (pct >= 75 ? "var(--good)" : pct >= 50 ? "var(--blue)" : "var(--warn)");
@@ -2563,6 +2619,8 @@ function App() {
   const [passwordInput, setPasswordInput] = useState("");
   const [confirmPasswordInput, setConfirmPasswordInput] = useState("");
   const [authNotice, setAuthNotice] = useState(""); // e.g. "check your email to confirm"
+  const [authBusy, setAuthBusy] = useState(false); // Phase 23: in-flight auth request — disables submit buttons, blocks duplicate submits
+  const [resetEmailSent, setResetEmailSent] = useState(false); // Phase 23: forgot-password success state
   const [error, setError] = useState("");
 
   const [wizardStep, setWizardStep] = useState(1);
@@ -2760,9 +2818,28 @@ function App() {
   useEffect(() => {
     let unsub = null;
     // Captured synchronously, before any async work, so it reflects the URL exactly as the
-    // page loaded — a password-recovery redirect from Supabase carries "type=recovery" in
-    // either the hash (legacy implicit flow) or the query string (PKCE flow).
-    const isRecoveryLink = typeof window !== "undefined" && /type=recovery/.test(window.location.hash + window.location.search);
+    // page loaded. classifyAuthRedirect (pure, see authForms.js) tells us whether this load
+    // is: a VALID recovery return ("type=recovery"), an EXPIRED/invalid/used link
+    // ("error_code=otp_expired" etc.), some other auth error, or nothing auth-related.
+    const redirectClass = typeof window !== "undefined"
+      ? classifyAuthRedirect(window.location.hash, window.location.search)
+      : { kind: "none" };
+    const isRecoveryLink = redirectClass.kind === "recovery";
+    // Phase 23: a dead recovery link used to leave the user on a blank landing page with a
+    // cryptic "#error=access_denied..." in the URL. Route them to the "request a new link"
+    // form with a plain-English message, and scrub the error params so a refresh is clean.
+    if (redirectClass.kind === "expired_link" || redirectClass.kind === "error") {
+      setScreen("login");
+      setAuthView("forgot");
+      setResetEmailSent(false);
+      setError(redirectClass.kind === "expired_link"
+        ? expiredLinkMessage()
+        : friendlyAuthError(redirectClass.description, "That link didn't work. Enter your email to get a new reset link."));
+      // Scrub the auth error params so a refresh doesn't replay this state.
+      if (typeof window !== "undefined" && window.history?.replaceState) {
+        window.history.replaceState(null, "", window.location.pathname);
+      }
+    }
     (async () => {
       try {
         const supabase = await getSupabase();
@@ -2874,61 +2951,111 @@ function App() {
   async function handleSignUp() {
     setError(""); setAuthNotice("");
     if (!firstNameInput.trim() || !lastNameInput.trim()) { setError("Enter your first and last name."); return; }
-    if (!emailInput.trim() || !passwordInput) { setError("Enter your email and a password."); return; }
-    if (passwordInput.length < 8) { setError("Password must be at least 8 characters."); return; }
-    if (passwordInput !== confirmPasswordInput) { setError("Passwords don't match."); return; }
+    if (!emailInput.trim()) { setError("Enter your email address."); return; }
+    const pwCheck = validateNewPassword(passwordInput, confirmPasswordInput);
+    if (!pwCheck.ok) { setError(pwCheck.error); return; }
+    if (authBusy) return;
+    setAuthBusy(true);
     try {
       const supabase = await getSupabase();
       const { data, error: signUpErr } = await supabase.auth.signUp({
         email: sanitizeText(emailInput.trim().toLowerCase()), password: passwordInput,
         options: { data: { first_name: sanitizeText(firstNameInput.trim()), last_name: sanitizeText(lastNameInput.trim()) } },
       });
-      if (signUpErr) { setError(signUpErr.message); return; }
+      if (signUpErr) { setError(friendlyAuthError(signUpErr.message, "Couldn't create your account. Please try again.")); return; }
       if (data?.session) { await onAuthed(data.session); }
       else { setAuthNotice("Check your email to confirm your account, then sign in."); setAuthView("signin"); }
-    } catch (e) { setError(e.message || "Couldn't create your account. Please try again."); }
+    } catch (e) {
+      setError(friendlyAuthError(e?.message, "Couldn't create your account. Please try again."));
+    } finally {
+      setAuthBusy(false);
+    }
   }
 
   async function handleSignIn() {
     setError(""); setAuthNotice("");
     if (!emailInput.trim() || !passwordInput) { setError("Enter your email and password."); return; }
+    if (authBusy) return;
+    setAuthBusy(true);
     try {
       const supabase = await getSupabase();
       const { data, error: signInErr } = await supabase.auth.signInWithPassword({ email: sanitizeText(emailInput.trim().toLowerCase()), password: passwordInput });
-      if (signInErr) { setError(/invalid/i.test(signInErr.message) ? "Incorrect email or password." : signInErr.message); return; }
+      if (signInErr) { setError(friendlyAuthError(signInErr.message, "Couldn't sign in. Please try again.")); return; }
       await onAuthed(data.session);
-    } catch (e) { setError(e.message || "Couldn't sign in. Please try again."); }
+    } catch (e) {
+      setError(friendlyAuthError(e?.message, "Couldn't sign in. Please try again."));
+    } finally {
+      setAuthBusy(false);
+    }
   }
 
   async function handleForgotPassword() {
     setError(""); setAuthNotice("");
-    if (!emailInput.trim()) { setError("Enter your email first."); return; }
+    const emailCheck = validateEmailForReset(emailInput);
+    if (!emailCheck.ok) { setError(emailCheck.error); return; }
+    if (authBusy) return;                       // block a double submit while one is in flight
+    setAuthBusy(true);
     try {
       const supabase = await getSupabase();
-      const { error: resetErr } = await supabase.auth.resetPasswordForEmail(sanitizeText(emailInput.trim().toLowerCase()));
-      if (resetErr) { setError(resetErr.message); return; }
-      setAuthNotice("If an account exists for that email, a reset link has been sent.");
-    } catch (e) { setError(e.message || "Couldn't send the reset email. Please try again."); }
+      // Redirect back to the ORIGIN the user is on now — works for localhost, every Vercel
+      // preview, and the eventual production domain with no hardcoded host (see
+      // passwordResetRedirectTo / the phase report). "" -> option omitted -> Supabase uses
+      // its configured Site URL.
+      const redirectTo = passwordResetRedirectTo(typeof window !== "undefined" ? window.location.origin : "");
+      const { error: resetErr } = await supabase.auth.resetPasswordForEmail(
+        sanitizeText(emailInput.trim().toLowerCase()),
+        redirectTo ? { redirectTo } : undefined
+      );
+      // Supabase's secure default resolves the same whether or not the address exists, so we
+      // show the same non-enumerating success state on the no-error path.
+      if (resetErr && /rate limit|too many|for security purposes/i.test(resetErr.message)) {
+        setError(friendlyAuthError(resetErr.message));
+        return;
+      }
+      if (resetErr) { setError(friendlyAuthError(resetErr.message, "Couldn't send the reset email. Please try again.")); return; }
+      setResetEmailSent(true);
+      setAuthNotice(resetEmailSentMessage());
+    } catch (e) {
+      setError(friendlyAuthError(e?.message, "Couldn't send the reset email. Please check your connection and try again."));
+    } finally {
+      setAuthBusy(false);
+    }
   }
 
-  // Only reachable via authView === "reset", which is only ever set from a live PASSWORD_RECOVERY
-  // session (see the auth useEffect above) — so a valid session for updateUser() is guaranteed here.
+  // Reached from authView === "reset" (set only from a recovery-link session — see the auth
+  // useEffect). Phase 23: we still re-check for a live session below, because a link that
+  // expired / was already used / was opened in another browser can land here without one.
   async function handleResetPassword() {
     setError(""); setAuthNotice("");
-    if (!passwordInput) { setError("Enter a new password."); return; }
-    if (passwordInput.length < 8) { setError("Password must be at least 8 characters."); return; }
-    if (passwordInput !== confirmPasswordInput) { setError("Passwords don't match."); return; }
+    const check = validateNewPassword(passwordInput, confirmPasswordInput);
+    if (!check.ok) { setError(check.error); return; }
+    if (authBusy) return;
+    setAuthBusy(true);
     try {
       const supabase = await getSupabase();
+      // No live session means the recovery link never established one (expired / already used /
+      // opened in a different browser). Send them to request a fresh link rather than failing
+      // with a raw "Auth session missing" error.
+      const { data: current } = await supabase.auth.getSession();
+      if (!current?.session) {
+        setAuthView("forgot");
+        setResetEmailSent(false);
+        setError(expiredLinkMessage());
+        return;
+      }
       const { error: updateErr } = await supabase.auth.updateUser({ password: passwordInput });
-      if (updateErr) { setError(updateErr.message); return; }
+      if (updateErr) { setError(friendlyAuthError(updateErr.message, "Couldn't update your password. Please try again.")); return; }
       setPasswordInput(""); setConfirmPasswordInput("");
       // updateUser() succeeding means the recovery session is now a normal, valid session —
       // sign the user straight into the app rather than making them log in again.
       const { data: refreshed } = await supabase.auth.getSession();
       if (refreshed?.session) await onAuthed(refreshed.session);
       else { setAuthNotice("Your password has been updated. Please sign in."); setAuthView("signin"); }
-    } catch (e) { setError(e.message || "Couldn't update your password. Please try again."); }
+    } catch (e) {
+      setError(friendlyAuthError(e?.message, "Couldn't update your password. Please try again."));
+    } finally {
+      setAuthBusy(false);
+    }
   }
 
   async function handleSignOut() {
@@ -5208,7 +5335,11 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
       )}
 
       {/* ---------------- LOGIN (real Supabase Auth) ---------------- */}
-      {screen === "login" && (
+      {screen === "login" && (() => {
+        // Phase 23: one place to reset the auth sub-state when switching views, so a stale
+        // error / success banner / in-flight flag never bleeds across signin↔signup↔forgot.
+        const goAuth = (view) => { setError(""); setAuthNotice(""); setResetEmailSent(false); setAuthBusy(false); setAuthView(view); };
+        return (
         <div className="jr-fade" style={{ maxWidth: 420, margin: "0 auto", padding: "72px 24px" }}>
           {authView === "signup" && (
             <>
@@ -5227,16 +5358,16 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                 <label htmlFor="signup-email" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Email</label>
                 <input id="signup-email" type="email" autoComplete="email" value={emailInput} onChange={(e) => setEmailInput(e.target.value)} placeholder="alex@university.ac.uk" style={{ ...inputStyle, marginTop: 6, marginBottom: 16 }} />
                 <label htmlFor="signup-password" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Password</label>
-                <input id="signup-password" type="password" autoComplete="new-password" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} placeholder="At least 8 characters" style={{ ...inputStyle, marginTop: 6, marginBottom: 16 }} />
+                <PasswordInput id="signup-password" autoComplete="new-password" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} placeholder={`At least ${PASSWORD_MIN_LENGTH} characters`} style={{ marginTop: 6, marginBottom: 16 }} />
                 <label htmlFor="signup-confirm-password" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Confirm password</label>
-                <input id="signup-confirm-password" type="password" autoComplete="new-password" value={confirmPasswordInput} onChange={(e) => setConfirmPasswordInput(e.target.value)} onKeyDown={onEnterKey(handleSignUp)} style={{ ...inputStyle, marginTop: 6, marginBottom: 8 }} />
+                <PasswordInput id="signup-confirm-password" autoComplete="new-password" value={confirmPasswordInput} onChange={(e) => setConfirmPasswordInput(e.target.value)} onKeyDown={onEnterKey(handleSignUp)} style={{ marginTop: 6, marginBottom: 8 }} />
                 {error && <div role="alert" style={{ color: "var(--bad)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
                 {authNotice && <div role="status" style={{ color: "var(--good)", fontSize: 13, marginBottom: 10 }}>{authNotice}</div>}
-                <Btn variant="accent" full onClick={() => guarded(handleSignUp)} style={{ marginTop: 8 }}>Create account <ChevronRight size={16} /></Btn>
+                <Btn variant="accent" full disabled={authBusy} onClick={() => guarded(handleSignUp)} style={{ marginTop: 8 }}>{authBusy ? "Creating account…" : <>Create account <ChevronRight size={16} /></>}</Btn>
               </Card>
               <div style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 16, textAlign: "center" }}>
                 Already have an account?{" "}
-                <LinkBtn onClick={() => { setError(""); setAuthNotice(""); setAuthView("signin"); }} style={{ display: "inline", color: "var(--blue)", fontWeight: 600, cursor: "pointer" }}>Sign in</LinkBtn>
+                <LinkBtn onClick={() => goAuth("signin")} style={{ display: "inline", color: "var(--blue)", fontWeight: 600, cursor: "pointer" }}>Sign in</LinkBtn>
               </div>
             </>
           )}
@@ -5248,17 +5379,17 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                 <label htmlFor="signin-email" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Email</label>
                 <input id="signin-email" type="email" autoComplete="email" value={emailInput} onChange={(e) => setEmailInput(e.target.value)} placeholder="alex@university.ac.uk" style={{ ...inputStyle, marginTop: 6, marginBottom: 16 }} />
                 <label htmlFor="signin-password" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Password</label>
-                <input id="signin-password" type="password" autoComplete="current-password" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} onKeyDown={onEnterKey(handleSignIn)} style={{ ...inputStyle, marginTop: 6, marginBottom: 8 }} />
+                <PasswordInput id="signin-password" autoComplete="current-password" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} onKeyDown={onEnterKey(handleSignIn)} style={{ marginTop: 6, marginBottom: 8 }} />
                 <div className="flex justify-end" style={{ marginBottom: 8 }}>
-                  <LinkBtn onClick={() => { setError(""); setAuthNotice(""); setAuthView("forgot"); }} style={{ fontSize: 12.5, color: "var(--blue)", cursor: "pointer", fontWeight: 600 }}>Forgot password?</LinkBtn>
+                  <LinkBtn onClick={() => goAuth("forgot")} style={{ fontSize: 12.5, color: "var(--blue)", cursor: "pointer", fontWeight: 600 }}>Forgot password?</LinkBtn>
                 </div>
                 {error && <div role="alert" style={{ color: "var(--bad)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
                 {authNotice && <div role="status" style={{ color: "var(--good)", fontSize: 13, marginBottom: 10 }}>{authNotice}</div>}
-                <Btn variant="accent" full onClick={() => guarded(handleSignIn)} style={{ marginTop: 8 }}>Sign in <ChevronRight size={16} /></Btn>
+                <Btn variant="accent" full disabled={authBusy} onClick={() => guarded(handleSignIn)} style={{ marginTop: 8 }}>{authBusy ? "Signing in…" : <>Sign in <ChevronRight size={16} /></>}</Btn>
               </Card>
               <div style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 16, textAlign: "center" }}>
                 New to JOB.READY?{" "}
-                <LinkBtn onClick={() => { setError(""); setAuthNotice(""); setAuthView("signup"); }} style={{ display: "inline", color: "var(--blue)", fontWeight: 600, cursor: "pointer" }}>Create account</LinkBtn>
+                <LinkBtn onClick={() => goAuth("signup")} style={{ display: "inline", color: "var(--blue)", fontWeight: 600, cursor: "pointer" }}>Create account</LinkBtn>
               </div>
             </>
           )}
@@ -5266,38 +5397,60 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
           {authView === "forgot" && (
             <>
               <h2 style={{ fontSize: 24, fontWeight: 800, color: "var(--navy)", marginBottom: 20 }}>Reset your password</h2>
-              <Card style={{ padding: 24 }}>
-                <label htmlFor="forgot-email" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Email</label>
-                <input id="forgot-email" type="email" autoComplete="email" value={emailInput} onChange={(e) => setEmailInput(e.target.value)} onKeyDown={onEnterKey(handleForgotPassword)} placeholder="alex@university.ac.uk" style={{ ...inputStyle, marginTop: 6, marginBottom: 8 }} />
-                {error && <div role="alert" style={{ color: "var(--bad)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
-                {authNotice && <div role="status" style={{ color: "var(--good)", fontSize: 13, marginBottom: 10 }}>{authNotice}</div>}
-                <Btn variant="accent" full onClick={() => guarded(handleForgotPassword)} style={{ marginTop: 8 }}>Send reset link <ChevronRight size={16} /></Btn>
-              </Card>
+              {resetEmailSent ? (
+                <Card style={{ padding: 24 }}>
+                  <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+                    <CheckCircle2 size={20} color="var(--good)" style={{ flexShrink: 0, marginTop: 1 }} />
+                    <div>
+                      <div style={{ fontSize: 14.5, fontWeight: 700, color: "var(--navy)", marginBottom: 4 }}>Check your email</div>
+                      <div role="status" style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.5 }}>{authNotice || resetEmailSentMessage()}</div>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2" style={{ marginTop: 16 }}>
+                    <Btn variant="secondary" disabled={authBusy} onClick={() => guarded(handleForgotPassword)}>{authBusy ? "Sending…" : "Resend link"}</Btn>
+                    <Btn variant="secondary" onClick={() => { setResetEmailSent(false); setAuthNotice(""); setError(""); }}>Use a different email</Btn>
+                  </div>
+                </Card>
+              ) : (
+                <Card style={{ padding: 24 }}>
+                  <div style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.5, marginBottom: 14 }}>
+                    Enter the email address for your account and we'll send you a link to set a new password.
+                  </div>
+                  <label htmlFor="forgot-email" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Email</label>
+                  <input id="forgot-email" type="email" autoComplete="email" value={emailInput} onChange={(e) => setEmailInput(e.target.value)} onKeyDown={onEnterKey(handleForgotPassword)} placeholder="alex@university.ac.uk" style={{ ...inputStyle, marginTop: 6, marginBottom: 8 }} />
+                  {error && <div role="alert" style={{ color: "var(--bad)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
+                  <Btn variant="accent" full disabled={authBusy} onClick={() => guarded(handleForgotPassword)} style={{ marginTop: 8 }}>{authBusy ? "Sending…" : <>Send reset link <ChevronRight size={16} /></>}</Btn>
+                </Card>
+              )}
               <div style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 16, textAlign: "center" }}>
-                <LinkBtn onClick={() => { setError(""); setAuthNotice(""); setAuthView("signin"); }} style={{ color: "var(--blue)", fontWeight: 600, cursor: "pointer" }}>Back to sign in</LinkBtn>
+                <LinkBtn onClick={() => goAuth("signin")} style={{ color: "var(--blue)", fontWeight: 600, cursor: "pointer" }}>Back to sign in</LinkBtn>
               </div>
             </>
           )}
 
           {authView === "reset" && (
             <>
-              <h2 style={{ fontSize: 24, fontWeight: 800, color: "var(--navy)", marginBottom: 20 }}>Set a new password</h2>
+              <h2 style={{ fontSize: 24, fontWeight: 800, color: "var(--navy)", marginBottom: 8 }}>Set a new password</h2>
+              <div style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.5, marginBottom: 20 }}>
+                You followed a valid password-reset link{session?.user?.email ? <> for <strong>{session.user.email}</strong></> : null}. Choose a new password below — you'll be signed in once it's saved.
+              </div>
               <Card style={{ padding: 24 }}>
                 <label htmlFor="reset-password" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>New password</label>
-                <input id="reset-password" type="password" autoComplete="new-password" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} placeholder="At least 8 characters" style={{ ...inputStyle, marginTop: 6, marginBottom: 16 }} />
+                <PasswordInput id="reset-password" autoComplete="new-password" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} placeholder={`At least ${PASSWORD_MIN_LENGTH} characters`} style={{ marginTop: 6, marginBottom: 16 }} />
                 <label htmlFor="reset-confirm-password" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Confirm new password</label>
-                <input id="reset-confirm-password" type="password" autoComplete="new-password" value={confirmPasswordInput} onChange={(e) => setConfirmPasswordInput(e.target.value)} onKeyDown={onEnterKey(handleResetPassword)} style={{ ...inputStyle, marginTop: 6, marginBottom: 8 }} />
+                <PasswordInput id="reset-confirm-password" autoComplete="new-password" value={confirmPasswordInput} onChange={(e) => setConfirmPasswordInput(e.target.value)} onKeyDown={onEnterKey(handleResetPassword)} style={{ marginTop: 6, marginBottom: 8 }} />
                 {error && <div role="alert" style={{ color: "var(--bad)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
                 {authNotice && <div role="status" style={{ color: "var(--good)", fontSize: 13, marginBottom: 10 }}>{authNotice}</div>}
-                <Btn variant="accent" full onClick={() => guarded(handleResetPassword)} style={{ marginTop: 8 }}>Update password <ChevronRight size={16} /></Btn>
+                <Btn variant="accent" full disabled={authBusy} onClick={() => guarded(handleResetPassword)} style={{ marginTop: 8 }}>{authBusy ? "Updating…" : <>Update password <ChevronRight size={16} /></>}</Btn>
               </Card>
               <div style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 16, textAlign: "center" }}>
-                <LinkBtn onClick={() => { setError(""); setAuthNotice(""); guarded(handleSignOut); setAuthView("signin"); }} style={{ color: "var(--blue)", fontWeight: 600, cursor: "pointer" }}>Cancel</LinkBtn>
+                <LinkBtn onClick={() => { setResetEmailSent(false); setAuthBusy(false); setError(""); setAuthNotice(""); guarded(handleSignOut); setAuthView("signin"); }} style={{ color: "var(--blue)", fontWeight: 600, cursor: "pointer" }}>Cancel</LinkBtn>
               </div>
             </>
           )}
         </div>
-      )}
+        );
+      })()}
 
       {/* ---------------- DASHBOARD ---------------- */}
       {screen === "dashboard" && user && (
