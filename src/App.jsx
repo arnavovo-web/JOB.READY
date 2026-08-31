@@ -122,7 +122,11 @@ const TOKENS = `
     --text:#0F172A; --text-dim:#475569; --text-faint:#94A3B8;
     --good:#0F9D6E; --warn:#D97706; --bad:#DC2626;
     --radius:14px; --radius-sm:8px;
-    --shadow-sm: 0 1px 2px rgba(16,24,40,0.06); --shadow-md: 0 4px 16px rgba(16,24,40,0.08); --shadow-lg: 0 12px 32px rgba(16,24,40,0.12);
+    /* Phase 29: softer, layered elevation — depth without the "floating card" look */
+    --shadow-xs: 0 1px 2px rgba(16,24,40,0.04);
+    --shadow-sm: 0 1px 2px rgba(16,24,40,0.04), 0 1px 3px rgba(16,24,40,0.05);
+    --shadow-md: 0 2px 4px rgba(16,24,40,0.04), 0 10px 24px rgba(16,24,40,0.08);
+    --shadow-lg: 0 4px 8px rgba(16,24,40,0.04), 0 22px 48px rgba(16,24,40,0.12);
     --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 
     /* ---- Phase 26: shared design foundation (ADDITIVE — nothing above changed) ---- */
@@ -139,10 +143,36 @@ const TOKENS = `
     --dur-fast:120ms; --dur:180ms; --ease:cubic-bezier(.4,0,.2,1);
     /* Focus */
     --focus-ring: 0 0 0 3px var(--highlight);
+
+    /* ---- Phase 29: premium visual layer (ADDITIVE — nothing above changed) ---- */
+    /* Featured / "intelligence" surfaces: a soft tint + matching hairline, dark
+       readable text on top. Used for the flagship cards, never as loud fills. */
+    --featured-violet-bg:#F6F3FE; --featured-violet-border:#E7DEFB;
+    --featured-blue-bg:#EFF4FF;   --featured-blue-border:#D8E6FF;
+    /* Coloured icon containers — one soft square per semantic role */
+    --ib-blue-bg:var(--highlight);       --ib-blue-fg:var(--blue-dark);
+    --ib-violet-bg:#F1E9FE;              --ib-violet-fg:var(--violet);
+    --ib-teal-bg:#E1FAF4;               --ib-teal-fg:#0E9C89;
+    --ib-good-bg:var(--tint-success);    --ib-good-fg:var(--good);
+    --ib-warn-bg:var(--tint-warning);    --ib-warn-fg:var(--warn);
+    --ib-bad-bg:var(--tint-error);       --ib-bad-fg:var(--bad);
+    --ib-neutral-bg:var(--surface-sunken); --ib-neutral-fg:var(--text-dim);
+    --ring-track:#E9EEF6;
   }
 
   html, body{ margin:0; }
-  body{ color:var(--text); background:var(--bg); -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale; text-rendering:optimizeLegibility; }
+  /* Phase 29: a very subtle ambient wash near the top of every page — violet
+     (intelligence) fading to nothing, plus a cooler blue bloom top-right. It is
+     deliberately faint: atmosphere, not decoration. It scrolls away below the
+     header so long pages settle onto the flat --bg. */
+  body{
+    color:var(--text); background:var(--bg);
+    background-image:
+      radial-gradient(1100px 520px at 50% -260px, rgba(124,58,237,0.07), rgba(124,58,237,0) 70%),
+      radial-gradient(820px 460px at 108% -60px, rgba(37,99,235,0.06), rgba(37,99,235,0) 62%);
+    background-repeat:no-repeat;
+    -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale; text-rendering:optimizeLegibility;
+  }
 
   .jr-btn{ transition: transform var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease); }
   .jr-btn:hover{ transform: translateY(-1px); box-shadow: var(--shadow-md); }
@@ -152,7 +182,7 @@ const TOKENS = `
   .jr-card{ transition: box-shadow var(--dur) var(--ease), transform var(--dur) var(--ease), border-color var(--dur) var(--ease); }
   .jr-card:hover{ box-shadow: var(--shadow-md); }
   .jr-card-interactive{ cursor:pointer; }
-  .jr-card-interactive:hover{ box-shadow: var(--shadow-md); transform: translateY(-1px); }
+  .jr-card-interactive:hover{ box-shadow: var(--shadow-md); transform: translateY(-2px); border-color:#D7DEEA; }
   .jr-card-interactive:focus-visible{ outline:2px solid var(--blue); outline-offset:2px; }
   .jr-fade{ animation: jrFade .35s ease both; }
   @keyframes jrFade{ from{ opacity:0; transform: translateY(6px);} to{opacity:1; transform:translateY(0);} }
@@ -218,8 +248,42 @@ const TOKENS = `
   .jr-section{ margin-bottom:28px; }
   .jr-empty{ display:flex; flex-direction:column; align-items:center; text-align:center; gap:6px; padding:40px 24px; }
   .jr-empty-icon{ display:flex; align-items:center; justify-content:center; width:44px; height:44px; border-radius:var(--r-md); background:var(--surface-sunken); color:var(--text-faint); margin-bottom:6px; }
+
+  /* ---------------------------------------------------------------- *
+   * Phase 29: premium presentation primitives. Presentation only —
+   * consumed by IconBadge / MetricCard / FeaturedCard / ProgressMeter.
+   * Selectors stay plain class/state so the Phase 2H CSS-utility guard
+   * parses every rule; no literal "}" inside any declaration value.
+   * ---------------------------------------------------------------- */
+  .jr-icon-badge{ display:inline-flex; align-items:center; justify-content:center; width:36px; height:36px; border-radius:var(--r-md); flex-shrink:0; }
+  .jr-icon-badge-lg{ width:44px; height:44px; border-radius:var(--r-lg); }
+  .jr-ib-blue{ background:var(--ib-blue-bg); color:var(--ib-blue-fg); }
+  .jr-ib-violet{ background:var(--ib-violet-bg); color:var(--ib-violet-fg); }
+  .jr-ib-teal{ background:var(--ib-teal-bg); color:var(--ib-teal-fg); }
+  .jr-ib-good{ background:var(--ib-good-bg); color:var(--ib-good-fg); }
+  .jr-ib-warn{ background:var(--ib-warn-bg); color:var(--ib-warn-fg); }
+  .jr-ib-bad{ background:var(--ib-bad-bg); color:var(--ib-bad-fg); }
+  .jr-ib-neutral{ background:var(--ib-neutral-bg); color:var(--ib-neutral-fg); }
+
+  .jr-metric{ display:flex; flex-direction:column; gap:12px; background:var(--card); border:1px solid var(--border); border-radius:var(--r-lg); padding:18px 20px; box-shadow:var(--shadow-xs); }
+  .jr-metric-value{ font-size:32px; font-weight:800; letter-spacing:-0.02em; line-height:1; color:var(--navy); font-variant-numeric:tabular-nums; }
+  .jr-metric-unit{ font-size:15px; font-weight:700; color:var(--text-faint); }
+  .jr-metric-accent-warn{ border-color:#F3DDB4; background:linear-gradient(180deg, var(--tint-warning), var(--card) 62%); }
+
+  .jr-featured{ border-radius:var(--r-lg); padding:22px; border:1px solid var(--featured-violet-border); background:var(--featured-violet-bg); transition: box-shadow var(--dur) var(--ease), transform var(--dur) var(--ease), border-color var(--dur) var(--ease); }
+  .jr-featured-blue{ border-color:var(--featured-blue-border); background:var(--featured-blue-bg); }
+  .jr-featured-plain{ border-color:var(--border); background:var(--card); box-shadow:var(--shadow-sm); }
+
+  .jr-progress{ height:8px; width:100%; background:var(--track); border-radius:var(--r-pill); overflow:hidden; }
+  .jr-progress-fill{ height:100%; border-radius:var(--r-pill); background:var(--blue); transition: width .7s var(--ease); }
+
+  .jr-chartbar{ border-radius:8px; transition: transform var(--dur-fast) var(--ease); }
+  .jr-chartbar:hover{ transform: translateY(-2px); }
+  .jr-chartbar:focus-visible{ outline:2px solid var(--blue); outline-offset:3px; }
+
   @media (max-width:600px){
     .jr-page-header{ flex-direction:column; align-items:stretch; }
+    .jr-metric-value{ font-size:28px; }
   }
 
   /* ---------------------------------------------------------------- *
@@ -2453,6 +2517,84 @@ function RingScore({ value, size = 148, label }) {
   );
 }
 
+/* ================================================================== */
+/* PHASE 29 — PREMIUM PRESENTATION PRIMITIVES                          */
+/* ------------------------------------------------------------------ */
+/* Presentation only. No data, no side effects, no handlers of their   */
+/* own beyond an optional onClick pass-through (FeaturedCard) that      */
+/* mirrors Card's existing Enter/Space activation. All visuals come     */
+/* from the .jr-* classes in TOKENS above.                             */
+/* ================================================================== */
+
+// A lucide icon on a soft, semantically-tinted square. `tone` = blue |
+// violet | teal | good | warn | bad | neutral.
+function IconBadge({ icon: Icon, tone = "neutral", size = 18, lg = false }) {
+  return (
+    <span className={"jr-icon-badge" + (lg ? " jr-icon-badge-lg" : "") + " jr-ib-" + tone}>
+      <Icon size={size} aria-hidden="true" />
+    </span>
+  );
+}
+
+// One headline metric: eyebrow label + optional icon badge, then a large
+// tabular value with an optional unit, then optional supporting text. Pass
+// `visual` to replace the number with a chart (e.g. a RingScore).
+function MetricCard({ icon, tone = "neutral", label, value, unit, sub, visual, className }) {
+  return (
+    <div className={className ? "jr-metric " + className : "jr-metric"}>
+      <div className="flex items-center justify-between gap-2">
+        <span className="jr-meta">{label}</span>
+        {icon ? <IconBadge icon={icon} tone={tone} size={16} /> : null}
+      </div>
+      {visual ? visual : (
+        <div className="flex items-baseline gap-2" style={{ minHeight: 32 }}>
+          <span className="jr-metric-value">{value}</span>
+          {unit ? <span className="jr-metric-unit">{unit}</span> : null}
+        </div>
+      )}
+      {sub ? <div className="jr-text-sm" style={{ margin: 0 }}>{sub}</div> : null}
+    </div>
+  );
+}
+
+// A premium featured surface — soft tint + hairline, dark readable text, no
+// heavy shadow. `tone` = "violet" (default, "intelligence") | "blue" | "plain".
+// When `onClick` is a function it becomes a real button (Enter/Space activates),
+// mirroring Card.
+function FeaturedCard({ children, tone = "violet", onClick, className, style }) {
+  const interactive = typeof onClick === "function";
+  const cls = [
+    "jr-featured",
+    tone === "blue" ? "jr-featured-blue" : tone === "plain" ? "jr-featured-plain" : "",
+    interactive ? "jr-card-interactive" : "",
+    className || "",
+  ].filter(Boolean).join(" ");
+  return (
+    <div className={cls} onClick={onClick}
+      role={interactive ? "button" : undefined} tabIndex={interactive ? 0 : undefined}
+      onKeyDown={interactive ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onClick(e); } } : undefined}
+      style={style}>
+      {children}
+    </div>
+  );
+}
+
+// A deterministic progress bar. `value`/`max` come from real data only — the
+// component never invents a number. `tone` = blue (default) | good | warn |
+// violet. Announces itself as a progressbar.
+function ProgressMeter({ value, max = 100, tone, label, style }) {
+  const pct = max > 0 ? Math.max(0, Math.min(100, (value / max) * 100)) : 0;
+  const bg = tone === "good" ? "var(--good)" : tone === "warn" ? "var(--warn)" : tone === "violet" ? "var(--violet)" : "var(--blue)";
+  return (
+    <div style={style}>
+      {label ? <div className="flex justify-between jr-text-sm" style={{ marginBottom: 6 }}>{label}</div> : null}
+      <div className="jr-progress" role="progressbar" aria-valuenow={Math.round(pct)} aria-valuemin={0} aria-valuemax={100} aria-label={typeof label === "string" ? label : undefined}>
+        <div className="jr-progress-fill" style={{ width: pct + "%", background: bg }} />
+      </div>
+    </div>
+  );
+}
+
 // Phase 2G: candidate-facing labels for candidate_claims.status — reused by both the
 // post-interview report ("claims explored this interview") and the Progress screen
 // ("career claims" overview). Deliberately plain, non-technical language — never exposes
@@ -2490,25 +2632,27 @@ function ReportBody({ report, company, role, badge, stageLabel, formatLabel, cla
   const r = report || {};
   return (
     <>
-      <div style={{ fontSize: 13, fontWeight: 700, color: "var(--blue)", textTransform: "uppercase", marginBottom: 6 }}>{badge}</div>
-      <h2 style={{ fontSize: 26, fontWeight: 800, color: "var(--navy)", marginBottom: stageLabel ? 4 : 24 }}>{role} <span style={{ color: "var(--text-faint)", fontWeight: 600 }}>· {company}</span></h2>
+      <div className="jr-meta" style={{ color: "var(--blue-dark)", marginBottom: 6 }}>{badge}</div>
+      <h2 className="jr-h1" style={{ marginBottom: stageLabel ? 4 : 20 }}>{role} <span style={{ color: "var(--text-faint)", fontWeight: 600 }}>· {company}</span></h2>
       {/* Phase 4 (application/job context): a candidate doing a recruiter screen AND a
           technical round for the same application had no way to tell, from the report alone,
           which stage this one was — stageLabel/formatLabel were always on the interview row
           (Phase 4A) and are simply threaded through here now. */}
       {stageLabel && <div style={{ fontSize: 13, color: "var(--text-dim)", marginBottom: 20 }}>{stageLabel}{formatLabel ? ` · ${formatLabel}` : ""}</div>}
 
-      <Card style={{ padding: 26, marginBottom: 20 }}>
-        <div className="flex items-center gap-8">
-          <RingScore value={r.overall_score} size={128} label="/ 100" />
-          <div>
+      {/* Phase 29: the headline score — the value the interview delivered — on a
+          featured surface. RingScore, readiness and focus text are unchanged. */}
+      <FeaturedCard style={{ marginBottom: 20, padding: 24 }}>
+        <div className="flex items-center gap-6 flex-wrap">
+          <RingScore value={r.overall_score} size={124} label="/ 100" />
+          <div style={{ minWidth: 0, flex: 1 }}>
             <Pill color={r.readiness === "strong" || r.readiness === "interview_ready" ? "var(--good)" : "var(--warn)"} bg={r.readiness === "strong" || r.readiness === "interview_ready" ? "#E7F8F1" : "#FEF3E2"}>
               {(r.readiness || "").replace(/_/g, " ")}
             </Pill>
-            <div style={{ fontSize: 13.5, color: "var(--text-dim)", marginTop: 12, lineHeight: 1.5, maxWidth: 340 }}>{r.next_practice_focus}</div>
+            <div style={{ fontSize: 13.5, color: "var(--text-dim)", marginTop: 12, lineHeight: 1.5, maxWidth: 360 }}>{r.next_practice_focus}</div>
           </div>
         </div>
-      </Card>
+      </FeaturedCard>
 
       {comparisons.length > 0 && (
         <Card style={{ padding: 20, marginBottom: 20, borderLeft: "4px solid var(--teal)" }}>
@@ -5697,39 +5841,51 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
           <div className="jr-page-header">
             <div className="jr-page-header-text">
               <h2 className="jr-h1">Good {new Date().getHours() < 12 ? "morning" : new Date().getHours() < 18 ? "afternoon" : "evening"}, {user.first_name || user.email.split("@")[0]}</h2>
-              <div className="jr-text" style={{ marginTop: 4 }}>Ready for your next interview?</div>
+              <div className="jr-text" style={{ marginTop: 4 }}>{
+                !interviewList.length ? "Ready for your next interview?"
+                : interviewList[interviewList.length - 1].overall_score >= 75 ? "You're interview-ready — keep it sharp."
+                : interviewList[interviewList.length - 1].overall_score >= 55 ? "Solid progress — a few areas left to tighten."
+                : "Early days — every interview moves the needle."
+              }</div>
             </div>
             <Btn variant="accent" onClick={() => startCreateFlow(false)}><Sparkles size={16} /> New interview</Btn>
           </div>
 
+          {/* Phase 29: the three headline metrics — readiness as a radial score,
+              completed as an achievement count, next-up as an amber priority.
+              Every value is read straight from existing state; nothing invented. */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
-            <Card style={{ padding: 20 }}>
-              <div className="jr-meta" style={{ marginBottom: 8 }}>Interview readiness</div>
-              <div style={{ fontSize: 30, fontWeight: 800, color: "var(--navy)" }}>{interviewList.length ? interviewList[interviewList.length - 1].overall_score : "—"}<span style={{ fontSize: 15, color: "var(--text-faint)" }}>/100</span></div>
-              {interviewList.length > 1 && (
-                <div style={{ fontSize: 12, color: "var(--good)", fontWeight: 600, marginTop: 4 }}>
-                  {interviewList[interviewList.length - 1].overall_score - interviewList[interviewList.length - 2].overall_score >= 0 ? "↑" : "↓"} since last interview
+            <MetricCard label="Interview readiness" visual={
+              <div className="flex items-center gap-4">
+                <RingScore value={interviewList.length ? interviewList[interviewList.length - 1].overall_score : 0} size={74} />
+                <div style={{ minWidth: 0 }}>
+                  <div className="flex items-baseline gap-2">
+                    <span className="jr-metric-value">{interviewList.length ? interviewList[interviewList.length - 1].overall_score : "—"}</span>
+                    <span className="jr-metric-unit">/100</span>
+                  </div>
+                  {interviewList.length > 1 && (() => {
+                    const d = interviewList[interviewList.length - 1].overall_score - interviewList[interviewList.length - 2].overall_score;
+                    return <div className="jr-text-sm" style={{ color: d >= 0 ? "var(--good)" : "var(--bad)", fontWeight: 600, marginTop: 2 }}>{d >= 0 ? "+" : ""}{d} vs last interview</div>;
+                  })()}
                 </div>
-              )}
-            </Card>
-            <Card style={{ padding: 20 }}>
-              <div className="jr-meta" style={{ marginBottom: 8 }}>Interviews completed</div>
-              <div style={{ fontSize: 30, fontWeight: 800, color: "var(--navy)" }}>{interviewList.length}</div>
-            </Card>
-            <Card style={{ padding: 20 }}>
-              <div className="jr-meta" style={{ marginBottom: 8 }}>Next up</div>
-              {/* Phase 4 (Dashboard "what should I do next"): the single highest-priority item
-                  from the SAME deterministic Candidate Strategy the scheduler itself would
-                  nudge toward (interviewStrategy.js, untouched) — grounded in real stored
-                  evidence (claims/competency/category coverage), never invented. Falls back to
-                  the AI-narrative weakness (pre-existing signal, kept for continuity) when
-                  there's not yet enough evidence for a deterministic priority to exist. */}
-              <div style={{ fontSize: 14.5, color: "var(--navy)", fontWeight: 600, lineHeight: 1.4 }}>
+              </div>
+            } />
+            <MetricCard icon={CheckCircle2} tone="blue" label="Interviews completed"
+              value={interviewList.length}
+              sub={interviewList.length ? "across every application" : "start your first one"} />
+            {/* Phase 4 (Dashboard "what should I do next"): the single highest-priority item
+                from the SAME deterministic Candidate Strategy the scheduler itself would
+                nudge toward (interviewStrategy.js, untouched) — grounded in real stored
+                evidence (claims/competency/category coverage), never invented. Falls back to
+                the AI-narrative weakness (pre-existing signal, kept for continuity) when
+                there's not yet enough evidence for a deterministic priority to exist. */}
+            <MetricCard icon={Target} tone="warn" label="Next up" className="jr-metric-accent-warn" visual={
+              <div style={{ fontSize: 14.5, color: "var(--navy)", fontWeight: 600, lineHeight: 1.4, minHeight: 32 }}>
                 {nextPriorities[0]
                   ? (nextPriorities[0].type === "claim" ? `Retest: "${nextPriorities[0].label}"` : `Practise: ${nextPriorities[0].label}`)
                   : (perf?.weaknesses?.[0] || "Complete an interview to find out")}
               </div>
-            </Card>
+            } />
           </div>
 
           {/* Phase 18: unfinished interviews. Sits above "Continue preparing" —
@@ -5739,18 +5895,26 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
               profile are shown honestly but cannot be resumed. */}
           {(resumableReady.length > 0 || resumableLegacy.length > 0) && (
             <div style={{ marginBottom: 20 }}>
+              {/* Phase 29: the half-finished interview is the single most time-sensitive
+                  thing a returning user has — promoted to a featured surface with a
+                  deterministic progress meter (answeredCount / targetQuestions). */}
               {resumableReady.map((r) => (
-                <Card key={r.id} style={{ padding: 22, marginBottom: 10, borderLeft: "4px solid var(--violet)" }}>
-                  <div className="jr-meta flex items-center gap-2" style={{ color: "var(--violet)", marginBottom: 8 }}><Mic size={13} aria-hidden="true" /> Continue your interview</div>
-                  <div style={{ fontSize: 15.5, fontWeight: 700, color: "var(--navy)" }}>{r.company || "Interview"}{r.role ? ` — ${r.role}` : ""}</div>
-                  <div style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 4 }}>
-                    {resumableProgressLabel(r)}
+                <FeaturedCard key={r.id} style={{ marginBottom: 10 }}>
+                  <div className="flex items-center gap-2" style={{ marginBottom: 10 }}>
+                    <span className="jr-icon-badge jr-ib-violet"><Mic size={16} aria-hidden="true" /></span>
+                    <span className="jr-meta" style={{ color: "var(--violet)" }}>Continue your interview</span>
                   </div>
-                  <Btn variant="accent" style={{ marginTop: 12 }} onClick={() => guarded(() => resumeInterviewById(r.id))}>Continue interview <ArrowRight size={15} /></Btn>
-                </Card>
+                  <div style={{ fontSize: 16, fontWeight: 700, color: "var(--navy)" }}>{r.company || "Interview"}{r.role ? ` — ${r.role}` : ""}</div>
+                  {r.targetQuestions > 0 && (
+                    <ProgressMeter value={r.answeredCount} max={r.targetQuestions} tone="violet" style={{ marginTop: 12 }} />
+                  )}
+                  <div className="jr-text-sm" style={{ marginTop: 8 }}>{resumableProgressLabel(r)}</div>
+                  <Btn variant="accent" style={{ marginTop: 14 }} onClick={() => guarded(() => resumeInterviewById(r.id))}>Continue interview <ArrowRight size={15} /></Btn>
+                </FeaturedCard>
               ))}
               {resumableLegacy.map((r) => (
-                <Card key={r.id} style={{ padding: 18, marginBottom: 10, borderLeft: "4px solid var(--border)" }}>
+                <Card key={r.id} style={{ padding: 18, marginBottom: 10 }}>
+                  <div className="jr-meta" style={{ marginBottom: 6 }}>Interview in progress</div>
                   <div style={{ fontSize: 13.5, fontWeight: 700, color: "var(--text-dim)" }}>{r.company || "Interview"}{r.role ? ` — ${r.role}` : ""}</div>
                   <div style={{ fontSize: 12.5, color: "var(--text-faint)", marginTop: 4, lineHeight: 1.5 }}>
                     An earlier interview here couldn't be saved for resuming. Start a new one from its application when you're ready.
@@ -5767,19 +5931,19 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
               performance"; preparation -> "Important to prepare for this
               application. You have not been tested on this yet." No AI call. */}
           {continuePreparing && (
-            <Card style={{ padding: 22, marginBottom: 20, borderLeft: `4px solid ${continuePreparing.evidenceType === "demonstrated" ? "var(--bad)" : "var(--blue)"}` }}>
-              <div className="jr-meta" style={{ marginBottom: 8 }}>Continue preparing</div>
-              <div className="flex items-center gap-2" style={{ fontSize: 15.5, fontWeight: 700, color: "var(--navy)" }}>
+            <FeaturedCard tone="blue" style={{ marginBottom: 20 }}>
+              <div className="flex items-center gap-2" style={{ marginBottom: 10 }}>
                 {continuePreparing.evidenceType === "demonstrated"
-                  ? <AlertCircle size={16} color="var(--bad)" aria-hidden="true" style={{ flexShrink: 0 }} />
-                  : <BookOpen size={16} color="var(--blue)" aria-hidden="true" style={{ flexShrink: 0 }} />}
-                {continuePreparing.title}
+                  ? <span className="jr-icon-badge jr-ib-bad"><AlertCircle size={16} aria-hidden="true" /></span>
+                  : <span className="jr-icon-badge jr-ib-blue"><BookOpen size={16} aria-hidden="true" /></span>}
+                <span className="jr-meta" style={{ color: continuePreparing.evidenceType === "demonstrated" ? "var(--bad)" : "var(--blue-dark)" }}>Continue preparing</span>
               </div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: "var(--navy)" }}>{continuePreparing.title}</div>
               {(continuePreparing.company || continuePreparing.role) && (
                 <div style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 2 }}>{[continuePreparing.company, continuePreparing.role].filter(Boolean).join(" — ")}</div>
               )}
               <div style={{ fontSize: 12.5, color: "var(--text-dim)", marginTop: 8, lineHeight: 1.5 }}>{continuePreparing.sublabel}</div>
-              <Btn variant="accent" style={{ marginTop: 12 }} onClick={() => guarded(() => {
+              <Btn variant="accent" style={{ marginTop: 14 }} onClick={() => guarded(() => {
                 if (continuePreparing.kind === "prepare_recommendation") {
                   startLearningFromRecommendation(continuePreparing.recommendation, applications.find((a) => a.id === continuePreparing.applicationId));
                 } else {
@@ -5787,52 +5951,46 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                   if (t) openDevelopmentModule(t);
                 }
               })}>{continuePreparing.kind === "resume_module" ? "Continue learning" : "Start learning"} <ArrowRight size={15} /></Btn>
-            </Card>
+            </FeaturedCard>
           )}
 
           {perf?.weaknesses?.length > 0 && (
-            <Card style={{ padding: 22, marginBottom: 20, borderLeft: "4px solid var(--blue)" }}>
-              <div className="jr-meta" style={{ color: "var(--blue)", marginBottom: 12 }}>Your focus areas</div>
+            <Card style={{ padding: 22, marginBottom: 20 }}>
+              <div className="flex items-center gap-2" style={{ marginBottom: 14 }}>
+                <span className="jr-icon-badge jr-ib-warn"><Target size={16} aria-hidden="true" /></span>
+                <span className="jr-meta" style={{ color: "var(--warn)" }}>Your focus areas</span>
+              </div>
               {perf.weaknesses.slice(0, 3).map((w, i) => (
-                <div key={i} className="flex gap-3 mb-2" style={{ fontSize: 14.5, color: "var(--text)" }}>
-                  <span style={{ fontWeight: 700, color: "var(--navy)" }}>{i + 1}.</span> {w}
+                <div key={i} className="flex gap-3 mb-2" style={{ fontSize: 14.5, color: "var(--text)", lineHeight: 1.5 }}>
+                  <span style={{ fontWeight: 800, color: "var(--warn)", fontVariantNumeric: "tabular-nums" }}>{i + 1}</span> {w}
                 </div>
               ))}
-              <Btn variant="secondary" onClick={() => startCreateFlow(true)} style={{ marginTop: 10 }}>Practise weaknesses <ArrowRight size={15} /></Btn>
+              <Btn variant="secondary" onClick={() => startCreateFlow(true)} style={{ marginTop: 12 }}>Practise weaknesses <ArrowRight size={15} /></Btn>
             </Card>
           )}
 
-          {classroom.length > 0 && (
-            <Card style={{ padding: 22, marginBottom: 16, borderLeft: "4px solid var(--violet)" }}>
-              <div className="flex justify-between items-center">
-                <div className="flex items-center gap-3">
-                  <div style={{ width: 34, height: 34, borderRadius: 9, background: "#F1E9FE", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                    <GraduationCap size={17} color="var(--violet)" />
-                  </div>
-                  <div>
-                    <div style={{ fontSize: 14.5, fontWeight: 700, color: "var(--navy)" }}>Classroom</div>
-                    <div style={{ fontSize: 13, color: "var(--text-dim)" }}>{classroomNeedsWorkCount > 0 ? `${classroomNeedsWorkCount} lesson${classroomNeedsWorkCount !== 1 ? "s" : ""} ready from your weaknesses` : "You've mastered every topic so far"}</div>
-                  </div>
+          {/* Phase 29: the two product areas — a consistent icon-badge row, secondary
+              to readiness / next action / active interview above. */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-6">
+            {classroom.length > 0 && (
+              <Card style={{ padding: 20 }}>
+                <div className="flex items-center gap-3 mb-3">
+                  <IconBadge icon={GraduationCap} tone="violet" size={17} />
+                  <div style={{ fontSize: 14.5, fontWeight: 700, color: "var(--navy)" }}>Classroom</div>
                 </div>
-                <Btn variant="secondary" onClick={() => setScreen("classroom")}>Open <ArrowRight size={15} /></Btn>
+                <div className="jr-text-sm" style={{ marginBottom: 12 }}>{classroomNeedsWorkCount > 0 ? `${classroomNeedsWorkCount} lesson${classroomNeedsWorkCount !== 1 ? "s" : ""} ready from your weaknesses` : "You've mastered every topic so far"}</div>
+                <Btn variant="secondary" onClick={() => setScreen("classroom")} style={{ padding: "8px 14px" }}>Open <ArrowRight size={15} /></Btn>
+              </Card>
+            )}
+            <Card style={{ padding: 20 }}>
+              <div className="flex items-center gap-3 mb-3">
+                <IconBadge icon={Briefcase} tone="teal" size={17} />
+                <div style={{ fontSize: 14.5, fontWeight: 700, color: "var(--navy)" }}>Assessment Centre</div>
               </div>
+              <div className="jr-text-sm" style={{ marginBottom: 12 }}>{acAttempts.length > 0 ? `${acReadiness}% readiness across ${acAttempts.length} exercise${acAttempts.length !== 1 ? "s" : ""}` : "Group exercises, case studies, presentations & more"}</div>
+              <Btn variant="secondary" onClick={() => setScreen("ac_home")} style={{ padding: "8px 14px" }}>{acAttempts.length > 0 ? "Open" : "Explore"} <ArrowRight size={15} /></Btn>
             </Card>
-          )}
-
-          <Card style={{ padding: 22, marginBottom: 24, borderLeft: "4px solid var(--teal)" }}>
-            <div className="flex justify-between items-center">
-              <div className="flex items-center gap-3">
-                <div style={{ width: 34, height: 34, borderRadius: 9, background: "#E6FBF6", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                  <Briefcase size={17} color="var(--teal)" />
-                </div>
-                <div>
-                  <div style={{ fontSize: 14.5, fontWeight: 700, color: "var(--navy)" }}>Assessment Centre</div>
-                  <div style={{ fontSize: 13, color: "var(--text-dim)" }}>{acAttempts.length > 0 ? `${acReadiness}% readiness across ${acAttempts.length} exercise${acAttempts.length !== 1 ? "s" : ""}` : "Practise group exercises, case studies, presentations & more"}</div>
-                </div>
-              </div>
-              <Btn variant="secondary" onClick={() => setScreen("ac_home")}>{acAttempts.length > 0 ? "Open" : "Explore"} <ArrowRight size={15} /></Btn>
-            </div>
-          </Card>
+          </div>
 
           {/* Phase 4 (application/job context, returning-user continuity): replaces the old flat
               "Recent interviews" list — grouped by application (one real job pursuit) so a
@@ -5859,9 +6017,9 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                         <div style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 2 }}>{app.role}</div>
                       </div>
                       {latest ? (
-                        <div style={{ fontSize: 22, fontWeight: 800, color: "var(--navy)", textAlign: "right" }}>{latest.overall_score}<span style={{ fontSize: 12, color: "var(--text-faint)" }}>/100</span></div>
+                        <div style={{ fontSize: 22, fontWeight: 800, color: "var(--navy)", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{latest.overall_score}<span style={{ fontSize: 12, color: "var(--text-faint)" }}>/100</span></div>
                       ) : (
-                        <Pill color="var(--text-dim)" bg="#F1F5F9">Draft</Pill>
+                        <StatusBadge variant="neutral">Draft</StatusBadge>
                       )}
                     </div>
                     {(latest?.stageLabel || app.interviews.length > 1 || app.acAttempts.length > 0) && (
@@ -5917,31 +6075,39 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
               </EmptyState>
             </Card>
           ) : (
-            [["Upcoming interviews", applicationsUpcoming], ["Other applications", applicationsOther]].map(([heading, list]) => (
+            [["Upcoming interviews", applicationsUpcoming, "blue"], ["Other applications", applicationsOther, null]].map(([heading, list, tone]) => (
               list.length > 0 && (
-                <div key={heading} style={{ marginBottom: 24 }}>
-                  <div className="jr-meta" style={{ marginBottom: 10 }}>{heading}</div>
+                <div key={heading} style={{ marginBottom: 28 }}>
+                  <div className="flex items-center gap-2" style={{ marginBottom: 12 }}>
+                    <span className="jr-meta">{heading}</span>
+                    <span className="jr-badge jr-badge-neutral" style={{ fontVariantNumeric: "tabular-nums" }}>{list.length}</span>
+                  </div>
                   <div className="grid grid-cols-1 gap-3">
                     {list.map((app) => {
                       const cd = interviewCountdown(app.interviewDate);
                       const next = nextActionForApplication(app);
                       return (
-                        <Card key={app.id} style={{ padding: 18 }}>
-                          <div className="flex justify-between items-start gap-3 mb-1">
-                            <div>
-                              <div style={{ fontSize: 15.5, fontWeight: 700, color: "var(--navy)" }}>{app.company}</div>
-                              <div style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 2 }}>{app.role}</div>
+                        <Card key={app.id} onClick={() => openApplication(app)} style={{ padding: 20 }}>
+                          <div className="flex justify-between items-start gap-3" style={{ marginBottom: 12 }}>
+                            <div className="flex items-start gap-3" style={{ minWidth: 0 }}>
+                              <IconBadge icon={Briefcase} tone={tone === "blue" ? "blue" : "neutral"} />
+                              <div style={{ minWidth: 0 }}>
+                                <div style={{ fontSize: 15.5, fontWeight: 700, color: "var(--navy)" }}>{app.company}</div>
+                                <div style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 2 }}>{app.role}</div>
+                              </div>
                             </div>
                             {cd.status !== "none" && (
-                              <span style={{ fontSize: 12.5, fontWeight: 700, color: cd.isUpcoming ? "var(--blue)" : "var(--text-faint)", whiteSpace: "nowrap" }}>
-                                <Clock size={12} style={{ verticalAlign: "-2px", marginRight: 4 }} />{cd.label}
+                              <span className={cd.isUpcoming ? "jr-badge jr-badge-info" : "jr-badge jr-badge-neutral"} style={{ whiteSpace: "nowrap", flexShrink: 0 }}>
+                                <Clock size={12} aria-hidden="true" />{cd.label}
                               </span>
                             )}
                           </div>
-                          <div style={{ fontSize: 12.5, color: "var(--text-dim)", margin: "8px 0 12px" }}>
-                            <strong style={{ color: "var(--navy)" }}>Next:</strong> {next.label}
+                          <div className="flex items-center justify-between gap-3">
+                            <div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.5, minWidth: 0 }}>
+                              <span className="jr-meta" style={{ color: "var(--warn)", marginRight: 6 }}>Next</span>{next.label}
+                            </div>
+                            <ArrowRight size={16} color="var(--text-faint)" aria-hidden="true" style={{ flexShrink: 0 }} />
                           </div>
-                          <Btn variant="secondary" onClick={() => openApplication(app)} style={{ padding: "6px 12px" }}>Open application <ArrowRight size={13} /></Btn>
                         </Card>
                       );
                     })}
@@ -6849,14 +7015,11 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                 </div>
               </div>
               <div style={{ maxWidth: 680, margin: "0 auto", padding: "48px 24px" }}>
-                <Card style={{ padding: 20 }}>
-                  <div className="flex items-center gap-2" style={{ fontSize: 15, color: "var(--navy)", marginBottom: 14 }}>
-                    <AlertCircle size={16} color="var(--bad)" />
-                    Your answer was saved, but we hit a snag generating the next question.
-                  </div>
-                  {error && <div style={{ color: "var(--bad)", fontSize: 13, marginBottom: 12 }}>{error}</div>}
-                  <Btn variant="accent" onClick={() => guarded(regenerateNextQuestion)}>Try again <ChevronRight size={16} /></Btn>
-                </Card>
+                <Alert variant="error" title="Your answer was saved">
+                  We hit a snag generating the next question — nothing was lost.
+                  {error && <div style={{ marginTop: 6 }}>{error}</div>}
+                  <div style={{ marginTop: 12 }}><Btn variant="accent" onClick={() => guarded(regenerateNextQuestion)}>Try again <ChevronRight size={16} /></Btn></div>
+                </Alert>
               </div>
             </div>
           );
@@ -6872,25 +7035,23 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                 <div className="flex justify-between items-center mb-2">
                   <span style={{ fontSize: 12, color: "var(--text-faint)" }}>Question {interview.transcript.length + 1} of ~{interview.maxQuestions}</span>
                 </div>
-                <div style={{ height: 4, background: "var(--border)", borderRadius: 999 }}>
-                  <div className="jr-bar" style={{ height: 4, borderRadius: 999, background: "var(--blue)", width: Math.min(100, ((interview.transcript.length + 1) / interview.maxQuestions) * 100) + "%" }} />
+                <div className="jr-progress" style={{ height: 4 }}>
+                  <div className="jr-progress-fill" style={{ width: Math.min(100, ((interview.transcript.length + 1) / interview.maxQuestions) * 100) + "%" }} />
                 </div>
               </div>
             </div>
 
             <div style={{ maxWidth: 680, margin: "0 auto", padding: "48px 24px" }}>
               {memMatch && (
-                <Card style={{ padding: 16, marginBottom: 18, borderLeft: "4px solid var(--teal)" }}>
-                  <div className="flex items-center gap-2" style={{ fontSize: 13, color: "var(--navy)" }}>
-                    <History size={15} color="var(--teal)" />
-                    You've answered a similar question before — last time you scored <strong>&nbsp;{memMatch.score}/100&nbsp;</strong>. Let's see how you've improved.
-                  </div>
-                </Card>
+                <div className="jr-alert jr-alert-info" style={{ marginBottom: 20 }} role="note">
+                  <span className="jr-alert-icon" aria-hidden="true"><History size={16} /></span>
+                  <div>You've answered a similar question before — last time you scored <strong>{memMatch.score}/100</strong>. Let's see how you've improved.</div>
+                </div>
               )}
               <Pill color="var(--violet)" bg="#F1E9FE">{(interview.currentQuestion?.category || "").replace(/_/g, " ")}</Pill>
-              <div style={{ fontSize: 25, fontWeight: 700, lineHeight: 1.4, color: "var(--navy)", margin: "18px 0 28px" }}>{interview.currentQuestion?.text}</div>
+              <div style={{ fontSize: 24, fontWeight: 700, lineHeight: 1.4, letterSpacing: "-0.01em", color: "var(--navy)", margin: "16px 0 24px" }}>{interview.currentQuestion?.text}</div>
               <textarea aria-label="Your answer" value={answerInput} onChange={(e) => setAnswerInput(e.target.value)} placeholder="Type your answer..."
-                style={{ width: "100%", height: 200, padding: 16, border: "1.5px solid var(--border)", borderRadius: "var(--radius)", fontSize: 15, lineHeight: 1.55, fontFamily: "var(--font)" }} />
+                className="jr-input jr-textarea" style={{ height: 200, fontSize: 15 }} />
               {error && <div style={{ color: "var(--bad)", fontSize: 13, marginTop: 10 }}>{error}</div>}
               <div className="flex justify-between items-center mt-4">
                 <div className="flex items-center gap-3">
@@ -7030,29 +7191,37 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
             </div>
           </div>
 
-          <h3 className="jr-h2 flex items-center gap-2" style={{ marginBottom: 12 }}><Sparkles size={16} color="var(--violet)" aria-hidden="true" /> Your Interview DNA</h3>
+          <h3 className="jr-h2 flex items-center gap-2" style={{ marginBottom: 12 }}><span className="jr-icon-badge jr-ib-violet"><Sparkles size={15} aria-hidden="true" /></span> Your Interview DNA</h3>
           {compKeys.length === 0 ? (
             <Card style={{ padding: 28, marginBottom: 28 }}>
               <EmptyState icon={Sparkles} title="No Interview DNA yet">Complete an interview and your competency strengths, weaknesses and trends will build here.</EmptyState>
             </Card>
           ) : (
-            <>
+            /* Phase 29: the DNA read is JOB.READY's core insight — grouped onto one
+               featured (violet "intelligence") surface with white sub-cards for depth. */
+            <FeaturedCard style={{ marginBottom: 24, padding: "18px 18px 6px" }}>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
                 <Card style={{ padding: 20 }}>
-                  <div className="jr-meta" style={{ color: "var(--good)", marginBottom: 10 }}>Strengths</div>
+                  <div className="flex items-center gap-2" style={{ marginBottom: 12 }}>
+                    <span className="jr-icon-badge jr-ib-good"><TrendingDown size={15} aria-hidden="true" style={{ transform: "scaleY(-1)" }} /></span>
+                    <span className="jr-meta" style={{ color: "var(--good)" }}>Strengths</span>
+                  </div>
                   {dnaStrengths.map((c) => (
                     <div key={c.key} className="flex items-center justify-between mb-2" style={{ fontSize: 13.5 }}>
                       <span className="flex items-center gap-2" style={{ color: "var(--navy)", textTransform: "capitalize" }}><span style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--good)", display: "inline-block" }} />{c.key.replace(/_/g, " ")}</span>
-                      <span style={{ fontWeight: 700 }}>{c.value}</span>
+                      <span style={{ fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{c.value}</span>
                     </div>
                   ))}
                 </Card>
                 <Card style={{ padding: 20 }}>
-                  <div className="jr-meta" style={{ color: "var(--bad)", marginBottom: 10 }}>Weaknesses</div>
+                  <div className="flex items-center gap-2" style={{ marginBottom: 12 }}>
+                    <span className="jr-icon-badge jr-ib-warn"><Target size={15} aria-hidden="true" /></span>
+                    <span className="jr-meta" style={{ color: "var(--warn)" }}>Focus areas</span>
+                  </div>
                   {dnaWeaknesses.map((c) => (
                     <div key={c.key} className="flex items-center justify-between mb-2" style={{ fontSize: 13.5 }}>
-                      <span className="flex items-center gap-2" style={{ color: "var(--navy)", textTransform: "capitalize" }}><span style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--bad)", display: "inline-block" }} />{c.key.replace(/_/g, " ")}</span>
-                      <span style={{ fontWeight: 700 }}>{c.value}</span>
+                      <span className="flex items-center gap-2" style={{ color: "var(--navy)", textTransform: "capitalize" }}><span style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--warn)", display: "inline-block" }} />{c.key.replace(/_/g, " ")}</span>
+                      <span style={{ fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{c.value}</span>
                     </div>
                   ))}
                 </Card>
@@ -7062,7 +7231,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                   <Card style={{ padding: 20 }}>
                     <div className="jr-meta" style={{ marginBottom: 6 }}>Biggest improvement</div>
                     <div style={{ fontSize: 14, fontWeight: 700, color: "var(--navy)", textTransform: "capitalize", marginBottom: 4 }}>{dnaBiggestImprovement.key.replace(/_/g, " ")}</div>
-                    <div style={{ fontSize: 13, color: "var(--text-dim)" }}>{dnaBiggestImprovement.history.join(" → ")}</div>
+                    <div style={{ fontSize: 13, color: "var(--good)", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{dnaBiggestImprovement.history.join(" → ")}</div>
                   </Card>
                 )}
                 {dnaPriority && (
@@ -7073,12 +7242,12 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                 )}
               </div>
               {perf?.style_notes?.length > 0 && (
-                <Card style={{ padding: 20, marginBottom: 24 }}>
+                <Card style={{ padding: 20, marginBottom: 12 }}>
                   <div className="jr-meta" style={{ marginBottom: 10 }}>Interview style</div>
                   {perf.style_notes.map((s, i) => <div key={i} style={{ fontSize: 13.5, color: "var(--text-dim)", marginBottom: 6 }}>· {s}</div>)}
                 </Card>
               )}
-            </>
+            </FeaturedCard>
           )}
 
           {/* Phase 4 (Progress "genuinely useful, not just statistics"): deterministic next-
@@ -7176,18 +7345,24 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                     <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, borderTop: "1px solid var(--border)" }} />
                   </div>
                   <div className="flex items-end gap-3" style={{ position: "relative", height: 150 }}>
-                    {interviewList.map((iv, i) => (
-                      <div key={iv.id} role={iv.report ? "button" : undefined} tabIndex={iv.report ? 0 : undefined}
+                    {interviewList.map((iv, i) => {
+                      const isLast = i === interviewList.length - 1;
+                      // Phase 29: the most recent bar is emphasised — green when the
+                      // latest score is above the first (real improvement), otherwise blue.
+                      const improved = isLast && interviewList.length > 1 && iv.overall_score > interviewList[0].overall_score;
+                      return (
+                      <div key={iv.id} className="jr-chartbar" role={iv.report ? "button" : undefined} tabIndex={iv.report ? 0 : undefined}
                         onClick={() => openInterviewReport(iv, "progress")}
                         onKeyDown={iv.report ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openInterviewReport(iv, "progress"); } } : undefined}
                         aria-label={`Attempt ${i + 1}, ${iv.company}, score ${iv.overall_score} out of 100${iv.report ? " — view full report" : ""}`}
                         title={iv.report ? `${iv.company} — view full report` : iv.company}
                         style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end", height: "100%", cursor: iv.report ? "pointer" : "default" }}>
-                        <div style={{ fontSize: 12, fontWeight: 700, color: "var(--navy)", marginBottom: 6 }}>{iv.overall_score}</div>
-                        <div className="jr-bar" style={{ width: "65%", height: (iv.overall_score / 100) * 110, background: i === interviewList.length - 1 ? "var(--blue)" : "var(--highlight)", borderRadius: "6px 6px 0 0" }} />
+                        <div style={{ fontSize: 12, fontWeight: 700, color: isLast ? "var(--navy)" : "var(--text-dim)", marginBottom: 6, fontVariantNumeric: "tabular-nums" }}>{iv.overall_score}</div>
+                        <div className="jr-bar" style={{ width: "62%", height: (iv.overall_score / 100) * 110, background: improved ? "var(--good)" : isLast ? "var(--blue)" : "var(--highlight)", borderRadius: "6px 6px 0 0" }} />
                         <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 6 }}>#{i + 1}</div>
                       </div>
-                    ))}
+                    );
+                    })}
                   </div>
                 </div>
               </div>
@@ -7270,7 +7445,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
           <div className="jr-page-header">
             <div className="jr-page-header-text">
               <div className="flex items-center gap-3" style={{ marginBottom: 6 }}>
-                <div style={{ width: 34, height: 34, borderRadius: 9, background: "#F1E9FE", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><GraduationCap size={18} color="var(--violet)" /></div>
+                <IconBadge icon={GraduationCap} tone="violet" size={18} lg />
                 <h2 className="jr-h1">Classroom</h2>
               </div>
               <div className="jr-text">Personalised recommendations for a specific application, plus lessons built from real weaknesses spotted in your interviews and assessment-centre exercises. Study, then retest.</div>
@@ -7289,7 +7464,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
               state — no AI call is made when this screen renders. */}
           {classroomApps.length > 0 && (
             <div style={{ marginBottom: 32 }}>
-              <h3 className="jr-h2 flex items-center gap-2" style={{ marginBottom: 4 }}><Target size={16} color="var(--violet)" aria-hidden="true" /> Recommended for your application</h3>
+              <h3 className="jr-h2 flex items-center gap-2" style={{ marginBottom: 4 }}><span className="jr-icon-badge jr-ib-violet"><Target size={15} aria-hidden="true" /></span> Recommended for your application</h3>
               <p style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.5, marginBottom: 12 }}>
                 Ranked by how much the role emphasises each area and how much you have shown so far. Areas you have not been asked about yet are marked as preparation — not weaknesses.
               </p>
@@ -7337,9 +7512,11 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                         });
                         const lvColor = r.level === "high" ? "var(--bad)" : r.level === "recommended" ? "var(--warn)" : "var(--good)";
                         return (
-                          <Card key={dim + r.label} style={{ padding: 18, marginBottom: 10 }}>
+                          <Card key={dim + r.label} style={{ padding: 18, marginBottom: 10, borderLeft: "3px solid " + lvColor }}>
                             <div className="flex items-center justify-between gap-2 mb-2" style={{ flexWrap: "wrap" }}>
-                              <span style={{ fontSize: 12.5, fontWeight: 700, color: lvColor }}>{r.levelIcon} {r.levelLabel}</span>
+                              <span className="flex items-center gap-2" style={{ fontSize: 12.5, fontWeight: 700, color: lvColor }}>
+                                <span style={{ width: 7, height: 7, borderRadius: 999, background: lvColor, display: "inline-block" }} aria-hidden="true" />{r.levelLabel}
+                              </span>
                               <Pill color="var(--blue)" bg="var(--highlight)">{dimLabel}</Pill>
                             </div>
                             <div style={{ fontSize: 16, fontWeight: 700, color: "var(--navy)", margin: "2px 0 6px" }}>{r.label}</div>
@@ -7825,7 +8002,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
           <div className="jr-page-header">
             <div className="jr-page-header-text">
               <div className="flex items-center gap-3" style={{ marginBottom: 6 }}>
-                <div style={{ width: 34, height: 34, borderRadius: 9, background: "#E6FBF6", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><Briefcase size={18} color="var(--teal)" /></div>
+                <IconBadge icon={Briefcase} tone="teal" size={18} lg />
                 <h2 className="jr-h1">Assessment Centre</h2>
               </div>
               <div className="jr-text">Practise the exercises that come after the interview — group exercises, case studies, presentations, written tasks and inbox triage.</div>
@@ -7834,9 +8011,15 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
 
           {acAttempts.length > 0 && (
             <Card style={{ padding: 22, marginBottom: 20 }}>
-              <div className="flex items-center justify-between">
-                <SectionHeading icon={Briefcase} tone="var(--teal)">Assessment Centre readiness</SectionHeading>
-                <div style={{ fontSize: 22, fontWeight: 800, color: "var(--navy)", marginBottom: 12 }}>{acReadiness}%</div>
+              <div className="flex items-center justify-between" style={{ marginBottom: 16 }}>
+                <div className="flex items-center gap-3">
+                  <IconBadge icon={Briefcase} tone="teal" />
+                  <div>
+                    <span className="jr-meta" style={{ color: "var(--tint-success-fg)" }}>Assessment Centre readiness</span>
+                    <div className="jr-text-sm" style={{ marginTop: 2 }}>across {acAttempts.length} exercise{acAttempts.length !== 1 ? "s" : ""}</div>
+                  </div>
+                </div>
+                <div style={{ fontSize: 26, fontWeight: 800, color: "var(--navy)", fontVariantNumeric: "tabular-nums", flexShrink: 0 }}>{acReadiness}<span className="jr-metric-unit">%</span></div>
               </div>
               {EXERCISE_TYPES.map((t) => {
                 const attempts = acAttempts.filter((a) => a.type === t.key);
@@ -7889,9 +8072,12 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
               const Icon = t.icon;
               const enabled = acCompany.trim() && acRole.trim();
               return (
-                <Card key={t.key} onClick={enabled ? () => guarded(() => startAssessmentCentre(t.key)) : undefined} style={{ padding: 20, cursor: enabled ? "pointer" : "not-allowed", opacity: enabled ? 1 : 0.55 }}>
-                  <div style={{ width: 32, height: 32, borderRadius: 8, background: "var(--highlight)", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 10 }}>
-                    <Icon size={16} color="var(--blue)" />
+                <Card key={t.key} onClick={enabled ? () => guarded(() => startAssessmentCentre(t.key)) : undefined} style={{ padding: 20, cursor: enabled ? "pointer" : "not-allowed", opacity: enabled ? 1 : 0.6 }}>
+                  <div className="flex items-start justify-between gap-2" style={{ marginBottom: 10 }}>
+                    <IconBadge icon={Icon} tone={enabled ? "blue" : "neutral"} size={16} />
+                    {enabled
+                      ? <ArrowRight size={15} color="var(--text-faint)" aria-hidden="true" />
+                      : <span className="jr-meta" style={{ fontSize: 10.5 }}>Locked</span>}
                   </div>
                   <div style={{ fontSize: 15, fontWeight: 700, color: "var(--navy)", marginBottom: 4 }}>{t.label}</div>
                   <div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.4 }}>{t.blurb}</div>
@@ -7899,7 +8085,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
               );
             })}
           </div>
-          {(!acCompany.trim() || !acRole.trim()) && <div style={{ fontSize: 12, color: "var(--text-faint)", marginTop: 12 }}>Enter a company and role above to unlock an exercise.</div>}
+          {(!acCompany.trim() || !acRole.trim()) && <div className="jr-help" style={{ marginTop: 12 }}>Enter a company and role above to unlock an exercise.</div>}
           {error && <Alert variant="error" style={{ marginTop: 14 }}>{error}</Alert>}
         </div>
       )}
