@@ -198,8 +198,10 @@ describe("Phase 22 FIX 3 — logged-out 'How it works' nav link reaches the same
     expect(APP_SRC).toMatch(/\{ label: "How it works", to: "how" \}/);
     // the nav renders each link as onClick={() => setScreen(l.to)}
     expect(APP_SRC).toMatch(/onClick=\{\(\) => setScreen\(l\.to\)\}/);
-    // the working hero CTA
-    expect(APP_SRC).toMatch(/onClick=\{\(\) => setScreen\("how"\)\}>See how it works/);
+    // the working hero CTA — Phase 32 moved the landing markup into <LandingPage>,
+    // which receives onHow={() => setScreen("how")} and wires it to the CTA button.
+    expect(APP_SRC).toMatch(/onHow=\{\(\) => setScreen\("how"\)\}/);
+    expect(APP_SRC).toMatch(/onClick=\{onHow\}>See how it works/);
     // and there is a real destination screen
     expect(APP_SRC).toMatch(/screen === "how" &&/);
   });
