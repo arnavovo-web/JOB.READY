@@ -133,6 +133,34 @@ export function classifyAuthRedirect(hash, search) {
   return { kind: "none", code: "", description: "" };
 }
 
+/**
+ * isRecoveryErrorRedirect(redirectClass) -> boolean
+ * True when classifyAuthRedirect determined this page load came from an
+ * invalid / expired / errored password-recovery link — i.e. the app must
+ * deliberately show the "request a new link" screen and hold it there.
+ */
+export function isRecoveryErrorRedirect(redirectClass) {
+  const kind = redirectClass && redirectClass.kind;
+  return kind === "expired_link" || kind === "error";
+}
+
+/**
+ * suppressLandingRedirectOnSignedOut(recoveryErrorActive) -> boolean
+ *
+ * PHASE 23A. When Supabase fails to recover a stale session from storage at
+ * startup it emits a "SIGNED_OUT" event from inside its own initialize(). If
+ * the app has just deliberately routed to the expired/invalid recovery-link
+ * screen, the SIGNED_OUT handler must clear per-user state for hygiene but must
+ * NOT run setScreen("landing") — otherwise the user is silently dropped onto
+ * the ordinary logged-out landing page with no explanation.
+ *
+ * A user-initiated sign-out (handleSignOut) and an ordinary signed-out startup
+ * both pass `false` here, so landing navigation is unaffected for them.
+ */
+export function suppressLandingRedirectOnSignedOut(recoveryErrorActive) {
+  return recoveryErrorActive === true;
+}
+
 // ---- user-facing copy -------------------------------------------
 /**
  * resetEmailSentMessage() -> a deliberately NON-ENUMERATING success line.

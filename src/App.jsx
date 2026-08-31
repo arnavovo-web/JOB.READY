@@ -107,7 +107,8 @@ import { reconstructInterviewState, sortResumableInterviews, summariseResumable,
 import {
   PASSWORD_MIN_LENGTH, passwordInputType, visibilityToggleLabel,
   validateEmailForReset, validateNewPassword, passwordResetRedirectTo,
-  classifyAuthRedirect, resetEmailSentMessage, expiredLinkMessage, friendlyAuthError,
+  classifyAuthRedirect, isRecoveryErrorRedirect, suppressLandingRedirectOnSignedOut,
+  resetEmailSentMessage, expiredLinkMessage, friendlyAuthError,
 } from "./authForms";
 
 /* ================================================================== *
@@ -2686,6 +2687,12 @@ function App() {
   const [report, setReport] = useState(null);
   const bottomRef = useRef(null);
   const busyRef = useRef(false);
+  // Phase 23A: true only while the app is deliberately showing the expired/invalid
+  // password-reset screen. Read synchronously inside the onAuthStateChange closure so a
+  // spurious startup SIGNED_OUT (Supabase failing to refresh a stale stored token) does
+  // not navigate the user off that screen. Cleared on any explicit auth-view switch
+  // (goAuth) and on a successful sign-in (onAuthed).
+  const recoveryErrorRef = useRef(false);
   async function guarded(fn) {
     if (busyRef.current) return;
     busyRef.current = true;
@@ -2828,7 +2835,14 @@ function App() {
     // Phase 23: a dead recovery link used to leave the user on a blank landing page with a
     // cryptic "#error=access_denied..." in the URL. Route them to the "request a new link"
     // form with a plain-English message, and scrub the error params so a refresh is clean.
-    if (redirectClass.kind === "expired_link" || redirectClass.kind === "error") {
+    if (isRecoveryErrorRedirect(redirectClass)) {
+      // Phase 23A: mark that we DELIBERATELY routed to the expired/invalid recovery-link
+      // screen. Supabase's own init can then fire a spurious "SIGNED_OUT" (it tries to
+      // refresh a stale token from storage, gets a 400, and calls _removeSession ->
+      // notifies subscribers). Without this ref, the SIGNED_OUT handler's
+      // clearAllUserState() would run setScreen("landing") and silently drop the user
+      // onto the ordinary logged-out landing page with no explanation.
+      recoveryErrorRef.current = true;
       setScreen("login");
       setAuthView("forgot");
       setResetEmailSent(false);
@@ -2848,7 +2862,17 @@ function App() {
         // same internal init sequence getSession() awaits, so subscribing first avoids a race
         // where that event fires before anything is listening for it.
         const { data: sub } = supabase.auth.onAuthStateChange(async (event, newSession) => {
-          if (event === "SIGNED_OUT") { clearAllUserState(); return; }
+          if (event === "SIGNED_OUT") {
+            // Phase 23A: a SIGNED_OUT that fires as a side effect of Supabase failing to
+            // recover a stale session at startup must NOT navigate away from the
+            // expired/invalid password-reset screen we deliberately routed to (see
+            // recoveryErrorRef where it is set). Still clear per-user in-memory state
+            // for hygiene — only the screen navigation is suppressed. A user-initiated
+            // sign-out (handleSignOut) always has recoveryErrorRef.current === false and
+            // is unaffected.
+            clearAllUserState({ keepAuthScreen: suppressLandingRedirectOnSignedOut(recoveryErrorRef.current) });
+            return;
+          }
           // ROOT-CAUSE FIX (2026-08-21, round 2): live testing showed the app landing straight in
           // the dashboard after clicking a real recovery link, instead of the "set new password"
           // screen. Cause: Supabase doesn't reliably fire the distinct "PASSWORD_RECOVERY" event —
@@ -2886,6 +2910,8 @@ function App() {
   }, []);
 
   async function onAuthed(newSession) {
+    // Phase 23A: a real, successful auth session ends any expired-recovery-link state.
+    recoveryErrorRef.current = false;
     setSession(newSession);
     const authUser = newSession.user;
     try {
@@ -2918,7 +2944,10 @@ function App() {
     }
   }
 
-  function clearAllUserState() {
+  // Phase 23A: `keepAuthScreen` (default false) suppresses the setScreen("landing") at the
+  // end — used only when a spurious startup SIGNED_OUT must not blow away the deliberate
+  // expired/invalid recovery-link screen. All the per-user in-memory resets still run.
+  function clearAllUserState({ keepAuthScreen = false } = {}) {
     setUser(null); setSession(null); setPerf(null); setInterviewList([]); setClassroom([]);
     setQuestionHistory([]); setMemoryLog([]); setAcAttempts([]); setApplicationId(null);
     setApplications([]);
@@ -2945,7 +2974,7 @@ function App() {
     // previous user's pasted invitation email (which may contain personal information — §17)
     // sitting in memory.
     setBuildMethod("jdcv"); setInvitationText(""); setInvitationDraft(null); setInvitationOriginal(null); setScanMix({ technical: false, behavioural: false, motivational: false });
-    setScreen("landing");
+    if (!keepAuthScreen) setScreen("landing");
   }
 
   async function handleSignUp() {
@@ -5338,7 +5367,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
       {screen === "login" && (() => {
         // Phase 23: one place to reset the auth sub-state when switching views, so a stale
         // error / success banner / in-flight flag never bleeds across signin↔signup↔forgot.
-        const goAuth = (view) => { setError(""); setAuthNotice(""); setResetEmailSent(false); setAuthBusy(false); setAuthView(view); };
+        const goAuth = (view) => { recoveryErrorRef.current = false; setError(""); setAuthNotice(""); setResetEmailSent(false); setAuthBusy(false); setAuthView(view); };
         return (
         <div className="jr-fade" style={{ maxWidth: 420, margin: "0 auto", padding: "72px 24px" }}>
           {authView === "signup" && (

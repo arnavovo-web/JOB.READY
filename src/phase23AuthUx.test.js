@@ -118,7 +118,8 @@ describe("Phase 23 FIX 2 — invalid / expired recovery link", () => {
   it("the auth effect classifies the redirect and routes a dead link to a recoverable state", () => {
     const eff = SRC.slice(SRC.indexOf("/* ---------------- AUTH (real Supabase Auth) ---------------- */"), SRC.indexOf("async function onAuthed("));
     expect(eff).toMatch(/classifyAuthRedirect\(window\.location\.hash, window\.location\.search\)/);
-    expect(eff).toMatch(/redirectClass\.kind === "expired_link" \|\| redirectClass\.kind === "error"/);
+    // Phase 23A: the expired/error branch is now gated by isRecoveryErrorRedirect()
+    expect(eff).toMatch(/isRecoveryErrorRedirect\(redirectClass\)/);
     expect(eff).toMatch(/setAuthView\("forgot"\)/);
     expect(eff).toMatch(/expiredLinkMessage\(\)/);
     // scrub the error params so a refresh is clean (no blank screen / raw error left in the URL)

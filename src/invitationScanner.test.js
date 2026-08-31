@@ -339,7 +339,7 @@ describe("navigation and state hygiene", () => {
   });
 
   it("clearAllUserState resets the invitation-scanner state on sign-out — a pasted email may contain personal information (§17)", () => {
-    const clearSrc = extractFunctionSource("function clearAllUserState() {", "async function handleSignUp()");
+    const clearSrc = extractFunctionSource("function clearAllUserState(", "async function handleSignUp()");
     expect(clearSrc).toMatch(/setInvitationText\(""\)/);
     expect(clearSrc).toMatch(/setInvitationDraft\(null\)/);
     expect(clearSrc).toMatch(/setBuildMethod\("jdcv"\)/);

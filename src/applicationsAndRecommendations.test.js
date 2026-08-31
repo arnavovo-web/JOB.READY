@@ -248,7 +248,7 @@ describe("dbGetApplicationDocuments filters by user_id in addition to RLS (STRUC
 /* ============================== sign-out hygiene (STRUCTURAL) ============================== */
 describe("clearAllUserState resets applications on sign-out (STRUCTURAL — ownership hygiene)", () => {
   it("resets applications, same as every other per-user field", () => {
-    const CLEAR_SRC = extractFunctionSource("function clearAllUserState()", "async function handleSignUp()");
+    const CLEAR_SRC = extractFunctionSource("function clearAllUserState(", "async function handleSignUp()");
     expect(CLEAR_SRC).toMatch(/setApplications\(\[\]\)/);
   });
 });

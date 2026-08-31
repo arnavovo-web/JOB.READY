@@ -132,7 +132,7 @@ describe("returning-user Continue preparing surface", () => {
     expect(CARD).toMatch(/continuePreparing\.kind === "resume_module" \? "Continue learning" : "Start learning"/);
   });
   it("sign-out clears the new state", () => {
-    const CLEAR = fn("function clearAllUserState()", "async function handleSignUp");
+    const CLEAR = fn("function clearAllUserState(", "async function handleSignUp");
     expect(CLEAR).toMatch(/setDevelopmentModules\(\[\]\); setModuleProgress\(\[\]\); setPendingReportSave\(null\); setPendingModuleSave\(null\)/);
   });
 });
