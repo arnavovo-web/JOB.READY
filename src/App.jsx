@@ -124,17 +124,98 @@ const TOKENS = `
     --radius:14px; --radius-sm:8px;
     --shadow-sm: 0 1px 2px rgba(16,24,40,0.06); --shadow-md: 0 4px 16px rgba(16,24,40,0.08); --shadow-lg: 0 12px 32px rgba(16,24,40,0.12);
     --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+
+    /* ---- Phase 26: shared design foundation (ADDITIVE — nothing above changed) ---- */
+    /* Surfaces */
+    --surface: var(--card);            /* raised surface (semantic alias of --card) */
+    --surface-sunken: #F1F5F9;         /* flat / inset section, no border, no shadow */
+    /* Status tints (consolidates the scattered pale hexes used ad-hoc across screens) */
+    --tint-success:#E7F8F1; --tint-warning:#FEF3E2; --tint-error:#FEF2F2; --tint-info:#EFF4FF; --tint-neutral:#F1F5F9;
+    --tint-success-fg:#0B7A57; --tint-warning-fg:#9A5B08; --tint-error-fg:var(--bad); --tint-info-fg:var(--blue-dark);
+    --track:#EEF2F7;                   /* progress-bar / meter track */
+    /* Radius scale (new tokens; --radius / --radius-sm above are untouched for existing screens) */
+    --r-xs:6px; --r-sm:10px; --r-md:12px; --r-lg:16px; --r-pill:999px;
+    /* Motion */
+    --dur-fast:120ms; --dur:180ms; --ease:cubic-bezier(.4,0,.2,1);
+    /* Focus */
+    --focus-ring: 0 0 0 3px var(--highlight);
   }
-  .jr-btn{ transition: transform .12s ease, box-shadow .12s ease, background .12s ease; }
+
+  html, body{ margin:0; }
+  body{ color:var(--text); background:var(--bg); -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale; text-rendering:optimizeLegibility; }
+
+  .jr-btn{ transition: transform var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease); }
   .jr-btn:hover{ transform: translateY(-1px); box-shadow: var(--shadow-md); }
   .jr-btn:active{ transform: translateY(0); }
-  .jr-card{ transition: box-shadow .15s ease, transform .15s ease; }
+  .jr-btn:disabled{ opacity:.55; box-shadow:none; transform:none; cursor:not-allowed; }
+  .jr-btn:focus-visible{ outline:2px solid var(--blue); outline-offset:2px; }
+  .jr-card{ transition: box-shadow var(--dur) var(--ease), transform var(--dur) var(--ease), border-color var(--dur) var(--ease); }
   .jr-card:hover{ box-shadow: var(--shadow-md); }
+  .jr-card-interactive{ cursor:pointer; }
+  .jr-card-interactive:hover{ box-shadow: var(--shadow-md); transform: translateY(-1px); }
+  .jr-card-interactive:focus-visible{ outline:2px solid var(--blue); outline-offset:2px; }
   .jr-fade{ animation: jrFade .35s ease both; }
   @keyframes jrFade{ from{ opacity:0; transform: translateY(6px);} to{opacity:1; transform:translateY(0);} }
   .jr-bar{ transition: width 0.7s cubic-bezier(.4,0,.2,1); }
   input:focus, textarea:focus, select:focus{ outline:none; border-color: var(--blue) !important; box-shadow: 0 0 0 3px var(--highlight); }
   button:focus-visible, a:focus-visible{ outline: 2px solid var(--blue); outline-offset: 2px; }
+
+  /* Phase 26: shared visual primitives (typography, inputs, status, layout). */
+  /* OPT-IN classes: existing screens are unaffected until a later phase adopts */
+  /* them. The shared React components use them now so the foundation is real. */
+  /* Every selector below is a plain class or state selector so the Phase 2H */
+  /* CSS-utility guard parses it as a well-formed rule. */
+  .jr-input, .jr-pwfield, .jr-alert, .jr-badge, .jr-page, .jr-page-header, .jr-empty, .jr-empty-icon{ box-sizing:border-box; }
+
+  .jr-h1{ font-size:clamp(22px,3vw,28px); font-weight:800; letter-spacing:-0.02em; line-height:1.15; color:var(--navy); margin:0; }
+  .jr-h2{ font-size:18px; font-weight:700; letter-spacing:-0.01em; line-height:1.3; color:var(--navy); margin:0; }
+  .jr-h3{ font-size:15px; font-weight:700; line-height:1.4; color:var(--navy); margin:0; }
+  .jr-text{ font-size:14.5px; line-height:1.55; color:var(--text-dim); margin:0; }
+  .jr-text-sm{ font-size:13px; line-height:1.5; color:var(--text-dim); margin:0; }
+  .jr-label{ font-size:13px; font-weight:600; color:var(--text); }
+  .jr-help{ font-size:12.5px; line-height:1.5; color:var(--text-dim); }
+  .jr-meta{ font-size:12px; font-weight:600; letter-spacing:.04em; text-transform:uppercase; color:var(--text-faint); }
+
+  .jr-input{ width:100%; padding:11px 14px; font-family:var(--font); font-size:14.5px; color:var(--text); background:var(--surface); border:1.5px solid var(--border); border-radius:var(--r-sm); transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease); }
+  .jr-input:focus{ outline:none; border-color:var(--blue); box-shadow:var(--focus-ring); }
+  .jr-input:disabled{ background:var(--surface-sunken); color:var(--text-faint); cursor:not-allowed; }
+  .jr-input::placeholder{ color:var(--text-faint); }
+  .jr-textarea{ line-height:1.55; resize:vertical; min-height:120px; display:block; }
+  .jr-select{ appearance:none; -webkit-appearance:none; padding-right:38px; cursor:pointer; background-repeat:no-repeat; background-position:right 12px center; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%2394A3B8' stroke-width='2' fill='none' stroke-linecap='round'/%3E%3C/svg%3E"); }
+
+  .jr-pwfield{ display:flex; align-items:stretch; width:100%; background:var(--surface); border:1.5px solid var(--border); border-radius:var(--r-sm); overflow:hidden; transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease); }
+  .jr-pwfield:focus-within{ border-color:var(--blue); box-shadow:var(--focus-ring); }
+  .jr-pwfield input{ flex:1; min-width:0; border:none; background:transparent; padding:11px 14px; font-family:var(--font); font-size:14.5px; color:var(--text); }
+  .jr-pwfield input:focus{ outline:none; border:none; box-shadow:none; }
+  .jr-pwtoggle{ flex-shrink:0; width:44px; display:flex; align-items:center; justify-content:center; background:transparent; border:none; border-left:1px solid var(--border); color:var(--text-faint); cursor:pointer; transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease); }
+  .jr-pwtoggle:hover{ background:var(--surface-sunken); color:var(--text-dim); }
+
+  .jr-alert{ display:flex; gap:10px; align-items:flex-start; padding:12px 14px; border-radius:var(--r-md); font-size:13px; line-height:1.5; border:1px solid transparent; }
+  .jr-alert-icon{ flex-shrink:0; margin-top:1px; }
+  .jr-alert-success{ background:var(--tint-success); color:var(--tint-success-fg); border-color:#BBEBD9; }
+  .jr-alert-warning{ background:var(--tint-warning); color:var(--tint-warning-fg); border-color:#F5D9AE; }
+  .jr-alert-error{ background:var(--tint-error); color:var(--tint-error-fg); border-color:#F6C9C9; }
+  .jr-alert-info{ background:var(--tint-info); color:var(--tint-info-fg); border-color:#CBDBFF; }
+
+  .jr-badge{ display:inline-flex; align-items:center; gap:5px; font-size:12px; font-weight:600; padding:3px 9px; border-radius:var(--r-pill); line-height:1.4; }
+  .jr-badge-dot{ width:6px; height:6px; border-radius:var(--r-pill); background:currentColor; }
+  .jr-badge-success{ background:var(--tint-success); color:var(--tint-success-fg); }
+  .jr-badge-warning{ background:var(--tint-warning); color:var(--tint-warning-fg); }
+  .jr-badge-error{ background:var(--tint-error); color:var(--tint-error-fg); }
+  .jr-badge-info{ background:var(--tint-info); color:var(--tint-info-fg); }
+  .jr-badge-neutral{ background:var(--tint-neutral); color:var(--text-dim); }
+
+  .jr-page{ width:100%; max-width:960px; margin:0 auto; padding:clamp(28px,5vw,44px) clamp(16px,4vw,24px); }
+  .jr-page-narrow{ max-width:560px; }
+  .jr-page-wide{ max-width:1160px; }
+  .jr-page-header{ display:flex; align-items:flex-start; justify-content:space-between; gap:16px; margin-bottom:24px; }
+  .jr-page-header-text{ min-width:0; }
+  .jr-section{ margin-bottom:28px; }
+  .jr-empty{ display:flex; flex-direction:column; align-items:center; text-align:center; gap:6px; padding:40px 24px; }
+  .jr-empty-icon{ display:flex; align-items:center; justify-content:center; width:44px; height:44px; border-radius:var(--r-md); background:var(--surface-sunken); color:var(--text-faint); margin-bottom:6px; }
+  @media (max-width:600px){
+    .jr-page-header{ flex-direction:column; align-items:stretch; }
+  }
 
   /* ---------------------------------------------------------------- *
    * Phase 2H: layout utility classes.
@@ -2131,24 +2212,40 @@ function JobReadyLogo({ variant = "full", background = "light", size = 28 }) {
 /* ================================================================== */
 /* SHARED UI PRIMITIVES                                                 */
 /* ================================================================== */
-function Btn({ children, onClick, disabled, variant = "primary", style, full }) {
-  const base = { fontFamily: "var(--font)", fontSize: 14.5, fontWeight: 600, border: "none", cursor: disabled ? "not-allowed" : "pointer", padding: "12px 22px", borderRadius: "var(--radius-sm)", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8, width: full ? "100%" : "auto" };
+function Btn({ children, onClick, disabled, variant = "primary", style, full, className }) {
+  // Phase 26: disabled styling is now the shared `.jr-btn:disabled{ opacity:.55 }`
+  // rule (applies to every variant consistently) instead of a per-variant colour
+  // swap; radius uses the consolidated `--r-sm`; a `danger` variant + an optional
+  // `className` pass-through were added. Padding, the four existing variants and
+  // the click/disabled handlers are unchanged.
+  const base = { fontFamily: "var(--font)", fontSize: 14.5, fontWeight: 600, border: "none", cursor: disabled ? "not-allowed" : "pointer", padding: "12px 22px", borderRadius: "var(--r-sm)", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8, width: full ? "100%" : "auto" };
   const variants = {
-    primary: { background: disabled ? "#CBD5E1" : "var(--navy)", color: "#fff" },
-    accent: { background: disabled ? "#CBD5E1" : "var(--blue)", color: "#fff" },
+    primary: { background: "var(--navy)", color: "#fff" },
+    accent: { background: "var(--blue)", color: "#fff" },
     secondary: { background: "#fff", color: "var(--navy)", border: "1.5px solid var(--border)" },
     ghost: { background: "transparent", color: "var(--text-dim)" },
+    danger: { background: "var(--bad)", color: "#fff" },
   };
-  return <button className="jr-btn" onClick={onClick} disabled={disabled} style={{ ...base, ...variants[variant], ...style }}>{children}</button>;
+  return <button className={className ? "jr-btn " + className : "jr-btn"} onClick={onClick} disabled={disabled} style={{ ...base, ...(variants[variant] || variants.primary), ...style }}>{children}</button>;
 }
 
-function Card({ children, style, hover = true, onClick }) {
+function Card({ children, style, hover = true, onClick, variant, className }) {
+  // Phase 26: presentation-only additions — an optional `variant`
+  // ("elevated" | "sunken") and `className` pass-through, plus the shared
+  // `.jr-card-interactive` hover/focus treatment when the card is clickable.
+  // The default surface (background / border / radius / shadow), the hover
+  // transition and the keyboard handler are all unchanged.
   const interactive = typeof onClick === "function";
+  const classes = [hover ? "jr-card" : "", interactive ? "jr-card-interactive" : "", className || ""].filter(Boolean).join(" ");
+  const variantStyle =
+    variant === "elevated" ? { boxShadow: "var(--shadow-lg)" }
+    : variant === "sunken" ? { background: "var(--surface-sunken)", border: "1px solid transparent", boxShadow: "none" }
+    : null;
   return (
-    <div className={hover ? "jr-card" : ""} onClick={onClick}
+    <div className={classes || undefined} onClick={onClick}
       role={interactive ? "button" : undefined} tabIndex={interactive ? 0 : undefined}
       onKeyDown={interactive ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onClick(e); } } : undefined}
-      style={{ background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--radius)", boxShadow: "var(--shadow-sm)", ...style }}>
+      style={{ background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--radius)", boxShadow: "var(--shadow-sm)", ...variantStyle, ...style }}>
       {children}
     </div>
   );
@@ -2171,10 +2268,6 @@ function Pill({ children, color = "var(--blue)", bg = "var(--highlight)" }) {
   return <span style={{ fontFamily: "var(--font)", fontSize: 12, fontWeight: 600, color, background: bg, padding: "4px 11px", borderRadius: 999, display: "inline-block" }}>{children}</span>;
 }
 
-// Phase 23: shared base style for the auth text/password inputs (mirrors the
-// per-App `inputStyle`; kept at module scope so PasswordInput can use it).
-const AUTH_INPUT_STYLE = { width: "100%", padding: "11px 13px", border: "1.5px solid var(--border)", borderRadius: "var(--radius-sm)", fontSize: 14 };
-
 // Phase 23: a password field with its OWN independent show/hide toggle.
 // Toggling flips ONLY the <input type> (password <-> text) via
 // passwordInputType() — `value`/`onChange` pass straight through, so the typed
@@ -2184,11 +2277,16 @@ const AUTH_INPUT_STYLE = { width: "100%", padding: "11px 13px", border: "1.5px s
 // field so it is usable on desktop and mobile. Nothing here logs, stores or
 // copies the password. Each rendered instance holds its own `visible` state,
 // so multiple password fields on one screen toggle independently.
+//
+// Phase 26: the markup now uses the shared `.jr-pwfield` composite (input +
+// inline toggle button) from TOKENS so the auth password fields match the
+// global input foundation. Behaviour, state and the accessibility contract
+// are byte-for-byte the same as Phase 23.
 function PasswordInput({ id, value, onChange, onKeyDown, autoComplete, placeholder, style }) {
   const [visible, setVisible] = useState(false);
   const label = visibilityToggleLabel(visible);
   return (
-    <div style={{ position: "relative", ...style }}>
+    <div className="jr-pwfield" style={style}>
       <input
         id={id}
         type={passwordInputType(visible)}
@@ -2197,24 +2295,105 @@ function PasswordInput({ id, value, onChange, onKeyDown, autoComplete, placehold
         onChange={onChange}
         onKeyDown={onKeyDown}
         placeholder={placeholder}
-        style={{ ...AUTH_INPUT_STYLE, paddingRight: 44, display: "block" }}
       />
       <button
         type="button"
+        className="jr-pwtoggle"
         onClick={() => setVisible((v) => !v)}
         aria-label={label}
         aria-pressed={visible}
         title={label}
-        style={{
-          position: "absolute", top: 0, right: 0, height: "100%", width: 40,
-          display: "flex", alignItems: "center", justifyContent: "center",
-          background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--text-faint)",
-        }}
       >
         {visible ? <EyeOff size={16} aria-hidden="true" /> : <Eye size={16} aria-hidden="true" />}
       </button>
     </div>
   );
+}
+
+/* ================================================================== */
+/* PHASE 26 — SHARED FOUNDATION COMPONENTS                             */
+/* ------------------------------------------------------------------ */
+/* Opt-in, presentation-only building blocks for the progressive      */
+/* redesign. No data, no side effects, no behaviour, no handlers of    */
+/* their own. Feature screens are NOT rewired to these in this phase — */
+/* they exist so the design language is real and adoptable one screen  */
+/* at a time later. All visuals come from the `.jr-*` classes in       */
+/* TOKENS above.                                                       */
+/* ================================================================== */
+
+// Inline status / feedback notice (success | warning | error | info).
+function Alert({ variant = "info", title, children, style }) {
+  const Icon = variant === "success" ? CheckCircle2 : variant === "error" ? XCircle : AlertCircle;
+  return (
+    <div className={"jr-alert jr-alert-" + variant} role="note" style={style}>
+      <Icon className="jr-alert-icon" size={16} aria-hidden="true" />
+      <div>
+        {title ? <strong style={{ display: "block", marginBottom: children ? 2 : 0 }}>{title}</strong> : null}
+        {children ? <span>{children}</span> : null}
+      </div>
+    </div>
+  );
+}
+
+// Small status chip (success | warning | error | info | neutral), optional leading dot.
+function StatusBadge({ variant = "neutral", children, dot = false }) {
+  return (
+    <span className={"jr-badge jr-badge-" + variant}>
+      {dot ? <span className="jr-badge-dot" aria-hidden="true" /> : null}
+      {children}
+    </span>
+  );
+}
+
+// Page title + optional subtitle with a right-aligned action slot (stacks on mobile).
+function PageHeader({ title, subtitle, actions, titleClassName }) {
+  return (
+    <div className="jr-page-header">
+      <div className="jr-page-header-text">
+        <h1 className={titleClassName || "jr-h1"}>{title}</h1>
+        {subtitle ? <p className="jr-text" style={{ marginTop: 6 }}>{subtitle}</p> : null}
+      </div>
+      {actions ? <div className="flex items-center gap-2">{actions}</div> : null}
+    </div>
+  );
+}
+
+// Centered empty / zero-data state.
+function EmptyState({ icon, title, children, action }) {
+  const Icon = icon || Sparkles;
+  return (
+    <div className="jr-empty">
+      <span className="jr-empty-icon"><Icon size={20} aria-hidden="true" /></span>
+      <h3 className="jr-h3">{title}</h3>
+      {children ? <p className="jr-text-sm" style={{ maxWidth: 360 }}>{children}</p> : null}
+      {action ? <div style={{ marginTop: 10 }}>{action}</div> : null}
+    </div>
+  );
+}
+
+// Labelled form-field wrapper: label + control (children) + hint OR error text.
+function Field({ label, htmlFor, hint, error, children }) {
+  return (
+    <div style={{ marginBottom: 14 }}>
+      {label ? <label htmlFor={htmlFor} className="jr-label" style={{ display: "block", marginBottom: 6 }}>{label}</label> : null}
+      {children}
+      {error
+        ? <div className="jr-help" style={{ color: "var(--bad)", marginTop: 5 }}>{error}</div>
+        : hint ? <div className="jr-help" style={{ marginTop: 5 }}>{hint}</div> : null}
+    </div>
+  );
+}
+
+// Thin wrappers that apply the shared input foundation. Every other prop
+// (onChange, value, disabled, placeholder, rows, …) passes straight through.
+function TextInput({ id, value, onChange, ...rest }) {
+  return <input id={id} className="jr-input" value={value} onChange={onChange} {...rest} />;
+}
+function Textarea({ id, value, onChange, ...rest }) {
+  return <textarea id={id} className="jr-input jr-textarea" value={value} onChange={onChange} {...rest} />;
+}
+function Select({ id, value, onChange, children, ...rest }) {
+  return <select id={id} className="jr-input jr-select" value={value} onChange={onChange} {...rest}>{children}</select>;
 }
 
 function ScoreBar({ label, value, max = 100, color }) {
@@ -4968,7 +5147,13 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
     .map((c) => ({ ...c, delta: c.history[c.history.length - 1] - c.history[0] }))
     .sort((a, b) => b.delta - a.delta)[0];
   const dnaPriority = dnaWeaknesses[0];
-  const inputStyle = { width: "100%", padding: "11px 13px", border: "1.5px solid var(--border)", borderRadius: "var(--radius-sm)", fontSize: 14 };
+  // Phase 26: aligned with the shared `.jr-input` foundation — border-box (so a
+  // full-width input never overflows its card on narrow screens), the
+  // consolidated `--r-sm` radius, and explicit font-family / colour / surface so
+  // inputs render identically everywhere. Field dimensions are effectively
+  // unchanged. Used by the job-application form, the CV wizard, invitation
+  // review and the Applied Coach home.
+  const inputStyle = { width: "100%", boxSizing: "border-box", padding: "11px 14px", border: "1.5px solid var(--border)", borderRadius: "var(--r-sm)", fontFamily: "var(--font)", fontSize: 14.5, color: "var(--text)", background: "var(--surface)" };
 
   // Phase 2G: deterministic, UI-facing summaries of Candidate Claims (Phase 2D/2F) — reuse
   // the SAME candidate_claims rows already hydrated once at login (candidateClaims), plus,
