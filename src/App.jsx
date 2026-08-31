@@ -28,7 +28,19 @@ import {
 import {
   QUESTION_MIX_OPTIONS, QUESTION_MIX_TYPES, normalizeQuestionMix, questionMixIsValid, questionMixRestricts,
   isTechnicalMixEnabled, applyQuestionMixToDistribution, resolveAllowedCategories, resolveOpeningCategory,
+  questionMixTypeForCategory,
 } from "./questionMix";
+// Phase 31: Technical Difficulty Control. A pure, deterministic layer (like
+// questionMix.js) that owns the Beginner/Intermediate/Advanced vocabulary, the
+// EXPLICIT per-level generation guidance injected into the real technical
+// question-generation prompts (adaptive per-turn, independent batch, technical
+// Assessment Centre exercises), the universal "realistic interview difficulty"
+// guard, and a deterministic invitation-derived suggestion (no new AI call).
+import {
+  TECHNICAL_DIFFICULTY_LEVELS, DEFAULT_TECHNICAL_DIFFICULTY, TECHNICAL_DIFFICULTY_META,
+  resolveTechnicalDifficulty, buildTechnicalDifficultyGuidance, TECHNICAL_REALISM_GUARD,
+  deriveTechnicalDifficultySignal,
+} from "./technicalDifficulty";
 // Phase 12: Interview Invitation Email Scanner — guided-setup resolution. Pure, deterministic
 // layer that decides which of the four mandatory identity fields (Company / Role / Stage /
 // Question Mix) the scanned email resolved, so the review screen asks only for what's missing,
@@ -1129,10 +1141,24 @@ export function buildQuestionGenerationPrompt(genInput, interview, profile, cand
   const knowledgeBlock = knowledgeGuidance
     ? `\nKNOWLEDGE GUIDANCE\nDomain: ${knowledgeGuidance.domainLabel}\nPriority concepts:\n${knowledgeGuidance.priorityConcepts.map((c, i) => `${i + 1}. ${c.label} — ${c.statusLabel}${c.reasons && c.reasons.length ? ` (${c.reasons.slice(0, 2).join("; ")})` : ""}`).join("\n")}\nCurrent target concept: ${knowledgeGuidance.targetConcept.label}\n${knowledgeGuidance.targetConcept.archetype}${misconceptionLine}\nAsk this as a natural, conversational interview question in your own words. Do not reveal this internal taxonomy or these labels to the candidate. Do not mechanically copy the wording above verbatim.`
     : "";
+  // Phase 31: explicit technical-difficulty calibration for the ONE question being
+  // generated this turn. Injected ONLY when BOTH hold: (a) the user's Question Mix
+  // permits technical questions at all (isTechnicalMixEnabled — the SAME gate the
+  // Knowledge Layer uses), and (b) THIS turn's category is a technical one
+  // (questionMixTypeForCategory === "technical" — never behavioural / motivational).
+  // The level is read straight off the already-persisted config, so it is identical
+  // for every turn of the interview and survives resume with no extra plumbing
+  // (reconstructInterviewState copies config wholesale). A legacy interview with no
+  // config.technical_difficulty resolves to the Intermediate default.
+  const technicalDifficultyBlock =
+    isTechnicalMixEnabled(interview?.config?.question_mix)
+    && questionMixTypeForCategory(gi.category) === "technical"
+      ? `\n${buildTechnicalDifficultyGuidance(interview?.config?.technical_difficulty)}`
+      : "";
   const system = `You are a real, professional interviewer conducting a live interview. You are NOT effusive or full of praise — you are neutral and probing. Return strict JSON only, no prose, in this exact shape:
 { "text": "", "competency": ""${anchorField} }
 ${directive} ${anchorNote}
-${competencyLine}${anchorSourceRule}${candidateNote}${knowledgeBlock}
+${competencyLine}${anchorSourceRule}${candidateNote}${knowledgeBlock}${technicalDifficultyBlock}
 Ask ONE natural, specific interview question — no preamble, no meta-commentary, no mention of "category" or "turn type". The category, question ordering, and overall structure of this interview are already decided elsewhere — you are only writing this one question's text (and, where asked, its competency label${isNormalTurn ? "/anchor source" : ""}).`;
 
   const contextLines = [
@@ -1914,6 +1940,13 @@ const EXERCISE_TYPES = [
   { key: "inbox", label: "Inbox Exercise", icon: Mail, blurb: "Prioritise a stack of competing tasks and justify your order.",
     competencies: ["Prioritisation", "Judgement", "Risk awareness", "Communication"] },
 ];
+// Phase 31 §9: the Assessment Centre exercises whose generated scenario is
+// analytically / technically difficulty-sensitive — the case study and the
+// written exercise. Only these expose the Beginner/Intermediate/Advanced step
+// before the exercise starts, and only these pass the level into scenario
+// generation. The behavioural / judgement exercises (group, presentation,
+// inbox) are deliberately left exactly as they were.
+const AC_TECHNICAL_EXERCISES = new Set(["case", "written"]);
 function slugify(s) { return s.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, ""); }
 
 /* ================================================================== *
@@ -2090,6 +2123,15 @@ function buildQuestionBatchPrompt(config, interviewProfile, cvBackground, jdText
   // always 0 for interview methodology (reserved for future Assessment
   // Centre / case-study work) and would only confuse the model.
   const compositionLine = `motivation ${num(md.motivation_fit)}%, behavioural ${num(md.behavioural_competency)}%, situational judgement ${num(md.situational_judgement)}%, technical/functional ${num(md.technical_functional)}%, commercial awareness ${num(md.commercial_awareness)}%`;
+  // Phase 31: explicit technical-difficulty calibration for this batch, scoped so it
+  // applies ONLY to questions the model marks "is_technical": true — non-technical
+  // questions in the same set are explicitly untouched. Included only when the user's
+  // Question Mix permits technical questions at all (same gate as the adaptive path);
+  // otherwise the composition already zeroes the technical categories and there is
+  // nothing to calibrate. The level is read straight off the persisted config.
+  const technicalDifficultyRule = isTechnicalMixEnabled(config.question_mix)
+    ? `\n- For every question you mark "is_technical": true (and ONLY those), apply this calibration — it does not apply to non-technical questions:\n${buildTechnicalDifficultyGuidance(config.technical_difficulty)}`
+    : "";
   const system = `You are an expert interview designer building a COMPLETE, FIXED set of independent interview questions for an asynchronous, one-way video interview (${stageLabel} — ${formatLabel}). Every question must be answerable entirely on its own, with zero dependency on any other question or its answer — this set is generated once, in full, before the candidate sees question 1, and none of it changes based on how they answer.
 
 Return strict JSON only, no prose, no markdown fences, in this exact shape:
@@ -2114,7 +2156,7 @@ Rules:
 - "anchor_source" describes what grounds the question: "cv" when it references a specific fact from the candidate's background below, "jd" when it's built directly from a specific requirement in the job description, "company" when it's grounded in company-specific context, or "generic" when it's a standard question for the category/competency with no specific anchor.
 - Only mark "is_technical": true, and only include a genuinely technical question, where THIS SPECIFIC role actually requires technical assessment at THIS stage. Do NOT include technical questions just because the role sounds finance-related or technical-sounding — judge from the actual job description, division, and stage. A recruiter/HR screen in particular should very rarely, if ever, include a technical question.
 - The candidate's background below is BACKGROUND CONTEXT ONLY, for light, natural personalisation (e.g. referencing something real they listed). Do NOT build any question that only makes sense given a specific expected answer to an earlier question — every question must be self-contained and independently gradable, with no chain: question 2 must not depend on how question 1 might be answered, question 3 must not depend on question 2, and so on for the entire set.
-- Vary categories and difficulty sensibly across the set rather than clustering.`;
+- Vary categories and difficulty sensibly across the set rather than clustering.${technicalDifficultyRule}`;
 
   const userText = `${weaknessNote}\n\nInterview stage: ${stageLabel}\nInterview format: ${formatLabel}\n\nInterview profile (from JD analysis): ${JSON.stringify(interviewProfile)}\n\nCandidate background (context only — do not chain questions off this): ${JSON.stringify(cvBackground)}\n\nJob description:\n${jdText}`;
   return { system, userText };
@@ -2356,6 +2398,53 @@ function LinkBtn({ children, onClick, style, ariaCurrent }) {
 
 function Pill({ children, color = "var(--blue)", bg = "var(--highlight)" }) {
   return <span style={{ fontFamily: "var(--font)", fontSize: 12, fontWeight: 600, color, background: bg, padding: "4px 11px", borderRadius: 999, display: "inline-block" }}>{children}</span>;
+}
+
+// Phase 31: the shared Beginner / Intermediate / Advanced control. One small,
+// non-noisy pill group used identically on the "Choose your interview" step, the
+// invitation review screen, and the technical Assessment Centre step. Each option
+// is a real <button> with aria-pressed (keyboard-focusable, announced), and the
+// selected state is conveyed by a check glyph + bold weight + a thicker border,
+// NOT by colour alone (Phase 31 §11). The one-line description of the selected
+// level renders directly below.
+function TechnicalDifficultyPicker({ value, onChange, ariaLabel = "Technical difficulty" }) {
+  const level = TECHNICAL_DIFFICULTY_LEVELS.includes(value) ? value : DEFAULT_TECHNICAL_DIFFICULTY;
+  return (
+    <div>
+      <div
+        role="group"
+        aria-label={ariaLabel}
+        style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}
+      >
+        {TECHNICAL_DIFFICULTY_LEVELS.map((lvl) => {
+          const meta = TECHNICAL_DIFFICULTY_META[lvl];
+          const on = level === lvl;
+          return (
+            <button
+              key={lvl}
+              type="button"
+              aria-pressed={on}
+              onClick={() => onChange(lvl)}
+              style={{
+                padding: "9px 6px", borderRadius: "var(--radius-sm)", whiteSpace: "nowrap",
+                fontSize: 12, fontWeight: on ? 800 : 600, cursor: "pointer", textAlign: "center",
+                border: on ? "2px solid var(--blue)" : "1.5px solid var(--border)",
+                background: on ? "var(--highlight)" : "#fff",
+                color: on ? "var(--blue)" : "var(--text-dim)",
+              }}
+            >
+              {/* selected state is carried by the check glyph + bold weight + thicker
+                  border, never by colour alone (Phase 31 §11) */}
+              {on ? "✓ " : ""}{meta.label}
+            </button>
+          );
+        })}
+      </div>
+      <div style={{ fontSize: 12.5, color: "var(--text-dim)", marginTop: 8, lineHeight: 1.5 }}>
+        {TECHNICAL_DIFFICULTY_META[level].description}
+      </div>
+    </div>
+  );
 }
 
 // Phase 23: a password field with its OWN independent show/hide toggle.
@@ -3085,6 +3174,11 @@ function App() {
   // never inferred from stage/role/JD. The user must pick >=1 before building.
   const [questionMix, setQuestionMix] = useState({ technical: false, behavioural: false, motivational: false });
   const questionMixSelected = normalizeQuestionMix(questionMix); // string[] | null
+  // Phase 31: technical difficulty for this interview. Only meaningful (and only shown)
+  // when the Question Mix includes Technical Knowledge. Defaults to Intermediate (§3);
+  // the user can always change it on the "Choose your interview" step before building.
+  // On an invitation build it is pre-filled from the scanner's suggestion (scanTechnicalDifficulty).
+  const [technicalDifficulty, setTechnicalDifficulty] = useState(DEFAULT_TECHNICAL_DIFFICULTY);
   const [jdText, setJdText] = useState("");
   const [cvText, setCvText] = useState("");
   const [focusWeaknesses, setFocusWeaknesses] = useState(false);
@@ -3126,6 +3220,13 @@ function App() {
   // motivational } boolean shape as the manual wizard's `questionMix`. Pre-ticked from the
   // scanner's recommendation, but always the user's explicit choice (Phase 11 principle).
   const [scanMix, setScanMix] = useState({ technical: false, behavioural: false, motivational: false });
+  // Phase 31 §6–§8: the invitation scanner's SUGGESTED technical difficulty and the
+  // signal it was derived from (deterministic — no extra AI call). Shown on the review
+  // screen as an editable pill group; the user's final choice here is carried into the
+  // wizard (setTechnicalDifficulty) and is what generation actually uses — the user is
+  // never silently locked into the recommendation.
+  const [scanTechnicalDifficulty, setScanTechnicalDifficulty] = useState(DEFAULT_TECHNICAL_DIFFICULTY);
+  const [scanTechnicalDifficultySignal, setScanTechnicalDifficultySignal] = useState(null);
 
   const [profile, setProfile] = useState(null);
   const [interview, setInterview] = useState(null);
@@ -3219,6 +3320,14 @@ function App() {
   const [acSubmission, setAcSubmission] = useState("");
   const [acResult, setAcResult] = useState(null);
   const [acAttempts, setAcAttempts] = useState([]);
+  // Phase 31 §9: the technical Assessment Centre exercises (AC_TECHNICAL_EXERCISES —
+  // case study + written exercise) expose a compact Beginner/Intermediate/Advanced
+  // step before the exercise starts. acPendingExercise holds the chosen exercise key
+  // while that step is on screen; acTechnicalDifficulty is the selected level (default
+  // Intermediate). Non-technical exercises (group / presentation / inbox) skip this
+  // entirely and start immediately, exactly as before.
+  const [acPendingExercise, setAcPendingExercise] = useState(null);
+  const [acTechnicalDifficulty, setAcTechnicalDifficulty] = useState(DEFAULT_TECHNICAL_DIFFICULTY);
 
   // Phase 4B: independent/batch (asynchronous video) interview engine.
   // asyncPhase: "prep" | "answering". asyncSecondsLeft: null = untimed phase, otherwise
@@ -4432,6 +4541,16 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
         behavioural: recommended.includes("behavioural"),
         motivational: recommended.includes("motivational"),
       });
+      // Phase 31 §6–§8: derive a SUGGESTED technical difficulty from what the existing
+      // invitation-analysis pipeline already produced (the parsed extraction) plus the
+      // raw pasted text and the role title — deterministic, no extra AI call, no web
+      // search. Weak / ambiguous evidence resolves to Intermediate and the review
+      // screen makes clear the user can change it (never a silent lock).
+      const diffSignal = deriveTechnicalDifficultySignal({
+        extraction, invitationText: clean, roleTitle: extraction.role,
+      });
+      setScanTechnicalDifficultySignal(diffSignal);
+      setScanTechnicalDifficulty(diffSignal.level);
       setScreen("invitation_review");
     } catch (e) {
       // Covers AI failure, malformed JSON (callClaude's own repair/parse already tried and
@@ -4504,6 +4623,11 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
         behavioural: canonical.config.question_mix.includes("behavioural"),
         motivational: canonical.config.question_mix.includes("motivational"),
       });
+      // Phase 31 §10: carry the user's chosen difficulty from the review screen into the
+      // wizard. The "Choose your interview" step then shows the Technical difficulty
+      // control pre-filled with it and still fully editable — so the value generation
+      // actually uses is the user's final choice, not merely the AI suggestion.
+      setTechnicalDifficulty(resolveTechnicalDifficulty(scanTechnicalDifficulty));
       setWizardStep(4); setScreen("create");
     } catch (e) {
       setError(e.message || "Couldn't save your application. Please try again.");
@@ -4567,6 +4691,16 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
       return;
     }
     ivConfig.question_mix = questionMixSelected; // string[] of "technical"|"behavioural"|"motivational"
+    // Phase 31 §10: persist the chosen technical difficulty onto the SAME config jsonb
+    // blob (additive, no migration — like question_mix / invitationContext / profile).
+    // Only written when the interview actually contains technical questions; a purely
+    // behavioural/motivational interview carries no difficulty signal at all, and
+    // buildQuestionGenerationPrompt / buildQuestionBatchPrompt only ever read it for a
+    // technical question anyway. It is fixed for the whole interview and survives resume
+    // (reconstructInterviewState copies config through unchanged).
+    if (questionMixSelected.includes("technical")) {
+      ivConfig.technical_difficulty = resolveTechnicalDifficulty(technicalDifficulty);
+    }
     try {
       const weaknessNote = targetTopic
         ? `The candidate came here specifically from a Classroom lesson to practise this exact weakness: "${targetTopic}". Weight the question plan heavily toward re-testing this specific competency — it should be tested more than once, with rising difficulty if the candidate does well.` +
@@ -4599,7 +4733,15 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
       const questionMixNote = questionMixRestricts(questionMixSelected)
         ? `\n\nThe candidate has restricted this interview to these question types ONLY: ${questionMixSelected.map((t) => QUESTION_MIX_PROMPT_LABEL[t]).join(", ")}. The "opening_question" you propose MUST be one of those types — do not open with a type the candidate excluded, even if it would be normal for this stage.`
         : "";
-      const userText = `${weaknessNote}\n\nCompany: ${cleanCompany}\nRole: ${cleanRole}\nInterview stage: ${stageLabel}\nInterview format: ${formatLabel}${invitationContext}${questionMixNote}\n\n${jdBlock}\n\nCandidate CV:\n${cleanCv || "none provided."}`;
+      // Phase 31 §4: when this interview includes technical questions, tell the SAME
+      // interview_profile call (no new AI call) the chosen technical difficulty so any
+      // technical "opening_question" and the "technical_topics" it lists are pitched at
+      // that level, plus the universal realism guard. Context only — the per-turn and
+      // batch prompts are where the level is fully enforced.
+      const technicalDifficultyNote = questionMixSelected.includes("technical")
+        ? `\n\nTechnical difficulty for this interview: ${resolveTechnicalDifficulty(technicalDifficulty).toUpperCase()}. Any technical "opening_question" and the "technical_topics" you list must match that level. ${TECHNICAL_REALISM_GUARD}`
+        : "";
+      const userText = `${weaknessNote}\n\nCompany: ${cleanCompany}\nRole: ${cleanRole}\nInterview stage: ${stageLabel}\nInterview format: ${formatLabel}${invitationContext}${questionMixNote}${technicalDifficultyNote}\n\n${jdBlock}\n\nCandidate CV:\n${cleanCv || "none provided."}`;
       const result = validateProfile(await callClaude(system, userText, 6000, false, { requestType: "interview_profile", applicationId }));
       // Phase 21: verify every "cv"-sourced candidate_profile item's evidence_quote
       // verbatim against the real CV text (validateProfile had no CV to check).
@@ -5298,10 +5440,12 @@ Rules: scores computed honestly from the transcript's evaluations. Never fabrica
   function resetForNewInterview() {
     setCompany(""); setRole(""); setJdText(""); setCvText(""); setInterviewStage("first_round"); setInterviewFormat(null); setLength(12);
     setQuestionMix({ technical: false, behavioural: false, motivational: false }); // Phase 11: always an explicit choice
+    setTechnicalDifficulty(DEFAULT_TECHNICAL_DIFFICULTY); // Phase 31: back to the Intermediate default
     setProfile(null); setInterview(null); setReport(null); setError(""); setFocusWeaknesses(false); setWizardStep(1); setApplicationId(null);
     // Phase 7: same entry point as Dashboard's "New interview" (startCreateFlow) — offers the
     // same choice of input method rather than assuming JD/CV.
     setBuildMethod("jdcv"); setInvitationText(""); setInvitationDraft(null); setInvitationOriginal(null); setScanMix({ technical: false, behavioural: false, motivational: false });
+    setScanTechnicalDifficulty(DEFAULT_TECHNICAL_DIFFICULTY); setScanTechnicalDifficultySignal(null); // Phase 31
     setScreen("create_choose");
   }
 
@@ -5323,6 +5467,7 @@ Rules: scores computed honestly from the transcript's evaluations. Never fabrica
   /* ---------------- ASSESSMENT CENTRE ---------------- */
   function startAssessmentCentre(type) {
     setAcType(type); setAcSubmission(""); setAcResult(null); setError("");
+    setAcPendingExercise(null); // Phase 31: clear the pre-start difficulty step
     generateAcScenario(type);
   }
 
@@ -5344,11 +5489,23 @@ Rules: scores computed honestly from the transcript's evaluations. Never fabrica
       const cfg = EXERCISE_TYPES.find((t) => t.key === type);
       const priorAttempts = acAttempts.filter((a) => a.type === type);
       const priorAvg = priorAttempts.length ? Math.round(priorAttempts.reduce((s, a) => s + a.overall_score, 0) / priorAttempts.length) : null;
+      // Phase 31 §9: for the technical exercises only (case study / written exercise),
+      // the user's chosen Beginner/Intermediate/Advanced level is passed EXPLICITLY into
+      // scenario generation and genuinely shapes the exercise — it is not merely stored.
+      // Non-technical exercises get no difficulty block at all (unchanged behaviour).
+      const acIsTechnical = AC_TECHNICAL_EXERCISES.has(type);
+      const acLevel = acIsTechnical ? resolveTechnicalDifficulty(acTechnicalDifficulty) : null;
+      const technicalDifficultyBlock = acIsTechnical
+        ? `\n${buildTechnicalDifficultyGuidance(acLevel)}`
+        : "";
       const system = `You design realistic graduate assessment-centre exercises. Return strict JSON only, no prose:
 { "title": "", "brief": "", "objective": "", "materials": [""], "suggested_time_minutes": 15 }
-Rules: ground it in the specific company and role given, for a "${cfg.label}" exercise. materials should be short concrete bullets (documents, data points, or — for an inbox exercise — the individual inbox items themselves, each one bullet with sender/subject/gist and no explicit urgency label, since judging urgency is the point of the exercise). Calibrate difficulty${priorAvg !== null ? ` — the candidate averaged ${priorAvg}/100 on this exercise type before, so ${priorAvg >= 75 ? "raise the difficulty a notch" : priorAvg < 50 ? "keep it approachable" : "keep it moderately challenging"}` : " for a first attempt: realistic but approachable"}.`;
+Rules: ground it in the specific company and role given, for a "${cfg.label}" exercise. materials should be short concrete bullets (documents, data points, or — for an inbox exercise — the individual inbox items themselves, each one bullet with sender/subject/gist and no explicit urgency label, since judging urgency is the point of the exercise). Calibrate difficulty${priorAvg !== null ? ` — the candidate averaged ${priorAvg}/100 on this exercise type before, so ${priorAvg >= 75 ? "raise the difficulty a notch" : priorAvg < 50 ? "keep it approachable" : "keep it moderately challenging"}` : " for a first attempt: realistic but approachable"}.${technicalDifficultyBlock}`;
       const userText = `Exercise type: ${cfg.label}\nCompany: ${sanitizeText(acCompany)}\nRole: ${sanitizeText(acRole)}\nCandidate level: ${candidateLevel()}\nKnown weaknesses to weave in naturally where relevant: ${(perf?.weaknesses || []).join("; ") || "none yet"}`;
       const result = validateAcScenario(await callClaude(system, userText, 1400, false, { requestType: "assessment_centre_scenario", applicationId }));
+      // Carry the chosen level on the scenario object so it is persisted with the attempt
+      // (assessment_attempts.scenario jsonb — no schema change) and visible on the scorecard.
+      if (acLevel) result.technical_difficulty = acLevel;
       setAcScenario(result);
       setScreen("ac_exercise");
     } catch (e) {
@@ -6806,6 +6963,20 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                   )}
                 </div>
 
+                {/* Phase 31 §2/§11: revealed ONLY when Technical Knowledge is selected. Sits
+                    directly under Question Mix as another labelled sub-section of this same
+                    card — no new card, no nested container. Hidden entirely (no gap) for a
+                    non-technical interview, and it never affects non-technical generation. */}
+                {questionMix.technical && (
+                  <div style={{ marginBottom: 16 }}>
+                    <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Technical difficulty</label>
+                    <div style={{ fontSize: 12.5, color: "var(--text-dim)", marginTop: 2, marginBottom: 8 }}>
+                      Choose the level that best matches your interview.
+                    </div>
+                    <TechnicalDifficultyPicker value={technicalDifficulty} onChange={setTechnicalDifficulty} />
+                  </div>
+                )}
+
                 <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Length</label>
                 <div className="flex gap-2 mt-2">
                   {[["Short", 8], ["Standard", 12], ["Long", 18]].map(([l, v]) => (
@@ -7038,6 +7209,28 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                 </div>
               )}
             </Card>
+
+            {/* Phase 31 §6: when the scan points to a technical interview, surface a
+                SUGGESTED technical difficulty prominently — as an editable pill group,
+                never a locked choice. The user's selection here is carried into the
+                wizard and is what generation uses. */}
+            {scanMix.technical && (
+              <Card style={{ padding: 24, marginBottom: 16 }}>
+                <div className="flex items-center gap-2" style={{ marginBottom: 4 }}>
+                  <Sparkles size={14} color="var(--blue)" aria-hidden="true" />
+                  <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Suggested technical difficulty</label>
+                </div>
+                <div style={{ fontSize: 12.5, color: "var(--text-dim)", marginTop: 2, marginBottom: 10, lineHeight: 1.5 }}>
+                  {scanTechnicalDifficultySignal && scanTechnicalDifficultySignal.confidence !== "weak"
+                    ? scanTechnicalDifficultySignal.rationale
+                    : "Based on the interview invitation, role and available application information."}
+                </div>
+                <TechnicalDifficultyPicker value={scanTechnicalDifficulty} onChange={setScanTechnicalDifficulty} />
+                <div className="flex items-center gap-2" style={{ fontSize: 12, color: "var(--text-faint)", marginTop: 10 }}>
+                  <Sparkles size={12} aria-hidden="true" /> Recommended based on your invitation — you can change this before continuing.
+                </div>
+              </Card>
+            )}
 
             {(formatDisplayLabel || invitationDraft.duration_minutes > 0) && (
               <Card style={{ padding: 18, marginBottom: 16 }}>
@@ -8221,8 +8414,15 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
             {EXERCISE_TYPES.map((t) => {
               const Icon = t.icon;
               const enabled = acCompany.trim() && acRole.trim();
+              // Phase 31 §9: the technical exercises open a compact difficulty step first;
+              // the others start immediately, exactly as before.
+              const onPick = !enabled ? undefined
+                : AC_TECHNICAL_EXERCISES.has(t.key)
+                  ? () => { setError(""); setAcPendingExercise(t.key); }
+                  : () => guarded(() => startAssessmentCentre(t.key));
+              const isPending = acPendingExercise === t.key;
               return (
-                <Card key={t.key} onClick={enabled ? () => guarded(() => startAssessmentCentre(t.key)) : undefined} style={{ padding: 20, cursor: enabled ? "pointer" : "not-allowed", opacity: enabled ? 1 : 0.6 }}>
+                <Card key={t.key} onClick={onPick} style={{ padding: 20, cursor: enabled ? "pointer" : "not-allowed", opacity: enabled ? 1 : 0.6, border: isPending ? "1.5px solid var(--blue)" : undefined }}>
                   <div className="flex items-start justify-between gap-2" style={{ marginBottom: 10 }}>
                     <IconBadge icon={Icon} tone={enabled ? "blue" : "neutral"} size={16} />
                     {enabled
@@ -8235,6 +8435,26 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
               );
             })}
           </div>
+
+          {/* Phase 31 §9: compact Beginner/Intermediate/Advanced step shown before a
+              technical Assessment Centre exercise starts. Default Intermediate; the
+              chosen level is passed into scenario generation and genuinely shapes it. */}
+          {acPendingExercise && (
+            <Card style={{ padding: 20, marginTop: 16, border: "1.5px solid var(--blue)" }}>
+              <div style={{ fontSize: 13.5, fontWeight: 700, color: "var(--navy)", marginBottom: 2 }}>
+                {EXERCISE_TYPES.find((t) => t.key === acPendingExercise)?.label} — technical difficulty
+              </div>
+              <div style={{ fontSize: 12.5, color: "var(--text-dim)", marginBottom: 10, lineHeight: 1.5 }}>
+                Choose the level that best matches the exercise you're preparing for.
+              </div>
+              <TechnicalDifficultyPicker value={acTechnicalDifficulty} onChange={setAcTechnicalDifficulty} />
+              <div className="flex flex-wrap gap-2" style={{ marginTop: 14 }}>
+                <Btn variant="accent" onClick={() => guarded(() => startAssessmentCentre(acPendingExercise))}>Start exercise <ArrowRight size={15} /></Btn>
+                <Btn variant="secondary" onClick={() => setAcPendingExercise(null)}>Cancel</Btn>
+              </div>
+            </Card>
+          )}
+
           {(!acCompany.trim() || !acRole.trim()) && <div className="jr-help" style={{ marginTop: 12 }}>Enter a company and role above to unlock an exercise.</div>}
           {error && <Alert variant="error" style={{ marginTop: 14 }}>{error}</Alert>}
         </div>

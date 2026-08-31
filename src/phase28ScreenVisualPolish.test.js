@@ -107,7 +107,12 @@ describe("Phase 28 — accessibility of interactive content preserved", () => {
     expect(PROGRESS).toMatch(/aria-label=\{`Attempt \$\{i \+ 1\}, \$\{iv\.company\}, score \$\{iv\.overall_score\}/);
   });
   it("Assessment Centre exercise cards are only interactive when a company+role is set", () => {
-    expect(AC).toMatch(/onClick=\{enabled \? \(\) => guarded\(\(\) => startAssessmentCentre\(t\.key\)\) : undefined\}/);
+    // Phase 31 routed the card's onClick through an `onPick` handler (technical
+    // exercises open a difficulty step first) — the company+role gate is unchanged:
+    // onPick is `undefined` whenever !enabled, and both branches still gate on it.
+    expect(AC).toMatch(/const onPick = !enabled \? undefined/);
+    expect(AC).toMatch(/<Card key=\{t\.key\} onClick=\{onPick\}/);
+    expect(AC).toMatch(/guarded\(\(\) => startAssessmentCentre\(t\.key\)\)/);
   });
   it("the AC recent-attempts and readiness rows keep role=button + onKeyDown", () => {
     expect(AC).toMatch(/role=\{a\.result \? "button" : undefined\}[\s\S]*?onKeyDown=\{a\.result \?/);
