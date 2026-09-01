@@ -126,7 +126,12 @@ describe("practiseApplicationAgain (STRUCTURAL)", () => {
 describe("starting a fresh interview always clears the previous session's JD/CV text (STRUCTURAL — regression)", () => {
   it("startCreateFlow clears company/role/jdText/cvText — previously it left them stale, so a candidate who didn't use the Report screen's own \"New interview\" button could silently see the PREVIOUS job's JD/CV on the new wizard", () => {
     const FN_SRC = extractFunctionSource("function startCreateFlow(focusWeak = false) {", "// Phase 4 (returning-user continuity): resume a draft");
-    expect(FN_SRC).toMatch(/setCompany\(""\); setRole\(""\); setJdText\(""\); setCvText\(""\);/);
+    expect(FN_SRC).toMatch(/setCompany\(""\); setRole\(""\); setInterviewDateInput\(""\); setJdText\(""\); setCvText\(""\);/);
+  });
+
+  it("startCreateFlow also clears the Phase 36 interview-date field — a stale date from a previous build must never leak into a fresh one", () => {
+    const FN_SRC = extractFunctionSource("function startCreateFlow(focusWeak = false) {", "// Phase 4 (returning-user continuity): resume a draft");
+    expect(FN_SRC).toMatch(/setInterviewDateInput\(""\)/);
   });
 
   it("practiseThisWeakness clears jdText/cvText while still prefilling company/role from the topic", () => {

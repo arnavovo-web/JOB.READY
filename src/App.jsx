@@ -112,7 +112,7 @@ import { markWrittenQuiz, coverageVerdict, normaliseConcept } from "./writtenQui
 import { classroomTopicMatch, pickContinuePreparing, redoConceptUnion } from "./continuePreparing";
 // Phase 16A: pure interview-date helpers for the Applications pillar (countdown
 // text, nearest-upcoming ordering). No AI, no DB, no reminders — status only.
-import { interviewCountdown, sortApplicationsByUpcoming, partitionApplications, nearestUpcomingApplication } from "./applicationSchedule";
+import { interviewCountdown, sortApplicationsByUpcoming, partitionApplications, nearestUpcomingApplication, interviewDateToIso, daysUntil } from "./applicationSchedule";
 // Phase 18: pure, offline reconstruction of an unfinished interview from its
 // persisted rows. No AI, no DB, no React. Resume = read + deterministic rebuild.
 import { reconstructInterviewState, sortResumableInterviews, summariseResumable, resumableProgressLabel } from "./resumeInterview";
@@ -3849,6 +3849,13 @@ function App() {
   const [wizardStep, setWizardStep] = useState(1);
   const [company, setCompany] = useState("");
   const [role, setRole] = useState("");
+  // Phase 36: the real-world interview date, collected alongside company/role on wizard step 1
+  // (an existing application never revisits step 1 — continueApplication/practiseApplicationAgain
+  // both skip straight to step 2+ — so this only ever needs to handle the brand-new-application
+  // case; confirmCompanyRole persists it onto the SAME applications.interview_date column the
+  // Applications-pillar edit form already uses, see interviewDateToIso). Bare "YYYY-MM-DD" from
+  // the native date input, or "" — genuinely optional, never validated as required.
+  const [interviewDateInput, setInterviewDateInput] = useState("");
   const [interviewStage, setInterviewStage] = useState("first_round"); // recruiter_screen | first_round | technical | final_round
   const [interviewFormat, setInterviewFormat] = useState(null); // null = use the stage's default format; only meaningful when the stage allows a choice
   const [length, setLength] = useState(12);
@@ -4338,17 +4345,21 @@ function App() {
   async function confirmCompanyRole() {
     setError("");
     const cleanCompany = sanitizeText(company), cleanRole = sanitizeText(role);
+    // Phase 36: persisted onto the SAME applications.interview_date column the Applications-
+    // pillar edit form uses (interviewDateToIso, applicationSchedule.js) — never a second/
+    // parallel date field. null when left blank, exactly like saveApplicationForm.
+    const interviewDateIso = interviewDateToIso(interviewDateInput);
     try {
       if (!applicationId) {
-        const app = await dbCreateApplication(user.id, { company: cleanCompany, role: cleanRole, status: "draft" });
+        const app = await dbCreateApplication(user.id, { company: cleanCompany, role: cleanRole, interview_date: interviewDateIso, status: "draft" });
         setApplicationId(app.id);
         // Phase 4 (returning-user continuity): keep this draft visible on the Dashboard in the
         // SAME session immediately, rather than only after the next reload — same
         // same-session-availability fix as Phase 3's report/attempt entries.
-        setApplications([{ id: app.id, company: cleanCompany, role: cleanRole, status: "draft", date: Date.now(), jobDescription: "", stageLabel: null, formatLabel: null }, ...applications]);
+        setApplications([{ id: app.id, company: cleanCompany, role: cleanRole, status: "draft", date: Date.now(), jobDescription: "", stageLabel: null, formatLabel: null, interviewDate: interviewDateIso }, ...applications]);
       } else {
-        await dbUpdateApplication(applicationId, { company: cleanCompany, role: cleanRole });
-        setApplications(applications.map((a) => (a.id === applicationId ? { ...a, company: cleanCompany, role: cleanRole } : a)));
+        await dbUpdateApplication(applicationId, { company: cleanCompany, role: cleanRole, interview_date: interviewDateIso });
+        setApplications(applications.map((a) => (a.id === applicationId ? { ...a, company: cleanCompany, role: cleanRole, interviewDate: interviewDateIso } : a)));
       }
       setWizardStep(2);
     } catch (e) {
@@ -4872,7 +4883,7 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
   // threaded through so a candidate arriving via "Practise weaknesses" gets that weighting
   // regardless of which input method they then pick.
   function startCreateFlow(focusWeak = false) {
-    setCompany(""); setRole(""); setJdText(""); setCvText(""); setBuildMethod("jdcv");
+    setCompany(""); setRole(""); setInterviewDateInput(""); setJdText(""); setCvText(""); setBuildMethod("jdcv");
     setInvitationText(""); setInvitationDraft(null); setInvitationOriginal(null);
     setScanMix({ technical: false, behavioural: false, motivational: false });
     // Phase 11: the Question Mix must be an explicit choice every time — never carried over
@@ -4966,11 +4977,9 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
     const role = sanitizeText(f.role).trim();
     if (!company || !role) { setError("Enter a company and a role."); return; }
     const jd = sanitizeText(f.jd);
-    // interview_date is a timestamptz column (baseline). Anchor a date-only pick
-    // at 12:00Z so the calendar day is stable across every real timezone on
-    // read-back (a bare "YYYY-MM-DD" becomes 00:00Z and shifts to the previous
-    // day west of UTC). null stays null — the field is optional & legacy-safe.
-    const dateIso = f.date ? `${f.date}T12:00:00Z` : null;
+    // interview_date is a timestamptz column (baseline). interviewDateToIso (applicationSchedule.js,
+    // Phase 36) is the single shared conversion — also used by the wizard's own date field below.
+    const dateIso = interviewDateToIso(f.date);
     try {
       if (!f.id) {
         const row = await dbCreateApplication(user.id, { company, role, job_description: jd || null, interview_date: dateIso, status: "draft" });
@@ -6684,6 +6693,32 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
             } />
           </div>
 
+          {/* Phase 36: the nearest genuinely-upcoming real interview date, if the candidate has
+              set one anywhere (wizard step 1, or the Applications-pillar edit form — both write
+              the same applications.interview_date column). nearestUpcomingApp/interviewCountdown
+              are the existing Phase 16A selection + wording (applicationSchedule.js) — reused
+              verbatim, not reimplemented. Renders NOTHING when no application has an upcoming
+              date (Part 9): no empty card, no "add a date" prompt, dashboard stays exactly as it
+              is today for a candidate who has never used this field. */}
+          {nearestUpcomingApp && (() => {
+            const cd = interviewCountdown(nearestUpcomingApp.interviewDate);
+            return (
+              <Card style={{ padding: 20, marginBottom: 20, borderLeft: "3px solid var(--blue)" }}>
+                <div className="flex items-center gap-3">
+                  <IconBadge icon={CalendarClock} tone="blue" />
+                  <div style={{ minWidth: 0 }}>
+                    <div className="jr-meta">Next interview</div>
+                    <div style={{ fontSize: 15.5, fontWeight: 700, color: "var(--navy)", marginTop: 2 }}>
+                      {nearestUpcomingApp.company}{nearestUpcomingApp.role ? ` — ${nearestUpcomingApp.role}` : ""}
+                    </div>
+                  </div>
+                  <span className="jr-badge jr-badge-info" style={{ marginLeft: "auto", whiteSpace: "nowrap", flexShrink: 0 }}>{cd.label}</span>
+                </div>
+                <div className="jr-text-sm" style={{ marginTop: 10 }}>Keep preparing — every practice interview helps.</div>
+              </Card>
+            );
+          })()}
+
           {/* Phase 18: unfinished interviews. Sits above "Continue preparing" —
               a half-finished interview is the single most time-sensitive thing a
               returning user has. Continue = 0 AI calls (deterministic
@@ -7293,7 +7328,20 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                 <label htmlFor="wizard-company" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Company</label>
                 <input id="wizard-company" value={company} onChange={(e) => setCompany(e.target.value)} placeholder="e.g. JPMorgan" style={{ ...inputStyle, marginTop: 6, marginBottom: 16 }} />
                 <label htmlFor="wizard-role" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Role</label>
-                <input id="wizard-role" value={role} onChange={(e) => setRole(e.target.value)} onKeyDown={onEnterKey(() => { if (company && role) confirmCompanyRole(); })} placeholder="e.g. Global Markets Summer Analyst" style={{ ...inputStyle, marginTop: 6 }} />
+                <input id="wizard-role" value={role} onChange={(e) => setRole(e.target.value)} onKeyDown={onEnterKey(() => { if (company && role) confirmCompanyRole(); })} placeholder="e.g. Global Markets Summer Analyst" style={{ ...inputStyle, marginTop: 6, marginBottom: 16 }} />
+                {/* Phase 36: genuinely optional — no asterisk, no required-field styling, never
+                    part of the Continue button's disabled condition below. A past date is not
+                    blocked (least-disruptive per the design brief); it just won't produce an
+                    upcoming countdown anywhere (interviewCountdown/partitionApplications already
+                    treat "past" as not-upcoming), so a soft inline note is enough. */}
+                <label htmlFor="wizard-interview-date" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>
+                  Interview date <span style={{ color: "var(--text-faint)", fontWeight: 400 }}>(Optional)</span>
+                </label>
+                <input id="wizard-interview-date" type="date" value={interviewDateInput} onChange={(e) => setInterviewDateInput(e.target.value)} style={{ ...inputStyle, marginTop: 6 }} />
+                <p style={{ fontSize: 12, color: "var(--text-faint)", lineHeight: 1.5, margin: "6px 0 0" }}>Add your interview date to track how long you have to prepare.</p>
+                {interviewDateInput && daysUntil(interviewDateInput) < 0 && (
+                  <p role="status" style={{ fontSize: 12, color: "var(--warn)", lineHeight: 1.5, margin: "6px 0 0" }}>Please select today or a future date.</p>
+                )}
               </Card>
               <Btn variant="accent" full onClick={() => guarded(confirmCompanyRole)} disabled={!company || !role} style={{ marginTop: 18 }}>Continue <ChevronRight size={16} /></Btn>
               {/* Phase 7: a resilient second entry point into the scanner for anyone who ends
