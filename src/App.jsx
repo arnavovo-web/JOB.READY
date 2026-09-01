@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import {
   ChevronRight, Loader2, TrendingDown, CheckCircle2, ArrowLeft, ArrowRight, Sparkles,
   Target, BarChart3, AlertCircle, Upload, Mic, Menu, X,
@@ -2528,7 +2529,12 @@ function ConfirmDialog({ title, body, confirmLabel, onCancel, onConfirm, busy })
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  return (
+  // Portalled to document.body: every screen wrapper carries `.jr-fade` (the existing
+  // page-enter animation), whose `transform` (identity, but present via "animation: ... both")
+  // establishes a containing block for `position: fixed` descendants — trapping this overlay
+  // BELOW the sticky nav's own stacking context instead of covering it. Rendering outside the
+  // React tree's DOM position (via a portal) sidesteps that entirely; nothing else changes.
+  return createPortal(
     <div role="presentation" onClick={onCancel}
       style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200, padding: 20 }}>
       <div role="dialog" aria-modal="true" aria-labelledby="jr-confirm-title" aria-describedby="jr-confirm-body" onClick={(e) => e.stopPropagation()}
@@ -2543,7 +2549,8 @@ function ConfirmDialog({ title, body, confirmLabel, onCancel, onConfirm, busy })
           <Btn variant="danger" onClick={onConfirm} disabled={busy}>{busy ? "Deleting..." : confirmLabel}</Btn>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
@@ -7624,7 +7631,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
           <Pill color="var(--violet)" bg="#F1E9FE">🧩 Challenge Me{challenge.retryOfQuestionId ? " · Retry" : ""}</Pill>
           <div style={{ fontSize: 21, fontWeight: 700, lineHeight: 1.4, color: "var(--navy)", margin: "16px 0 24px" }}>{challenge.text}</div>
           <textarea aria-label="Your answer" value={challengeAnswerInput} onChange={(e) => setChallengeAnswerInput(e.target.value)} placeholder="Type your answer..."
-            style={{ width: "100%", height: 200, padding: 16, border: "1.5px solid var(--border)", borderRadius: "var(--radius)", fontSize: 15, lineHeight: 1.55, fontFamily: "var(--font)" }} />
+            className="jr-input jr-textarea" style={{ height: 200, fontSize: 15 }} />
           {error && <div role="alert" style={{ color: "var(--bad)", fontSize: 13, marginTop: 10 }}>{error}</div>}
           <div className="flex justify-between items-center mt-4" style={{ flexWrap: "wrap", gap: 10 }}>
             <span style={{ fontSize: 12, color: "var(--text-faint)" }}>{challengeAnswerInput.trim().split(/\s+/).filter(Boolean).length} words</span>
