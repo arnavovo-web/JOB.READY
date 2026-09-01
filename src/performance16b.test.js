@@ -157,10 +157,34 @@ describe("FLOW 4 — Learn <-> Flashcards <-> Quiz <-> Redo is pure state: 0 AI,
 });
 
 /* ===================== FLOW 5 — Applications ===================== */
-describe("FLOW 5 — opening an application is a pure state switch: 0 AI, 0 DB", () => {
-  it("openApplication just sets appView + screen — no fetch, no analysis", () => {
-    expect(OPEN_APPLICATION).not.toMatch(/callClaude|await |dbGet|dbSelect/);
-    expect(OPEN_APPLICATION).toMatch(/setAppView\(app\.id\); setScreen\("application"\)/);
+describe("FLOW 5 — opening an application is a pure, synchronous state switch: 0 AI, 0 blocking DB", () => {
+  it("openApplication sets appView + screen SYNCHRONOUSLY, with no AI call anywhere", () => {
+    // Phase 37: openApplication now also kicks off a best-effort, non-blocking fetch of this
+    // application's own practised question categories (see FLOW 5B below) — but the screen
+    // switch itself is still instant: setScreen happens synchronously, before any `await` or
+    // `.then()`, so this remains a "0 blocking work" navigation from the user's perspective.
+    expect(OPEN_APPLICATION).not.toMatch(/callClaude/);
+    expect(OPEN_APPLICATION).not.toMatch(/analyse|Analyse/);
+    const screenSwitchIdx = OPEN_APPLICATION.indexOf('setAppView(app.id); setScreen("application")');
+    const firstAwaitOrThen = (() => {
+      const a = OPEN_APPLICATION.indexOf("await ");
+      const b = OPEN_APPLICATION.indexOf(".then(");
+      return [a, b].filter((i) => i !== -1).sort((x, y) => x - y)[0] ?? -1;
+    })();
+    expect(screenSwitchIdx).toBeGreaterThan(-1);
+    expect(firstAwaitOrThen === -1 || firstAwaitOrThen > screenSwitchIdx).toBe(true);
+  });
+  it("FLOW 5B (Phase 37): the practice-category fetch is best-effort — its own promise chain never throws out, and it is application-scoped (interview_id .in(...) filtered to THIS application's own interview ids only)", () => {
+    expect(OPEN_APPLICATION).toMatch(/dbGetApplicationQuestionCategories\(completedIds\)\.then\(/);
+    expect(OPEN_APPLICATION).toMatch(/\.catch\(\(\) => \{\}\)/);
+    expect(OPEN_APPLICATION).toMatch(/interviewList\.filter\(\(iv\) => iv\.applicationId === app\.id\)/);
+  });
+  it("Phase 37: practice categories are cleared BEFORE the fetch starts, and a late resolve is guarded against the user having navigated to a different application meanwhile", () => {
+    const clearIdx = OPEN_APPLICATION.indexOf("setAppPracticeCategories([])");
+    const fetchIdx = OPEN_APPLICATION.indexOf("dbGetApplicationQuestionCategories(completedIds)");
+    expect(clearIdx).toBeGreaterThan(-1);
+    expect(fetchIdx).toBeGreaterThan(clearIdx);
+    expect(OPEN_APPLICATION).toMatch(/if \(current === app\.id\) setAppPracticeCategories\(cats\)/);
   });
   it("standalone analysis stays exactly one interview_profile call, explicitly triggered", () => {
     expect((ANALYSE_APP_ONLY.match(/await callClaude\(/g) || []).length).toBe(1);

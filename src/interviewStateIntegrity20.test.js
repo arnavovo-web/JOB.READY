@@ -150,10 +150,15 @@ describe("ISSUE 1 — resume is surfaced at the entry point, for every applicati
   it("dbCreateInterview still has exactly ONE caller (analyseAndPlan) — no new creation path", () => {
     expect((SRC.match(/\bdbCreateInterview\(/g) || []).length).toBe(2); // definition + the one call
   });
-  it("NO database uniqueness constraint / migration was added (deliberate: a second interview is allowed, just confirmed)", () => {
+  it("NO database uniqueness constraint / migration was added FOR THIS PHASE (deliberate: a second interview is allowed, just confirmed)", () => {
+    // Phase 37 later added its own, unrelated migration (applications.checklist) — this
+    // assertion is about Phase 20 specifically, so it checks that file's ABSENCE rather than
+    // an exact/exhaustive migration list (which would make this test fail every time any
+    // later, unrelated phase adds its own migration).
     const { readdirSync } = require("node:fs");
     const migs = readdirSync(new URL("../supabase/migrations", import.meta.url)).filter((f) => f.endsWith(".sql")).sort();
-    expect(migs).toEqual(["20260828120000_baseline_schema.sql", "20260828135856_development_modules.sql"]);
+    expect(migs).not.toEqual(expect.arrayContaining([expect.stringMatching(/interview.*unique|unique.*interview/i)]));
+    expect(migs).toEqual(expect.arrayContaining(["20260828120000_baseline_schema.sql", "20260828135856_development_modules.sql"]));
   });
   it("Start New never deletes/mutates the existing interview", () => {
     const choice = slice('screen === "resume_choice" && resumeChoice && (', "{/* ---------------- CREATE (progressive wizard) ---------------- */}");
