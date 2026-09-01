@@ -147,8 +147,19 @@ describe("ISSUE 1 — resume is surfaced at the entry point, for every applicati
   it("BACKSTOP retained: analyseAndPlan still guards at the creation boundary, before callClaude", () => {
     expect(ANALYSE_HEAD).toMatch(/if \(!forceNewRef\.current\) \{[\s\S]*?resumableInterviews\.find\(\(r\) => r\.applicationId === applicationId && r\.hasProfile\)[\s\S]*?setResumeChoice\(\{ \.\.\.existing, next: "generate" \}\); setScreen\("resume_choice"\); return;/);
   });
-  it("dbCreateInterview still has exactly ONE caller (analyseAndPlan) — no new creation path", () => {
-    expect((SRC.match(/\bdbCreateInterview\(/g) || []).length).toBe(2); // definition + the one call
+  it("dbCreateInterview still has exactly ONE caller in the normal interview-creation flow (analyseAndPlan)", () => {
+    // Phase B added a second, deliberate caller — startChallengeMe (Challenge Me creates its
+    // own tiny single-question `interviews` row, reusing this SAME existing function rather
+    // than a parallel one). This assertion is scoped to what Phase 20 actually claims: the
+    // NORMAL interview-creation flow (analyseAndPlan) still has exactly one call.
+    const analyseFull = slice("async function analyseAndPlan() {", "function beginInterview()");
+    expect((analyseFull.match(/\bdbCreateInterview\(/g) || []).length).toBe(1);
+  });
+  it("Phase B's startChallengeMe is a second, deliberate dbCreateInterview caller — not an accidental duplicate creation path", () => {
+    const challengeFn = slice("async function startChallengeMe(app) {", "async function submitChallengeAnswer() {");
+    expect((challengeFn.match(/\bdbCreateInterview\(/g) || []).length).toBe(1);
+    const totalCallers = (SRC.match(/\bdbCreateInterview\(/g) || []).length - 1; // minus the definition itself
+    expect(totalCallers).toBe(2); // analyseAndPlan + startChallengeMe, no others
   });
   it("NO database uniqueness constraint / migration was added (deliberate: a second interview is allowed, just confirmed)", () => {
     const { readdirSync } = require("node:fs");
