@@ -2677,6 +2677,68 @@ function RingScore({ value, size = 148, label }) {
   );
 }
 
+/* ------------------------------------------------------------------ *
+ * Phase 35 — LANDING-PAGE READINESS RING (landing previews ONLY)
+ * ------------------------------------------------------------------
+ * Kept deliberately separate from the shared <RingScore> above so the
+ * authenticated product screens (report views, dashboard) are byte-for-
+ * byte unchanged. Used only by the hero + feedback preview panels.
+ *
+ * Root cause it replaces: the shared RingScore's arc math is correct
+ * (a true `value`% sweep from 12 o'clock, clockwise), but its neutral
+ * track (#EEF2F7) is so pale it is invisible on the light preview
+ * cards — so a 78% arc reads as a broken green horseshoe rather than
+ * "78 out of 100". This variant draws a clearly visible full 360°
+ * track, derives the coloured sweep from the score, uses a restrained
+ * blue -> violet product gradient (not status green), rounded ends, and
+ * an optically-centred score + label.
+ * ------------------------------------------------------------------ */
+
+// Pure geometry helper — exported so the ring's score->arc mapping is unit-testable.
+export function landingRingGeometry(value, size, stroke) {
+  const v = Math.max(0, Math.min(100, Number.isFinite(+value) ? +value : 0));
+  const r = (size - stroke) / 2;
+  const circumference = 2 * Math.PI * r;
+  const arc = (v / 100) * circumference; // coloured length is ALWAYS score-driven
+  return { v, r, circumference, arc, remainder: circumference - arc, fraction: v / 100 };
+}
+
+function LandingReadinessRing({ value, size = 88, label }) {
+  const stroke = Math.max(6, Math.round(size * 0.1));
+  const { v, r, circumference, arc } = landingRingGeometry(value, size, stroke);
+  const cx = size / 2;
+  const gradId = "jr-lrr-" + size + "-" + v;
+  return (
+    <div style={{ position: "relative", width: size, height: size, flexShrink: 0 }}>
+      {/* SVG rotated -90deg about its centre so the sweep starts at 12 o'clock
+          and runs clockwise. The arc is decorative; the score/label text
+          below carries the meaning for assistive tech. */}
+      <svg width={size} height={size} viewBox={"0 0 " + size + " " + size} aria-hidden="true"
+        style={{ transform: "rotate(-90deg)", display: "block" }}>
+        <defs>
+          <linearGradient id={gradId} x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stopColor="var(--blue)" />
+            <stop offset="100%" stopColor="var(--violet)" />
+          </linearGradient>
+        </defs>
+        {/* full 360 neutral track — clearly visible, understated */}
+        <circle cx={cx} cy={cx} r={r} fill="none" stroke="#D8E0EC" strokeWidth={stroke} />
+        {/* score-driven progress arc */}
+        <circle cx={cx} cy={cx} r={r} fill="none" stroke={"url(#" + gradId + ")"} strokeWidth={stroke}
+          strokeLinecap="round" strokeDasharray={arc + " " + circumference} strokeDashoffset="0"
+          style={{ transition: "stroke-dasharray .8s cubic-bezier(.4,0,.2,1)" }} />
+      </svg>
+      <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+        {/* nudged up ~1px so the numeral + label group reads optically centred */}
+        <div style={{ transform: "translateY(-1px)", textAlign: "center", lineHeight: 1 }}>
+          <div style={{ fontSize: Math.round(size * 0.3), fontWeight: 800, color: "var(--navy)", lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>{v}</div>
+          {label && <div style={{ fontSize: Math.max(9, Math.round(size * 0.125)), fontWeight: 600, color: "var(--text-faint)", marginTop: Math.round(size * 0.035), letterSpacing: "0.02em" }}>{label}</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ================================================================== */
 /* PHASE 29 — PREMIUM PRESENTATION PRIMITIVES                          */
 /* ------------------------------------------------------------------ */
@@ -3387,7 +3449,7 @@ function LandingPage({ onStart, onHow, onUniversities }) {
               <div className="flex items-center gap-4" style={{ borderTop: "1px solid var(--border)", paddingTop: 14 }}>
                 <span style={{ position: "relative", display: "inline-flex", flexShrink: 0 }}>
                   <span aria-hidden="true" style={{ position: "absolute", inset: -14, borderRadius: "50%", background: "radial-gradient(closest-side, rgba(37,99,235,0.20), rgba(124,58,237,0) 78%)", pointerEvents: "none" }} />
-                  <RingScore value={78} size={78} label="readiness" />
+                  <LandingReadinessRing value={78} size={88} label="readiness" />
                 </span>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <ScoreBar label="Structure" value={84} />
@@ -3562,7 +3624,7 @@ function LandingPage({ onStart, onHow, onUniversities }) {
           </div>
           <Card style={{ padding: 22, boxShadow: "0 20px 50px -24px rgba(37,99,235,0.26), 0 8px 24px -14px rgba(124,58,237,0.18)" }}>
             <div className="flex items-center gap-4 mb-4">
-              <RingScore value={74} size={84} label="readiness" />
+              <LandingReadinessRing value={74} size={84} label="readiness" />
               <div>
                 <div style={{ fontSize: 12.5, color: "var(--text-dim)" }}>Interview readiness</div>
                 <div className="jr-badge jr-badge-success" style={{ marginTop: 5 }}><span className="jr-badge-dot" /> On track</div>
