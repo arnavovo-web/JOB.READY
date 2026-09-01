@@ -120,7 +120,7 @@ describe("resumeInterview.js: interview_length is NOT part of the target chain",
 const MAYBE = slice("function maybeOfferResume(appId, next) {", "function buildInterviewFromApplication(app) {");
 const BIFF = slice("function buildInterviewFromApplication(app) {", "/* ---------------- PHASE 18: RESUME AN UNFINISHED INTERVIEW");
 const AGAIN = slice("function practiseApplicationAgain(app) {", "/* ---------------- PHASE 16A: APPLICATIONS PILLAR");
-const CONT = slice("async function continueApplication(app) {", "// Phase 4: practise again");
+const CONT = slice("async function continueApplication(app) {", "/* ---------------- PHASE 38: PRACTISE AGAIN (frictionless repeat interview) ---------------- */");
 const ANALYSE_HEAD = slice("async function analyseAndPlan() {", "const cleanCompany = sanitizeText(company)");
 
 describe("ISSUE 1 — resume is surfaced at the entry point, for every application build path", () => {

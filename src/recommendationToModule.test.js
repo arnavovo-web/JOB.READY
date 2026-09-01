@@ -60,7 +60,9 @@ describe("startLearningFromRecommendation — reuse first, else materialise, the
     expect(HANDLER).toMatch(/const row = await dbCreateRecommendationTopic\(user\.id, \{ applicationId: app\.id, company: app\.company, role: app\.role \}, rec\)/);
   });
   it("4. hands the REAL persisted topic to the existing openDevelopmentModule flow", () => {
-    expect(HANDLER).toMatch(/await openDevelopmentModule\(clientTopic\)/);
+    // Phase 38: knownNew:true — this topic was just inserted above, so openDevelopmentModule
+    // can safely skip its own existence check (still the SAME flow, same function, no bypass).
+    expect(HANDLER).toMatch(/await openDevelopmentModule\(clientTopic, \{ knownNew: true \}\)/);
     expect(HANDLER).toMatch(/id: row\.id/);
     expect(HANDLER).toMatch(/lastInterviewId: row\.last_interview_id \|\| null/);
   });
@@ -70,15 +72,15 @@ describe("startLearningFromRecommendation — reuse first, else materialise, the
   it("mirrors the new topic into local classroom state so a repeat click reuses it", () => {
     expect(HANDLER).toMatch(/setClassroom\(\(prev\) => \[\.\.\.prev, clientTopic\]\)/);
   });
-  it("fails safe (no row) without opening a module", () => {
-    expect(HANDLER).toMatch(/if \(!row\) \{ setError\([^)]*\); return; \}/);
+  it("fails safe (no row) without opening a module, restoring the screen it moved to for immediate feedback", () => {
+    expect(HANDLER).toMatch(/if \(!row\) \{\s*\n\s*setGenProgress\(null\);\s*\n\s*setError\([^)]*\);\s*\n\s*setScreen\("classroom"\);\s*\n\s*return;\s*\n\s*\}/);
   });
 });
 
 /* ============================== preparation vs demonstrated ============================== */
 describe("a recommendation-materialised topic is an area to prepare, never a demonstrated weakness", () => {
   it("last_interview_id null -> openDevelopmentModule's `demonstrated` flag is false -> 'AREA TO PREPARE' prompt branch", () => {
-    const open = slice("async function openDevelopmentModule(topic)", "// ---- deterministic sub-activities");
+    const open = slice("async function openDevelopmentModule(topic, opts = {})", "// ---- deterministic sub-activities");
     expect(open).toMatch(/const demonstrated = !!topic\.lastInterviewId;/);
     expect(open).toMatch(/this is an AREA TO PREPARE for this application; it is NOT a demonstrated weakness/);
   });
@@ -103,7 +105,7 @@ describe("application isolation", () => {
     expect(SRC).toMatch(/if \(t\.applicationId && activeClassroomApp && t\.applicationId !== activeClassroomApp\.id\) return false;/);
   });
   it("openDevelopmentModule reads applicationIntelligence from the topic's OWN application only", () => {
-    const open = slice("async function openDevelopmentModule(topic)", "// ---- deterministic sub-activities");
+    const open = slice("async function openDevelopmentModule(topic, opts = {})", "// ---- deterministic sub-activities");
     expect(open).toMatch(/applications\.find\(\(a\) => a\.id === topic\.applicationId\)\?\.applicationIntelligence/);
   });
 });

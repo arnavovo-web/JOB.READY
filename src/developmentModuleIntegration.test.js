@@ -20,7 +20,7 @@ function slice(startMarker, endMarker) {
   return SRC.slice(s, e);
 }
 
-const OPEN_FN = slice("async function openDevelopmentModule(topic)", "// ---- deterministic sub-activities");
+const OPEN_FN = slice("async function openDevelopmentModule(topic, opts = {})", "// ---- deterministic sub-activities");
 const DETERMINISTIC = slice("// ---- deterministic sub-activities (NO AI calls below this line) ----", "function practiseThisWeakness(topic)");
 const DEV_SCREEN = slice('{screen === "dev_module" && devModule && devTopic', "{/* ---------------- LESSON ---------------- */}");
 

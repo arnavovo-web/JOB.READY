@@ -192,24 +192,29 @@ describe("Delete Application", () => {
     expect(APP_SCREEN).toMatch(/title="Delete application\?"/);
     expect(APP_SCREEN).toMatch(/cannot be undone/);
     expect(APP_SCREEN).toMatch(/associated interview data/);
-    const dialogFn = slice("function ConfirmDialog({ title, body, confirmLabel, onCancel, onConfirm, busy }) {", "function Card({");
+    const dialogFn = slice('function ConfirmDialog({ title, body, confirmLabel, onCancel, onConfirm, busy, icon: Icon = AlertTriangle, iconColor = "var(--bad)", confirmVariant = "danger", busyLabel = "Working..." }) {', "function Card({");
     expect(dialogFn).toMatch(/>Cancel<\/Btn>/);
     expect(dialogFn).toMatch(/: confirmLabel\}/);
   });
   it("Cancel closes the modal and performs no deletion", () => {
     expect(APP_SCREEN).toMatch(/onCancel=\{\(\) => setDeleteConfirmApp\(null\)\}/);
-    const dialogFn = slice("function ConfirmDialog({ title, body, confirmLabel, onCancel, onConfirm, busy }) {", "function Card({");
+    const dialogFn = slice('function ConfirmDialog({ title, body, confirmLabel, onCancel, onConfirm, busy, icon: Icon = AlertTriangle, iconColor = "var(--bad)", confirmVariant = "danger", busyLabel = "Working..." }) {', "function Card({");
     expect(dialogFn).not.toMatch(/onCancel[\s\S]{0,40}(dbDeleteApplication|\.delete\()/);
   });
   it("Escape cancels, and the Cancel (never the destructive) button receives initial focus", () => {
-    const dialogFn = slice("function ConfirmDialog({ title, body, confirmLabel, onCancel, onConfirm, busy }) {", "function Card({");
+    const dialogFn = slice('function ConfirmDialog({ title, body, confirmLabel, onCancel, onConfirm, busy, icon: Icon = AlertTriangle, iconColor = "var(--bad)", confirmVariant = "danger", busyLabel = "Working..." }) {', "function Card({");
     expect(dialogFn).toMatch(/e\.key === "Escape"\) onCancel\(\)/);
     expect(dialogFn).toMatch(/getElementById\("jr-confirm-cancel"\)\?\.focus\(\)/);
   });
   it("colour is not the sole signal of danger — an icon and explicit wording accompany the destructive styling", () => {
-    const dialogFn = slice("function ConfirmDialog({ title, body, confirmLabel, onCancel, onConfirm, busy }) {", "function Card({");
+    const dialogFn = slice('function ConfirmDialog({ title, body, confirmLabel, onCancel, onConfirm, busy, icon: Icon = AlertTriangle, iconColor = "var(--bad)", confirmVariant = "danger", busyLabel = "Working..." }) {', "function Card({");
     expect(dialogFn).toMatch(/AlertTriangle/);
-    expect(dialogFn).toMatch(/variant="danger"/); // the EXISTING destructive Btn variant — no new colour system
+    // Phase 38: ConfirmDialog is now shared with a non-destructive confirmation ("Practise
+    // again"), so its own body renders variant={confirmVariant} — the EXISTING destructive Btn
+    // variant is still the default for every caller (like Delete) that doesn't override it, and
+    // that default is right there in the destructured signature above.
+    expect(dialogFn).toMatch(/confirmVariant = "danger"/);
+    expect(dialogFn).toMatch(/variant=\{confirmVariant\}/);
   });
   it("deletion occurs only after explicit confirmation, targets the correct application id, and prevents a duplicate submission", () => {
     expect(CONFIRM_DELETE).toMatch(/if \(!deleteConfirmApp \|\| deleteBusy\) return;/);

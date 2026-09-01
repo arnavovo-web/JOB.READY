@@ -297,10 +297,14 @@ describe("entry points default to buildMethod 'jdcv' — the original JD/CV flow
     expect(resetSrc).toMatch(/setScreen\("create_choose"\)/);
   });
 
-  it("continueApplication, practiseApplicationAgain and practiseThisWeakness all explicitly set buildMethod to \"jdcv\" — they skip create_choose but must never accidentally relax the JD/CV requirement", () => {
-    const continueSrc = extractFunctionSource("async function continueApplication(app) {", "// Phase 4: practise again for an application");
+  it("continueApplication, startPractiseAgain and practiseThisWeakness all explicitly set buildMethod to \"jdcv\" — they skip create_choose but must never accidentally relax the JD/CV requirement", () => {
+    const continueSrc = extractFunctionSource("async function continueApplication(app) {", "/* ---------------- PHASE 38: PRACTISE AGAIN (frictionless repeat interview) ---------------- */");
     expect(continueSrc).toMatch(/setBuildMethod\("jdcv"\)/);
-    const againSrc = extractFunctionSource("function practiseApplicationAgain(app) {", "/* ---------------- PHASE 16A: APPLICATIONS PILLAR");
+    // Phase 38: practiseApplicationAgain itself only opens the confirmation modal now (no
+    // wizard-state prefill at all — see applicationsAndRecommendations.test.js); the buildMethod
+    // guarantee moved to startPractiseAgain, which runs the SAME prefill-then-analyseAndPlan()
+    // path whether or not the wizard fallback is used.
+    const againSrc = extractFunctionSource("async function startPractiseAgain(app) {", "function confirmPractiseAgain()");
     expect(againSrc).toMatch(/setBuildMethod\("jdcv"\)/);
     const weaknessSrc = extractFunctionSource("function practiseThisWeakness(topic) {", "function loadDemo()");
     expect(weaknessSrc).toMatch(/setBuildMethod\("jdcv"\)/);

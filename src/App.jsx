@@ -1560,6 +1560,11 @@ async function loadFullUserState(userId) {
       // distinct from a full mock interview, per the brief ("do not falsely imply it's a full
       // mock interview"). config was already selected (dbSelect does select("*")) — no new query.
       sessionKind: iv.config?.session_kind || null,
+      // Phase 38: the FULL resolved config (stage/format/question_mix/technical_difficulty/
+      // max_questions/...) this interview was actually generated with — the canonical source
+      // "Practise again" reads to recreate an interview without re-asking the wizard. Same
+      // already-selected column as sessionKind above; no new query, no new persistence.
+      config: iv.config || null,
     };
   });
 
@@ -2521,7 +2526,7 @@ function Btn({ children, onClick, disabled, variant = "primary", style, full, cl
 // never the sole signal of danger — the heading, body copy and an icon all say so too.
 // Currently used only for "Delete application", but written generically enough to reuse for
 // any future confirm-before-destroying action.
-function ConfirmDialog({ title, body, confirmLabel, onCancel, onConfirm, busy }) {
+function ConfirmDialog({ title, body, confirmLabel, onCancel, onConfirm, busy, icon: Icon = AlertTriangle, iconColor = "var(--bad)", confirmVariant = "danger", busyLabel = "Working..." }) {
   useEffect(() => {
     function onKey(e) { if (e.key === "Escape") onCancel(); }
     window.addEventListener("keydown", onKey);
@@ -2534,19 +2539,23 @@ function ConfirmDialog({ title, body, confirmLabel, onCancel, onConfirm, busy })
   // establishes a containing block for `position: fixed` descendants — trapping this overlay
   // BELOW the sticky nav's own stacking context instead of covering it. Rendering outside the
   // React tree's DOM position (via a portal) sidesteps that entirely; nothing else changes.
+  // Phase 38: icon/iconColor/confirmVariant/busyLabel are optional, defaulted to the original
+  // Delete Application look (AlertTriangle / bad / danger / "Working...") — every existing
+  // caller is visually unchanged. Non-destructive confirmations (e.g. "Practise again") pass
+  // their own icon + an "accent" confirmVariant instead of reinventing a second dialog.
   return createPortal(
     <div role="presentation" onClick={onCancel}
       style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200, padding: 20 }}>
       <div role="dialog" aria-modal="true" aria-labelledby="jr-confirm-title" aria-describedby="jr-confirm-body" onClick={(e) => e.stopPropagation()}
         style={{ background: "var(--card)", borderRadius: "var(--radius)", boxShadow: "var(--shadow-lg)", padding: 24, maxWidth: 420, width: "100%" }}>
         <div className="flex items-center gap-2" style={{ marginBottom: 10 }}>
-          <AlertTriangle size={18} color="var(--bad)" aria-hidden="true" />
+          <Icon size={18} color={iconColor} aria-hidden="true" />
           <div id="jr-confirm-title" style={{ fontSize: 17, fontWeight: 800, color: "var(--navy)" }}>{title}</div>
         </div>
         <div id="jr-confirm-body" style={{ fontSize: 13.5, color: "var(--text-dim)", lineHeight: 1.55, marginBottom: 20 }}>{body}</div>
         <div className="flex gap-3 flex-wrap">
           <Btn id="jr-confirm-cancel" variant="secondary" onClick={onCancel}>Cancel</Btn>
-          <Btn variant="danger" onClick={onConfirm} disabled={busy}>{busy ? "Deleting..." : confirmLabel}</Btn>
+          <Btn variant={confirmVariant} onClick={onConfirm} disabled={busy}>{busy ? busyLabel : confirmLabel}</Btn>
         </div>
       </div>
     </div>,
@@ -4028,6 +4037,13 @@ function App() {
   // shown). deleteBusy guards against a duplicate submission while the delete is in flight.
   const [deleteConfirmApp, setDeleteConfirmApp] = useState(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
+  // Phase 38 — Practise again: the application pending confirmation ("Create a new interview
+  // using your previous settings?"), or null. practiseAgainActive is a ONE-SHOT flag, consumed
+  // and cleared at the top of analyseAndPlan (same "additive override" pattern as
+  // quickPracticeQuestionCount above) purely to customise the loading screen's copy — it never
+  // changes what analyseAndPlan actually does.
+  const [practiseAgainConfirmApp, setPractiseAgainConfirmApp] = useState(null);
+  const [practiseAgainActive, setPractiseAgainActive] = useState(false);
   // Phase 16B: honest staged loading. { title, subtitle, steps:[...], stage:N }.
   // The generating flows (interview / development module / application analysis)
   // set this up front and bump `stage` only when a real awaited milestone
@@ -4731,8 +4747,22 @@ Rules: mini study guide, not an essay. core_knowledge 3-5 points, key_points 3-5
       return n && m && (n === m || n.includes(m) || m.includes(n));
     });
     if (existing) { await openDevelopmentModule(existing); return; }
+    // Phase 38 — PERFORMANCE: respond to the click immediately. Previously the screen didn't
+    // move at all until dbCreateRecommendationTopic's network round-trip resolved — a real,
+    // visible dead interval on the single most common "Start learning" entry point (the
+    // Classroom's top "Recommended for your application" section). Real, staged milestones
+    // only — the "Setting up this topic" step only advances once the write actually completes.
+    setError("");
+    setGenProgress({ title: "Opening this lesson", subtitle: rec.label || "", steps: ["Setting up this topic", "Preparing your material"], stage: 0 });
+    setScreen("dev_module_generating");
     const row = await dbCreateRecommendationTopic(user.id, { applicationId: app.id, company: app.company, role: app.role }, rec);
-    if (!row) { setError("Couldn't start this development area. Please try again."); return; }
+    if (!row) {
+      setGenProgress(null);
+      setError("Couldn't start this development area. Please try again.");
+      setScreen("classroom");
+      return;
+    }
+    bumpGenStage(1);
     const clientTopic = {
       id: row.id, topic: row.topic, category: row.category, description: row.description,
       company: row.company || "", role: row.role || "",
@@ -4742,13 +4772,20 @@ Rules: mini study guide, not an essay. core_knowledge 3-5 points, key_points 3-5
       applicationId: row.application_id || null,
     };
     setClassroom((prev) => [...prev, clientTopic]);
-    await openDevelopmentModule(clientTopic);
+    // Phase 38 — PERFORMANCE: knownNew — this topic was just inserted above, so a
+    // development_modules row cannot possibly exist for it yet. Skips openDevelopmentModule's
+    // own existence check, removing one wholly redundant network round-trip from this path.
+    await openDevelopmentModule(clientTopic, { knownNew: true });
   }
 
   // The ONE AI call for Phase 14. Reuse first (dbGetDevelopmentModule); generate
   // once only if nothing exists; everything after this — Learn, Flashcards, Quiz,
   // marking, retakes — is deterministic and makes NO further AI call.
-  async function openDevelopmentModule(topic) {
+  // opts.knownNew (Phase 38 — PERFORMANCE): the caller already knows, with certainty, that no
+  // development_modules row can exist for this topic yet (it just inserted the topic itself
+  // this same call chain — see startLearningFromRecommendation). Skips the existence check
+  // below entirely instead of issuing a network round-trip whose answer is already known.
+  async function openDevelopmentModule(topic, opts = {}) {
     if (!topic || !user || devGenRef.current) return;
     setDevTopic(topic); setDevView("hub");
     setFlashIdx(0); setFlashRevealed(false);
@@ -4785,9 +4822,19 @@ Rules: mini study guide, not an essay. core_knowledge 3-5 points, key_points 3-5
       return;
     }
 
+    // Phase 38 — PERFORMANCE: respond to the click immediately. Previously the screen didn't
+    // move AT ALL past this point until the existence check below (and, for a genuinely new
+    // topic, the AI generation after it) had already finished — a real, visible dead interval
+    // on every "Start learning" for a topic that wasn't already cached. Same staged
+    // LoadingScreen the AI-generation path already used; its copy/steps are simply refined
+    // below once we know which path we're actually on — every step still only advances on a
+    // real awaited milestone, never a timer.
+    setGenProgress({ title: "Opening this lesson", subtitle: topic.topic || "", steps: ["Checking your progress", "Preparing your material"], stage: 0 });
+    setScreen("dev_module_generating");
+
     // Not in state: a legacy session from before the Phase 15A prefetch, or a
     // module created on another device this session. Direct read (still 0 AI).
-    const existing = await dbGetDevelopmentModule(topic.id);
+    const existing = opts.knownNew ? null : await dbGetDevelopmentModule(topic.id);
     if (existing) {
       const mod = hydrateDevModuleRow(existing);
       setDevModule(mod);
@@ -4796,6 +4843,7 @@ Rules: mini study guide, not an essay. core_knowledge 3-5 points, key_points 3-5
       setDevelopmentModules((prev) => [...prev.filter((m) => m.topic_id !== topic.id), existing]);
       if (prog) setModuleProgress((prev) => [...prev.filter((p) => p.module_id !== existing.id), prog]);
       setQuizOrder([...Array(mod.learning_items.length).keys()]);
+      setGenProgress(null);
       setScreen("dev_module");
       return;
     }
@@ -5088,22 +5136,100 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
     } catch (e) { /* best-effort restore only — the candidate can always re-paste/upload */ }
   }
 
-  // Phase 4: practise again for an application that already has at least one completed
-  // interview — reuses the SAME application (rather than startCreateFlow's always-new one) so
-  // multiple stages/attempts for one real job genuinely accumulate under one application,
-  // instead of each attempt silently fragmenting into its own disconnected "application" row.
-  // job_description is always persisted for an "active" application (see analyseAndPlan), so
-  // this never needs the documents fallback continueApplication above uses for a draft.
+  /* ---------------- PHASE 38: PRACTISE AGAIN (frictionless repeat interview) ---------------- */
+  // Phase 4 originally sent "Practise again" straight into the wizard, prefilled — the candidate
+  // still had to pick stage/format/question mix/technical difficulty and click through again,
+  // even though every one of those was already decided (and persisted) the first time. Phase 38
+  // replaces that with a one-click confirm: the SAME application (never a new one — multiple
+  // attempts for one real job still accumulate under it) gets a genuinely NEW interview, built
+  // through the EXACT SAME analyseAndPlan() pipeline as every other interview (same AI call,
+  // same persistence, same batch/adaptive branching, same Phase 18 duplicate-generation guard)
+  // — never a second/shortcut creation path. The only thing that changes is where the wizard's
+  // OWN input state comes from: read back from the most recent interview's already-persisted
+  // interviews.config (the canonical source Phase 4A/11/18/31 established, and the same one
+  // Phase 18's resume path already reads) instead of the candidate re-typing it. This is exactly
+  // the "prefill wizard state, then call analyseAndPlan() directly" pattern startQuickPractice
+  // already uses — no parallel configuration system.
   function practiseApplicationAgain(app) {
+    if (!app) return;
     setError("");
-    setCompany(app.company); setRole(app.role); setApplicationId(app.id); setBuildMethod("jdcv");
+    setPractiseAgainConfirmApp(app);
+  }
+  function cancelPractiseAgain() { setPractiseAgainConfirmApp(null); }
+
+  // Required fields to faithfully recreate an interview without the wizard: stage, format and a
+  // non-empty question mix. All three are additive keys on interviews.config (Phase 4A/11) that
+  // every interview created since has — a genuinely legacy row (created before Phase 4A) simply
+  // won't have them, which is exactly what this null-return signals to startPractiseAgain below.
+  function practiseAgainConfigFor(app) {
+    const latest = (app.interviews || [])[0];
+    const config = latest?.config;
+    if (!config || !config.stage || !config.format || !arr(config.question_mix).length) return null;
+    return config;
+  }
+
+  // Confirmed from the modal. Reuses the SAME application (job_description is always persisted
+  // for an "active" application — see analyseAndPlan — so, like the old practiseApplicationAgain,
+  // this never needs the documents fallback continueApplication uses for a draft) plus the prior
+  // interview's stored stage/format/question_mix/technical_difficulty/max_questions. CV text has
+  // no durable canonical field (only the AI's already-derived candidate_profile summary is
+  // stored, never the raw text) — best-effort restored from a previously uploaded file exactly
+  // like continueApplication's own fallback, awaited here so it actually reaches this call
+  // (never blocking more than that one read; a miss just leaves cvText empty, same as today).
+  async function startPractiseAgain(app) {
+    if (!app || !user) return;
+    const config = practiseAgainConfigFor(app);
+    setError("");
+    setCompany(app.company || ""); setRole(app.role || ""); setApplicationId(app.id); setBuildMethod("jdcv");
     setFocusWeaknesses(false); setTargetTopic(null);
     setJdText(app.jobDescription || ""); setCvText("");
-    setWizardStep(app.jobDescription ? 3 : 2);
-    // Phase 20: even "Practise again" (shown when a COMPLETED interview exists)
-    // must offer to resume an in-progress one first, rather than launch a fresh
-    // AI-consuming build.
-    if (!maybeOfferResume(app.id, "wizard")) setScreen("create");
+    setInvitationText(""); setInvitationDraft(null); setInvitationOriginal(null);
+    if (!config) {
+      // Edge case: genuinely incomplete legacy data — no fabricated settings. Falls back to the
+      // SAME minimum-necessary wizard entry "Build interview" already uses (company/role/JD
+      // prefilled, question mix/stage/format the only things left to confirm) rather than the
+      // full from-scratch wizard.
+      setError("We need a little more information to create this interview — this application was started a while ago. Please confirm a few settings below.");
+      setQuestionMix({ technical: false, behavioural: false, motivational: false });
+      setWizardStep(app.jobDescription ? 3 : 2);
+      if (!maybeOfferResume(app.id, "wizard")) setScreen("create");
+      return;
+    }
+    // PERFORMANCE — respond to the confirmation click immediately, before the CV-restore
+    // network round-trip below. cvText genuinely needs that read to finish before
+    // analyseAndPlan() (a few lines down) captures it, so it can't be made non-blocking without
+    // losing the restored CV entirely — but the user should never stare at the unchanged
+    // Application screen while it happens. Same staged LoadingScreen analyseAndPlan itself
+    // uses; its own setGenProgress call moments later seamlessly replaces this with the real,
+    // accurate step list for whichever pipeline this interview actually uses.
+    setGenProgress({
+      title: "Creating your new interview",
+      subtitle: `Using your previous settings for ${[app.company, app.role].filter(Boolean).join(" · ")}`,
+      steps: ["Restoring your details", "Creating your personalised questions"],
+      stage: 0,
+    });
+    setScreen("analyzing");
+    try {
+      const docs = await dbGetApplicationDocuments(user.id, app.id);
+      const cv = docs.find((d) => d.document_type === "cv" && d.extracted_text);
+      if (cv) setCvText(cv.extracted_text);
+    } catch (e) { /* best-effort restore only — generation proceeds without it */ }
+    setInterviewStage(config.stage); setInterviewFormat(config.format);
+    setQuestionMix({
+      technical: config.question_mix.includes("technical"),
+      behavioural: config.question_mix.includes("behavioural"),
+      motivational: config.question_mix.includes("motivational"),
+    });
+    setTechnicalDifficulty(config.technical_difficulty ? resolveTechnicalDifficulty(config.technical_difficulty) : DEFAULT_TECHNICAL_DIFFICULTY);
+    setLength(typeof config.max_questions === "number" ? config.max_questions : 12);
+    setPractiseAgainActive(true);
+    analyseAndPlan(); // same duplicate-generation guard as every other caller (Phase 18) — see there
+  }
+  function confirmPractiseAgain() {
+    const app = practiseAgainConfirmApp;
+    if (!app) return;
+    setPractiseAgainConfirmApp(null);
+    startPractiseAgain(app);
   }
 
   /* ---------------- PHASE 16A: APPLICATIONS PILLAR ---------------- */
@@ -5626,6 +5752,12 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
   /* ---------------- STEP 1: JD + CV ANALYSIS -> PROFILE ---------------- */
   async function analyseAndPlan() {
     setError("");
+    // Phase 38 — Practise again: a ONE-SHOT flag consumed here, on every single invocation of
+    // analyseAndPlan (including the early "resume_choice" return below), so it can never leak
+    // into a later, unrelated call. Read once into a local const; only ever changes the loading
+    // screen's copy below — nothing about generation/persistence itself.
+    const isPractiseAgain = practiseAgainActive;
+    if (isPractiseAgain) setPractiseAgainActive(false);
     // Phase 18 — duplicate-generation protection. Before spending an AI call on
     // a brand-new interview, check whether this application already has a
     // resumable unfinished one. If so, hand the user the choice (Continue /
@@ -5645,8 +5777,13 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
     // real awaited milestones; the batch pipeline has one extra generation step.
     const batchPipeline = resolveInterviewConfig(interviewStage, interviewFormat).pipeline === "independent_batch";
     setGenProgress({
-      title: "Preparing your interview",
-      subtitle: [cleanCompany, cleanRole].filter(Boolean).join(" · "),
+      // Phase 38: same staged LoadingScreen, same real milestones — only the headline copy
+      // changes, so a repeat-practice generation reads as "using your previous settings"
+      // rather than the generic first-time wizard copy.
+      title: isPractiseAgain ? "Creating your new interview" : "Preparing your interview",
+      subtitle: isPractiseAgain
+        ? `Using your previous settings for ${[cleanCompany, cleanRole].filter(Boolean).join(" · ")}`
+        : [cleanCompany, cleanRole].filter(Boolean).join(" · "),
       steps: batchPipeline
         ? ["Creating your personalised questions", "Preparing every question", "Finalising your interview"]
         : ["Creating your personalised questions", "Finalising your interview"],
@@ -6773,6 +6910,27 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
       <style>{TOKENS}</style>
       {showNav && <NavBar screen={screen} setScreen={setScreen} user={user} classroomNeedsWorkCount={classroomNeedsWorkCount} onSignOut={() => guarded(handleSignOut)} />}
 
+      {/* ---------------- PHASE 38: PRACTISE AGAIN — confirmation ----------------
+          Rendered here (not inside a specific screen) because "Practise again" is
+          reachable from both the Dashboard's application cards and the Application
+          Overview's Interviews list — one modal, portalled, works from either. Cancel
+          performs no side effect at all (just closes); Confirm goes straight to
+          startPractiseAgain — no wizard in between for a normal, fully-configured
+          application. ---------------- */}
+      {practiseAgainConfirmApp && (
+        <ConfirmDialog
+          title="Create a new interview?"
+          body={`We'll create a new interview for "${practiseAgainConfirmApp.company} — ${practiseAgainConfirmApp.role}" using the company, role and settings from your previous interview.`}
+          confirmLabel="Create new interview"
+          busyLabel="Creating..."
+          icon={RotateCcw}
+          iconColor="var(--blue)"
+          confirmVariant="accent"
+          onCancel={cancelPractiseAgain}
+          onConfirm={() => guarded(confirmPractiseAgain)}
+        />
+      )}
+
       {/* ---------------- LANDING (Phase 32: full product showcase) ---------------- */}
       {screen === "landing" && (
         <div className="jr-fade">
@@ -7576,6 +7734,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                 title="Delete application?"
                 body={`This will permanently delete "${app.company} — ${app.role}" and its associated interview data (interviews, questions, answers and reports). This action cannot be undone.`}
                 confirmLabel="Delete application"
+                busyLabel="Deleting..."
                 busy={deleteBusy}
                 onCancel={() => setDeleteConfirmApp(null)}
                 onConfirm={() => guarded(confirmDeleteApplication)}
