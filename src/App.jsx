@@ -34,6 +34,13 @@ import {
   isTechnicalMixEnabled, applyQuestionMixToDistribution, resolveAllowedCategories, resolveOpeningCategory,
   questionMixTypeForCategory,
 } from "./questionMix";
+// Phase 37: Application Preparation Intelligence (Phase A). Pure, deterministic, offline —
+// see applicationPreparation.js's own docstring. Integrated into the existing Application
+// Overview screen only; no new screen, no new AI call.
+import {
+  getPractisedDimensions, getPreparationGaps, getApplicationPreparationStatus,
+  getNextRecommendedAction, getAutoChecklistItems, getManualChecklistDefinitions, mergeChecklist,
+} from "./applicationPreparation.js";
 // Phase 31: Technical Difficulty Control. A pure, deterministic layer (like
 // questionMix.js) that owns the Beginner/Intermediate/Advanced vocabulary, the
 // EXPLICIT per-level generation guidance injected into the real technical
@@ -1527,6 +1534,12 @@ async function loadFullUserState(userId) {
     // null for a legacy application that has nothing stored (or a DB without the column) —
     // every downstream reader treats null as "no intelligence yet".
     applicationIntelligence: validateApplicationIntelligence(a.application_intelligence),
+    // Phase 37: the manually-ticked subset of the Interview Checklist (a plain { itemId: true }
+    // map — auto-derived items are never persisted, see applicationPreparation.js). Reuses the
+    // existing (previously unused) applications.checklist column — no new table. null for
+    // every application that predates this feature, or that hasn't ticked anything yet;
+    // mergeChecklist() already treats null/undefined identically to {}.
+    checklist: a.checklist && typeof a.checklist === "object" ? a.checklist : null,
   }));
   let reportsByInterview = new Map();
   if (interviewsRaw.length) {
@@ -1649,6 +1662,25 @@ async function dbGetApplicationDocuments(userId, applicationId) {
   const { data, error } = await supabase.from("documents").select("document_type, extracted_text, created_at").eq("user_id", userId).eq("application_id", applicationId).order("created_at", { ascending: false });
   if (error) { console.error("documents select failed:", error.message); return []; }
   return data || [];
+}
+
+// Phase 37: ground truth of which question CATEGORIES were actually asked across this
+// application's own interviews — covers BOTH the adaptive and independent/batch pipelines
+// (both write interview_questions.category; interview_memory, by contrast, is only ever
+// populated by the adaptive pipeline's finishInterview, so it would silently under-count a
+// candidate's independent/batch practice — deliberately not used here for that reason).
+// interviewIds is this application's own already-loaded completed-interview ids (interviewList,
+// filtered by applicationId — no extra query for that part); RLS scopes the read to this user's
+// own rows via the interview_questions -> interviews ownership join, same as every other child-
+// table query in this file that has no user_id column of its own to filter on directly (e.g.
+// interview_reports above). Best-effort: a failure degrades to "no practice data yet" rather
+// than blocking the Application Overview screen.
+async function dbGetApplicationQuestionCategories(interviewIds) {
+  if (!Array.isArray(interviewIds) || interviewIds.length === 0) return [];
+  const supabase = await getSupabase();
+  const { data, error } = await supabase.from("interview_questions").select("category").in("interview_id", interviewIds);
+  if (error) { console.error("interview_questions category select failed:", error.message); return []; }
+  return (data || []).map((r) => r.category).filter(Boolean);
 }
 
 async function dbCreateInterview(userId, applicationId, config, methodologyDistribution) {
@@ -3879,6 +3911,16 @@ function App() {
   // the existing `applications` state + persistence.
   const [appView, setAppView] = useState(null);
   const [appForm, setAppForm] = useState(null);
+  // Phase 37: raw interview_questions.category values for the CURRENTLY OPEN application's own
+  // completed interviews only — fetched fresh by openApplication() and cleared immediately on
+  // every open (before the fetch resolves) so a slow network can never leave a moment where one
+  // application's practice data is shown while a different one is genuinely open. This is the
+  // one piece of Phase 37 state that isn't just a read of already-loaded `applications`.
+  const [appPracticeCategories, setAppPracticeCategories] = useState([]);
+  // Phase 37: Interview Checklist expand/collapse — a per-viewer UI preference only, not
+  // persisted (the checklist's actual completion state lives on the application row).
+  const [checklistExpanded, setChecklistExpanded] = useState(false);
+  const checklistRef = useRef(null);
   // Phase 16B: honest staged loading. { title, subtitle, steps:[...], stage:N }.
   // The generating flows (interview / development module / application analysis)
   // set this up front and bump `stage` only when a real awaited milestone
@@ -4960,7 +5002,38 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
 
   /* ---------------- PHASE 16A: APPLICATIONS PILLAR ---------------- */
   function openApplicationsList() { setError(""); setAppForm(null); setScreen("applications"); }
-  function openApplication(app) { if (!app) return; setError(""); setAppView(app.id); setScreen("application"); }
+  function openApplication(app) {
+    if (!app) return;
+    setError(""); setAppView(app.id); setScreen("application"); setChecklistExpanded(false);
+    // Phase 37: clear FIRST (before the fetch even starts), then fetch fresh for THIS
+    // application only — never carries over the previously-open application's categories
+    // while this one loads. Scoped to this application's own completed interview ids
+    // (interviewList already loaded, filtered by applicationId — no extra query for that
+    // part). Best-effort: a failure just leaves practice data empty, same as "no data yet".
+    setAppPracticeCategories([]);
+    const completedIds = interviewList.filter((iv) => iv.applicationId === app.id).map((iv) => iv.id);
+    if (completedIds.length) {
+      dbGetApplicationQuestionCategories(completedIds).then((cats) => {
+        // Guard against a slow fetch resolving after the user has already navigated to a
+        // DIFFERENT application — never apply stale categories onto the wrong one.
+        setAppView((current) => { if (current === app.id) setAppPracticeCategories(cats); return current; });
+      }).catch(() => {});
+    }
+  }
+  // Phase 37: manual checklist toggle. Optimistic local update (instant feedback), then
+  // persisted onto the SAME applications.checklist column; reverted on a genuine write
+  // failure so the UI never silently claims something saved that didn't.
+  async function toggleChecklistItem(app, itemId) {
+    if (!app || !itemId) return;
+    const before = app.checklist && typeof app.checklist === "object" ? app.checklist : {};
+    const after = { ...before, [itemId]: !before[itemId] };
+    setApplications((prev) => prev.map((a) => (a.id === app.id ? { ...a, checklist: after } : a)));
+    const r = await dbUpdateApplication(app.id, { checklist: after });
+    if (r && r.ok === false) {
+      setApplications((prev) => prev.map((a) => (a.id === app.id ? { ...a, checklist: before } : a)));
+      setError("Couldn't save your checklist. Please try again.");
+    }
+  }
   function openApplicationForm(app) {
     setError("");
     setAppForm(app
@@ -7056,6 +7129,55 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
           return n && m && (n === m || n.includes(m) || m.includes(n));
         });
 
+        /* ---------------- PHASE 37: APPLICATION PREPARATION INTELLIGENCE ----------------
+         * Pure, deterministic, offline (applicationPreparation.js) — every input below is
+         * already-scoped to THIS application (appPracticeCategories is fetched fresh per
+         * open by openApplication(); appInterviews/interviewRecs/progress above are already
+         * app-scoped). ZERO new AI calls: the one AI-derived input (weakAreaRec) is read
+         * verbatim from `recs`/`interviewRecs`, already computed above for the existing
+         * "From your interviews" section — never recomputed. */
+        const practisedDimensions = getPractisedDimensions(appPracticeCategories);
+        const { gaps: preparationGaps, allCovered: allDimensionsCovered } = getPreparationGaps({ practisedDimensions });
+        const hasFeedback = appInterviews.some((iv) => !!iv.report);
+        // The single highest-priority GENUINE weak area (tested AND weak/inconsistent —
+        // gapKind "demonstrated"; "developing"=strength and "mixed"=inconclusive are both
+        // deliberately excluded, per applicationDevelopmentPriorities' own semantics).
+        const weakAreaRec = interviewRecs.find((r) => r.gapKind === "demonstrated") || null;
+
+        const autoChecklistItems = getAutoChecklistItems({
+          completedInterviewCount: progress.interviewsCompleted, practisedDimensions, hasFeedback,
+        });
+        const manualChecklistDefs = getManualChecklistDefinitions({ hasJobDescription: jdLen > 0 });
+        const checklist = mergeChecklist(autoChecklistItems, manualChecklistDefs, app.checklist);
+        const incompleteChecklistItems = checklist.items.filter((i) => !i.done);
+
+        const nextAction = getNextRecommendedAction({
+          completedInterviewCount: progress.interviewsCompleted,
+          gaps: preparationGaps, weakAreaRecommendation: weakAreaRec, incompleteChecklistItems,
+        });
+        const readiness = getApplicationPreparationStatus({
+          completedInterviewCount: progress.interviewsCompleted,
+          practisedDimensionCount: practisedDimensions.length, totalDimensions: QUESTION_MIX_TYPES.length,
+          hasFeedback, hasWeakAreaRemaining: !!weakAreaRec,
+          checklistDone: checklist.doneCount, checklistTotal: checklist.totalCount,
+        });
+        // Resolves nextAction into a real navigation — same action mapping the existing
+        // "From your interviews" / "Prepare for this application" cards already use for
+        // "develop_weak_area" (matchTopicFor -> openDevelopmentModule, else
+        // startLearningFromRecommendation), so this is never a second/parallel routing table.
+        function runNextAction() {
+          if (nextAction.actionKind === "develop_weak_area" && nextAction.payload?.recommendation) {
+            const r = nextAction.payload.recommendation;
+            const match = matchTopicFor(r.label);
+            if (match) openDevelopmentModule(match); else startLearningFromRecommendation(r, app);
+          } else if (nextAction.actionKind === "open_checklist") {
+            setChecklistExpanded(true);
+            checklistRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+          } else {
+            buildInterviewFromApplication(app);
+          }
+        }
+
         return (
           <div className="jr-fade jr-page">
             <Btn variant="ghost" onClick={openApplicationsList} style={{ marginBottom: 16, padding: "6px 4px" }}><ArrowLeft size={14} /> My Applications</Btn>
@@ -7075,6 +7197,50 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
             )}
 
             {error && <Card style={{ padding: 12, marginBottom: 16, borderLeft: "4px solid var(--bad)", background: "#FEF2F2", fontSize: 13, color: "var(--bad)" }}>{error}</Card>}
+
+            {/* ---- PHASE 37: WHAT SHOULD YOU DO NEXT — one prominent, deterministic
+                recommendation, nearest the main preparation/interview actions ---- */}
+            <Card style={{ padding: 20, marginBottom: 24, borderLeft: "4px solid var(--blue)" }}>
+              <div className="flex items-center gap-2" style={{ marginBottom: 10 }}>
+                <IconBadge icon={Compass} tone="blue" />
+                <span className="jr-meta">What should you do next?</span>
+              </div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: "var(--navy)", marginBottom: 4 }}>{nextAction.title}</div>
+              <div style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.5, marginBottom: 14 }}>{nextAction.subtitle}</div>
+              <Btn variant="accent" onClick={() => guarded(async () => runNextAction())}>{nextAction.actionLabel} <ArrowRight size={15} /></Btn>
+            </Card>
+
+            {/* ---- PHASE 37: PREPARATION STATUS — "Have I prepared enough?" +
+                "You haven't practised this", compact, real-signal-only ---- */}
+            <h3 style={{ fontSize: 17, fontWeight: 800, color: "var(--navy)", margin: "8px 0 12px" }}>Preparation status</h3>
+            <Card style={{ padding: 20, marginBottom: 12 }}>
+              <div className="flex items-center justify-between gap-3" style={{ marginBottom: 6, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 15, fontWeight: 700, color: "var(--navy)" }}>Are you ready?</span>
+                <Pill color={readiness.level === "well_prepared" ? "var(--good)" : "var(--blue)"} bg={readiness.level === "well_prepared" ? "#E7F8F1" : "var(--highlight)"}>{readiness.label}</Pill>
+              </div>
+              <div style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.5, marginBottom: 12 }}>{readiness.summary}</div>
+              {readiness.signals.map((s, i) => (
+                <div key={i} className="flex items-center gap-2" style={{ fontSize: 13, color: s.ok ? "var(--text-dim)" : "var(--navy)", fontWeight: s.ok ? 400 : 600, padding: "4px 0" }}>
+                  <span aria-hidden="true" style={{ color: s.ok ? "var(--good)" : "var(--warn)", flexShrink: 0 }}>{s.ok ? "✓" : "⚠"}</span>{s.label}
+                </div>
+              ))}
+            </Card>
+            <Card style={{ padding: 20, marginBottom: 24 }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: "var(--navy)", marginBottom: 10 }}>🔥 You haven't practised this</div>
+              {allDimensionsCovered ? (
+                <div style={{ fontSize: 13, color: "var(--good)", lineHeight: 1.5 }}>✓ You've practised every available question category for this opportunity.</div>
+              ) : (
+                preparationGaps.map((g) => (
+                  <div key={g.dimension} className="flex items-center justify-between gap-3" style={{ padding: "8px 0", borderTop: g.dimension !== preparationGaps[0].dimension ? "1px solid var(--border)" : "none", flexWrap: "wrap" }}>
+                    <div>
+                      <div style={{ fontSize: 13.5, fontWeight: 600, color: "var(--navy)" }}>{g.label} questions</div>
+                      <div style={{ fontSize: 12.5, color: "var(--text-dim)", marginTop: 2 }}>You haven't practised {g.label.toLowerCase()} questions for this opportunity yet.</div>
+                    </div>
+                    <LinkBtn onClick={() => buildInterviewFromApplication(app)} style={{ color: "var(--blue)", fontWeight: 600, fontSize: 13, whiteSpace: "nowrap" }}>Practise now →</LinkBtn>
+                  </div>
+                ))
+              )}
+            </Card>
 
             {/* ---- YOUR PREPARATION (centre of the workspace) ---- */}
             <h3 style={{ fontSize: 17, fontWeight: 800, color: "var(--navy)", margin: "8px 0 12px" }}>Your preparation</h3>
@@ -7253,7 +7419,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
 
             {/* ---- PROGRESS (real data only) ---- */}
             <h3 style={{ fontSize: 17, fontWeight: 800, color: "var(--navy)", margin: "8px 0 12px" }}>Progress</h3>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4" style={{ marginBottom: 28 }}>
               {[["Interviews completed", progress.interviewsCompleted], ["Development areas started", progress.areasStarted], ["Modules completed", progress.modulesCompleted]].map(([k, v]) => (
                 <Card key={k} style={{ padding: 18 }}>
                   <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 8 }}>{k}</div>
@@ -7261,6 +7427,44 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                 </Card>
               ))}
             </div>
+
+            {/* ---- PHASE 37: INTERVIEW CHECKLIST — compact, collapsible; auto items derive
+                from real activity above, manual items persist onto applications.checklist ---- */}
+            <h3 ref={checklistRef} style={{ fontSize: 17, fontWeight: 800, color: "var(--navy)", margin: "8px 0 12px" }}>🎯 Interview Checklist</h3>
+            <Card style={{ padding: 20 }}>
+              <div className="flex items-center justify-between gap-3" style={{ marginBottom: 10 }}>
+                <span style={{ fontSize: 13.5, fontWeight: 700, color: "var(--navy)" }}>{checklist.doneCount} of {checklist.totalCount} complete</span>
+              </div>
+              <div style={{ height: 7, background: "#EEF2F7", borderRadius: 999, marginBottom: 14 }}>
+                <div className="jr-bar" style={{ height: 7, width: (checklist.totalCount ? (checklist.doneCount / checklist.totalCount) * 100 : 0) + "%", background: checklist.doneCount >= checklist.totalCount ? "var(--good)" : "var(--blue)", borderRadius: 999 }} />
+              </div>
+              {(checklistExpanded ? checklist.items : checklist.items.slice(0, 4)).map((item) => (
+                <div key={item.id} className="flex items-center gap-3" style={{ padding: "7px 0" }}>
+                  {item.kind === "manual" ? (
+                    <button type="button" role="checkbox" aria-checked={item.done} aria-label={item.label}
+                      onClick={() => guarded(() => toggleChecklistItem(app, item.id))}
+                      style={{
+                        flexShrink: 0, width: 18, height: 18, borderRadius: 5, cursor: "pointer",
+                        border: item.done ? "1.5px solid var(--blue)" : "1.5px solid var(--border)",
+                        background: item.done ? "var(--blue)" : "#fff",
+                        display: "flex", alignItems: "center", justifyContent: "center", padding: 0,
+                      }}>
+                      {item.done && <CheckCircle2 size={13} color="#fff" aria-hidden="true" />}
+                    </button>
+                  ) : (
+                    <span aria-hidden="true" style={{ flexShrink: 0, width: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center", color: item.done ? "var(--good)" : "var(--border)" }}>
+                      <CheckCircle2 size={18} />
+                    </span>
+                  )}
+                  <span style={{ fontSize: 13.5, color: item.done ? "var(--text-dim)" : "var(--navy)", fontWeight: item.done ? 400 : 600, textDecoration: item.done ? "line-through" : "none" }}>{item.label}</span>
+                </div>
+              ))}
+              {checklist.items.length > 4 && (
+                <LinkBtn onClick={() => setChecklistExpanded((v) => !v)} style={{ color: "var(--blue)", fontWeight: 600, fontSize: 12.5, marginTop: 6 }}>
+                  {checklistExpanded ? "Show less" : `Show all ${checklist.items.length}`}
+                </LinkBtn>
+              )}
+            </Card>
           </div>
         );
       })()}

@@ -48,9 +48,12 @@ describe("persistence: everything needed to reconstruct is written to the existi
     expect(idxProfile).toBeGreaterThan(-1);
     expect(idxCreate).toBeGreaterThan(idxProfile);
   });
-  it("still exactly the two pre-Phase-18 migration files — NO migration added", () => {
+  it("no migration was added FOR PHASE 18 (resumable interviews reuse the existing config jsonb) — the two pre-Phase-18 files are still present, unmodified", () => {
+    // Phase 37 later added its own, unrelated migration (applications.checklist). This
+    // assertion is scoped to Phase 18's own claim ("resume needs no schema change"), so it
+    // checks presence of the pre-Phase-18 files rather than an exact/exhaustive list.
     const files = readdirSync(new URL("../supabase/migrations", import.meta.url)).filter((f) => f.endsWith(".sql")).sort();
-    expect(files).toEqual(["20260828120000_baseline_schema.sql", "20260828135856_development_modules.sql"]);
+    expect(files).toEqual(expect.arrayContaining(["20260828120000_baseline_schema.sql", "20260828135856_development_modules.sql"]));
   });
 });
 
