@@ -29,7 +29,7 @@ function slice(a, b) {
   return SRC.slice(s, e);
 }
 
-const OPEN_MODULE = slice("async function openDevelopmentModule(topic) {", "// ---- deterministic sub-activities");
+const OPEN_MODULE = slice("async function openDevelopmentModule(topic, opts = {}) {", "// ---- deterministic sub-activities");
 const OPEN_MODULE_FASTPATH = slice("const cachedRow = developmentModules.find((m) => m.topic_id === topic.id);", "// Not in state:");
 const ANALYSE_AND_PLAN = slice("async function analyseAndPlan() {", "function beginInterview()");
 const ANALYSE_APP_ONLY = slice("async function analyseApplicationOnly(app) {", "function buildInterviewFromApplication(");
@@ -39,7 +39,12 @@ const GO_TO_DEV_VIEW = slice("function goToDevView(v) {", "function startWritten
 const START_QUIZ = slice("function startWrittenQuiz() {", "async function saveFlashProgress(");
 const SUBMIT_WRITTEN = slice("async function submitWrittenAnswer() {", "// Phase 15A: the \"redo the ORIGINAL");
 const SAVE_REDO = slice("async function saveRedoAnswer() {", "// Phase 15A HARD-DURABILITY RETRIES");
-const OPEN_APPLICATION = slice("function openApplication(app) {", "function openApplicationForm(");
+// Phase 37 integration: tightened to end at toggleChecklistItem (the very next declaration)
+// rather than openApplicationForm — that end marker used to be immediately after
+// openApplication, but Phase 37 inserted toggleChecklistItem in between; leaving the old
+// marker would silently sweep an unrelated function's body (including its own `await`) into
+// every assertion below.
+const OPEN_APPLICATION = slice("function openApplication(app) {", "async function toggleChecklistItem(");
 
 /* ===================== FLOW 3 — existing Development Module ===================== */
 describe("FLOW 3 — reopening an existing module is instant: state-first, 0 AI, 0 blocking DB", () => {
@@ -232,7 +237,10 @@ describe("Loading UX — feedback is immediate and staged on real milestones, ne
     expect((ANALYSE_APP_ONLY.match(/setGenProgress\(null\)/g) || []).length).toBeGreaterThanOrEqual(3);
   });
   it("loading context carries what the user is waiting for (company / role / topic)", () => {
-    expect(ANALYSE_AND_PLAN).toMatch(/subtitle: \[cleanCompany, cleanRole\]\.filter\(Boolean\)\.join\(" · "\)/);
+    // Phase 38: analyseAndPlan's subtitle became a ternary (same company/role context either
+    // way — Practise Again's branch just adds "Using your previous settings for ..." framing),
+    // so this checks the underlying expression appears, not that it's the immediate RHS.
+    expect(ANALYSE_AND_PLAN).toMatch(/\[cleanCompany, cleanRole\]\.filter\(Boolean\)\.join\(" · "\)/);
     expect(OPEN_MODULE).toMatch(/subtitle: topic\.topic \|\| ""/);
     expect(ANALYSE_APP_ONLY).toMatch(/subtitle: \[cleanCompany, cleanRole\]\.filter\(Boolean\)\.join\(" · "\)/);
   });

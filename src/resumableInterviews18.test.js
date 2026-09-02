@@ -159,14 +159,20 @@ describe("duplicate generation is intercepted, non-destructively", () => {
     expect(ANALYSE.indexOf("setResumeChoice(")).toBeLessThan(ANALYSE.indexOf("await callClaude("));
   });
   it("Phase 20: every application-level Build-interview entry point offers resume FIRST, before the wizard", () => {
-    // one shared helper, used by all three application entry points
+    // one shared helper, used by all these application entry points
     expect(SRC).toMatch(/function maybeOfferResume\(appId, next\) \{[\s\S]*?resumableInterviews\.find\(\(r\) => r\.applicationId === appId && r\.hasProfile\)[\s\S]*?setScreen\("resume_choice"\)/);
     const biff = slice("function buildInterviewFromApplication(app) {", "/* ---------------- PHASE 18: RESUME AN UNFINISHED INTERVIEW");
     expect(biff).toMatch(/if \(!maybeOfferResume\(app\.id, "wizard"\)\) setScreen\("create"\)/);
-    const again = slice("function practiseApplicationAgain(app) {", "/* ---------------- PHASE 16A: APPLICATIONS PILLAR");
-    expect(again).toMatch(/if \(!maybeOfferResume\(app\.id, "wizard"\)\) setScreen\("create"\)/);
-    const cont = slice("async function continueApplication(app) {", "// Phase 4: practise again");
+    const cont = slice("async function continueApplication(app) {", "/* ---------------- PHASE 38: PRACTISE AGAIN (frictionless repeat interview) ---------------- */");
     expect(cont).toMatch(/if \(maybeOfferResume\(app\.id, "wizard"\)\) return;/);
+    // Phase 38: "Practise again" no longer enters the wizard at all on its normal (complete-
+    // config) path — it calls analyseAndPlan() directly, which already runs this SAME guard
+    // itself (see "the check sits before the AI call" above) before ever spending an AI call.
+    // maybeOfferResume is still used, but only on startPractiseAgain's legacy/incomplete-config
+    // fallback, which genuinely does land in the wizard.
+    const startAgain = slice("async function startPractiseAgain(app) {", "function confirmPractiseAgain()");
+    expect(startAgain).toMatch(/if \(!maybeOfferResume\(app\.id, "wizard"\)\) setScreen\("create"\)/);
+    expect(startAgain).toMatch(/analyseAndPlan\(\);/);
   });
   it("the resume_choice screen offers Continue (primary) and Start New (secondary), with a context-aware Start New", () => {
     const CHOICE = slice('screen === "resume_choice" && resumeChoice && (', "{/* ---------------- CREATE (progressive wizard) ---------------- */}");
@@ -206,7 +212,7 @@ describe("Phase 16B performance constraints do not regress", () => {
     expect(LOAD_STATE).not.toMatch(/reconstructInterviewState/);
   });
   it("existing Development Module reopen is still state-first (Phase 16B fast path intact)", () => {
-    const OPEN_MODULE = slice("async function openDevelopmentModule(topic) {", "// ---- deterministic sub-activities");
+    const OPEN_MODULE = slice("async function openDevelopmentModule(topic, opts = {}) {", "// ---- deterministic sub-activities");
     expect(OPEN_MODULE).toMatch(/const cachedRow = developmentModules\.find\(\(m\) => m\.topic_id === topic\.id\)/);
     expect(OPEN_MODULE.indexOf("developmentModules.find")).toBeLessThan(OPEN_MODULE.indexOf("await dbGetDevelopmentModule(topic.id)"));
   });
