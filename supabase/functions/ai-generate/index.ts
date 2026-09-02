@@ -1,5 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import { callAIProvider, ProviderHttpError, ProviderCapabilityError } from "./providers.ts";
 
 // Secure AI proxy for JOB.READY.
 // verify_jwt=true (set at deploy time) means Supabase's edge runtime rejects
@@ -22,8 +23,6 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY");
-const MODEL = "claude-sonnet-4-6";
 const RATE_LIMIT_MAX_REQUESTS = 40; // per window
 const RATE_LIMIT_WINDOW_MINUTES = 10;
 
@@ -49,8 +48,18 @@ Deno.serve(async (req: Request) => {
   if (userErr || !userData?.user) return json({ error: "Not authenticated" }, 401);
   const userId = userData.user.id;
 
-  if (!ANTHROPIC_API_KEY) {
-    console.error("ANTHROPIC_API_KEY secret is not configured for this project.");
+  // Phase 36 — provider abstraction. AI_PROVIDER is a server-side-only secret
+  // ("anthropic" | "deepseek", defaults to "anthropic" when unset or anything
+  // else) — never read from the request body, never settable by the client,
+  // exactly like ANTHROPIC_API_KEY/DEEPSEEK_API_KEY. See providers.ts for the
+  // full abstraction; this file only wires Deno.env into it.
+  const providerEnv = {
+    AI_PROVIDER: Deno.env.get("AI_PROVIDER"),
+    ANTHROPIC_API_KEY: Deno.env.get("ANTHROPIC_API_KEY"),
+    DEEPSEEK_API_KEY: Deno.env.get("DEEPSEEK_API_KEY"),
+  };
+  if (!providerEnv.ANTHROPIC_API_KEY && !providerEnv.DEEPSEEK_API_KEY) {
+    console.error("Neither ANTHROPIC_API_KEY nor DEEPSEEK_API_KEY is configured for this project.");
     return json({ error: "AI service is not configured. Please contact support." }, 500);
   }
 
@@ -95,51 +104,44 @@ Deno.serve(async (req: Request) => {
     { onConflict: "user_id" }
   );
 
-  // ---- Call Anthropic ----
-  const anthropicBody: Record<string, unknown> = {
-    model: MODEL,
-    max_tokens: clampedMaxTokens,
-    system,
-    messages: [{ role: "user", content: userText }],
-  };
-  if (useWebSearch) anthropicBody.tools = [{ type: "web_search_20250305", name: "web_search" }];
-
-  let anthropicRes: Response;
+  // ---- Call the configured AI provider ----
+  let result;
   try {
-    anthropicRes = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify(anthropicBody),
-    });
+    result = await callAIProvider(providerEnv, { system, userText, maxTokens: clampedMaxTokens, useWebSearch: !!useWebSearch });
   } catch (e) {
+    if (e instanceof ProviderHttpError) {
+      if (e.message) console.error("Provider error:", e.status, e.message);
+      await logUsage(supabase, { userId, applicationId, interviewId, requestType, status: "upstream_error_" + e.status });
+      if (e.status === 429) return json({ error: "The AI service is busy right now. Please try again shortly." }, 429);
+      if (e.status >= 500) return json({ error: "The AI service is temporarily unavailable. Please try again." }, 502);
+      return json({ error: "Something went wrong on our end. Please try again." }, 500);
+    }
+    if (e instanceof ProviderCapabilityError) {
+      console.error("Provider capability error:", e.message);
+      await logUsage(supabase, { userId, applicationId, interviewId, requestType, status: "provider_capability_error" });
+      return json({ error: "Something went wrong on our end. Please try again." }, 500);
+    }
+    // Network failure (fetch threw) or misconfiguration (missing key for the
+    // selected provider) — same "couldn't reach the AI service" shape the
+    // frontend has always handled for a network error.
     await logUsage(supabase, { userId, applicationId, interviewId, requestType, status: "network_error" });
     return json({ error: "Couldn't reach the AI service. Please try again." }, 502);
   }
 
-  if (!anthropicRes.ok) {
-    let detail = "";
-    try { detail = (await anthropicRes.json())?.error?.message || ""; } catch { /* ignore */ }
-    if (detail) console.error("Anthropic error:", anthropicRes.status, detail);
-    await logUsage(supabase, { userId, applicationId, interviewId, requestType, status: "upstream_error_" + anthropicRes.status });
-    if (anthropicRes.status === 429) return json({ error: "The AI service is busy right now. Please try again shortly." }, 429);
-    if (anthropicRes.status >= 500) return json({ error: "The AI service is temporarily unavailable. Please try again." }, 502);
-    return json({ error: "Something went wrong on our end. Please try again." }, 500);
-  }
-
-  const data = await anthropicRes.json();
+  // Phase 36: model is recorded as "<provider>:<model id>" (e.g.
+  // "anthropic:claude-sonnet-4-6", "deepseek:deepseek-chat") — reuses the
+  // EXISTING free-text ai_usage.model column (no schema change) while making
+  // provider observable per Step 11. Legacy rows keep their bare model name;
+  // both are just text, so no migration is needed and no reader breaks.
   await logUsage(supabase, {
     userId, applicationId, interviewId, requestType,
     status: "completed",
-    model: data?.model || MODEL,
-    inputTokens: data?.usage?.input_tokens ?? null,
-    outputTokens: data?.usage?.output_tokens ?? null,
+    model: `${result.provider}:${result.model}`,
+    inputTokens: result.usage.input_tokens,
+    outputTokens: result.usage.output_tokens,
   });
 
-  return json({ content: data.content, stop_reason: data.stop_reason });
+  return json({ content: result.content, stop_reason: result.stop_reason });
 });
 
 async function logUsage(supabase: any, opts: {

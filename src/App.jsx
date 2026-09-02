@@ -494,12 +494,17 @@ async function getSupabase() {
   return supabaseClient;
 }
 
-// callClaude() keeps its original public signature (system, userText, maxTokens, useWebSearch)
-// so every call site elsewhere in the app is unchanged. Internally it now calls the
-// authenticated Supabase Edge Function "ai-generate" instead of the Anthropic API directly —
-// the function verifies the caller's JWT (verify_jwt=true, enforced by Supabase's edge
-// runtime before the function body even runs) and holds the real Anthropic key server-side.
-async function callClaude(system, userText, maxTokens = 2000, useWebSearch = false, meta = {}) {
+// callAI() keeps its original public signature (system, userText, maxTokens, useWebSearch) —
+// so every call site elsewhere in the app is unchanged. Internally it calls the authenticated
+// Supabase Edge Function "ai-generate" instead of any AI provider directly — the function
+// verifies the caller's JWT (verify_jwt=true, enforced by Supabase's edge runtime before the
+// function body even runs), holds the real provider key(s) server-side, and — as of Phase 36 —
+// picks which provider (Anthropic or DeepSeek) actually serves the request; this frontend
+// function has no idea which one it was and doesn't need to (see
+// supabase/functions/ai-generate/providers.ts for the provider abstraction). Renamed from
+// callClaude -> callAI for that reason (Phase 36); callClaude is kept as an alias immediately
+// below so none of this file's ~12 existing call sites needed to change.
+async function callAI(system, userText, maxTokens = 2000, useWebSearch = false, meta = {}) {
   const supabase = await getSupabase();
   const { data: sessionData } = await supabase.auth.getSession();
   if (!sessionData?.session) throw new Error("Your session has expired. Please sign in again.");
@@ -543,6 +548,9 @@ async function callClaude(system, userText, maxTokens = 2000, useWebSearch = fal
     throw new Error("Could not parse the AI's response. Please try again.");
   }
 }
+// Backward-compat alias — every existing call site in this file still says
+// callClaude(...); this is the only change needed for them to keep working.
+const callClaude = callAI;
 
 // AI output validation — the model is instructed to return strict JSON, but instructions
 // aren't a guarantee. These coerce/clamp values so a malformed field (e.g. a score returned
@@ -561,7 +569,7 @@ function scoreMap(obj) {
   if (obj && typeof obj === "object") Object.entries(obj).forEach(([k, v]) => { out[k] = num(v, 0); });
   return out;
 }
-function validateEvaluation(e) {
+export function validateEvaluation(e) {
   e = e || {};
   return {
     relevance: num(e.relevance), specificity: num(e.specificity), structure: num(e.structure),
@@ -569,7 +577,7 @@ function validateEvaluation(e) {
     strengths: arr(e.strengths).map((s) => str(s)), issues: arr(e.issues).map((s) => str(s)),
   };
 }
-function validateReport(r) {
+export function validateReport(r) {
   r = r || {};
   const readinessOk = ["not_ready", "needs_improvement", "interview_ready", "strong"].includes(r.readiness);
   return {
@@ -1326,7 +1334,7 @@ export function computeRecoveryDecision({ interview, profile, priorTranscript, a
   return { decision, genInput };
 }
 
-function validateLesson(l) {
+export function validateLesson(l) {
   l = l || {};
   return {
     title: str(l.title, "Lesson"), why_it_matters: str(l.why_it_matters),
@@ -1386,11 +1394,11 @@ export function validateDevelopmentModule(m) {
     learning_items: items.slice(0, 8),
   };
 }
-function validateAcScenario(s) {
+export function validateAcScenario(s) {
   s = s || {};
   return { title: str(s.title, "Exercise"), brief: str(s.brief), objective: str(s.objective), materials: arr(s.materials).map((m) => str(m)), suggested_time_minutes: num(s.suggested_time_minutes, 15, 1, 180) };
 }
-function validateAcResult(r) {
+export function validateAcResult(r) {
   r = r || {};
   return {
     overall_score: num(r.overall_score), breakdown: scoreMap(r.breakdown),
@@ -1434,7 +1442,7 @@ export function validateQuestionBatch(r, expectedCount) {
   if (expectedCount && questions.length > expectedCount) questions = questions.slice(0, expectedCount);
   return { questions };
 }
-function validateBatchEvaluation(r) {
+export function validateBatchEvaluation(r) {
   r = r || {};
   // Deliberately reuses validateEvaluation() per item — same rubric shape as the adaptive
   // pipeline (Phase 4 plan §4.2) rather than a fragmented, format-specific evaluation schema.

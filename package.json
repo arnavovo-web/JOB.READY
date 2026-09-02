@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "evaluate:interview-invitations": "node scripts/evaluate-interview-invitations.mjs"
+    "evaluate:interview-invitations": "node scripts/evaluate-interview-invitations.mjs",
+    "benchmark:deepseek": "node scripts/deepseek-benchmark/run.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",
