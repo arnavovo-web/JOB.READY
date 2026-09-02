@@ -198,7 +198,7 @@ const TOKENS = `
      deliberately faint: atmosphere, not decoration. It scrolls away below the
      header so long pages settle onto the flat --bg. */
   body{
-    color:var(--text); background:var(--bg);
+    font-family:var(--font); color:var(--text); background:var(--bg);
     background-image:
       radial-gradient(1100px 520px at 50% -260px, rgba(124,58,237,0.07), rgba(124,58,237,0) 70%),
       radial-gradient(820px 460px at 108% -60px, rgba(37,99,235,0.06), rgba(37,99,235,0) 62%);
