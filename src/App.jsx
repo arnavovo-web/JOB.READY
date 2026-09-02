@@ -13,6 +13,10 @@ import {
   // Phase B — engagement features (lucide-react is already a dependency; these
   // are additional names from the same package, no new dep).
   Zap, Trash2, AlertTriangle, RotateCcw,
+  // Phase 36 — "How it works" product-discovery dropdown (lucide-react is
+  // already a dependency; ChevronDown is an additional name from the same
+  // package, no new dep).
+  ChevronDown,
 } from "lucide-react";
 // Phase 2A/2B: canonical taxonomy / anchor-source / stage-methodology
 // engine. A companion layer to the Phase 4A INTERVIEW_STAGES/
@@ -415,6 +419,14 @@ const TOKENS = `
 
   .jr-landing-cta{ position:relative; overflow:hidden; background-color:#0B1220; background-image:radial-gradient(620px 380px at 50% 40%, rgba(37,99,235,0.30), rgba(37,99,235,0) 68%), radial-gradient(720px 520px at 10% -6%, rgba(124,58,237,0.32), rgba(124,58,237,0) 62%), radial-gradient(720px 520px at 94% 100%, rgba(56,189,248,0.16), rgba(56,189,248,0) 64%), linear-gradient(135deg, #0B1220, #16233B 55%, #1B2450); background-repeat:no-repeat; }
   .jr-landing-cta::before{ content:""; position:absolute; left:50%; top:36%; width:520px; height:340px; margin-left:-260px; pointer-events:none; background:radial-gradient(closest-side, rgba(219,234,254,0.20), rgba(219,234,254,0) 72%); }
+
+  /* Phase 36 — "How it works" product-discovery dropdown. The panel is an
+     absolutely-positioned child of NavBar's own sticky wrapper (a "positioned"
+     element, so it's the containing block) spanning that wrapper's full
+     width — never the trigger's width — which keeps it centred and clipped
+     to the viewport at any desktop width without per-trigger overflow math. */
+  .jr-howdrop-panel{ position:absolute; top:100%; left:0; right:0; z-index:41; background:var(--card); border-top:1px solid var(--border); border-bottom:1px solid var(--border); box-shadow:var(--shadow-lg); overflow:hidden; }
+  .jr-howdrop-panel::before{ content:""; position:absolute; inset:0; pointer-events:none; background-image:radial-gradient(640px 320px at 6% 0%, rgba(37,99,235,0.05), rgba(37,99,235,0) 60%), radial-gradient(560px 320px at 96% 100%, rgba(124,58,237,0.06), rgba(124,58,237,0) 60%); }
 
   @media (max-width:600px){
     .jr-landing-hero{ background-image:linear-gradient(180deg, rgba(235,240,255,0.72), rgba(248,250,252,0) 72%), radial-gradient(460px 380px at 96% -2%, rgba(124,58,237,0.18), rgba(124,58,237,0) 64%), radial-gradient(420px 380px at 4% 104%, rgba(56,189,248,0.14), rgba(37,99,235,0) 70%); }
@@ -3252,6 +3264,559 @@ function LoadingScreen({ messages, progress }) {
   );
 }
 
+/* ================================================================== */
+/* PHASE 36 — "HOW IT WORKS" PRODUCT-DISCOVERY DROPDOWN                */
+/* ------------------------------------------------------------------ */
+/* Presentation only — no state beyond local UI state, no backend calls */
+/* of any kind. Every feature named below maps to a real, existing      */
+/* JOB.READY capability, cross-checked against LandingPage's own        */
+/* `toolkit` / `steps` / `acTypes` / `inventory` arrays above and       */
+/* against the real authenticated screens (dashboard, applications,     */
+/* classroom, ac_home, progress). Nothing here is invented — no claims  */
+/* about hiring outcomes, adoption figures, institutional relationships */
+/* or unimplemented AI/pricing benefits, and no quoted endorsements.    */
+/*                                                                      */
+/* No authenticated screen has a public preview route, so every feature */
+/* CTA ("Explore X") routes to the real sign-up flow ("login"); only    */
+/* the Overview entry routes to the existing `how` screen. Any          */
+/* illustrative number in a preview visual is explicitly labelled       */
+/* "Illustrative preview · sample data".                                */
+/* ================================================================== */
+
+// The default preview shown when the menu opens, before the visitor
+// hovers/focuses any feature — routes to the full `how` screen.
+const HOW_IT_WORKS_OVERVIEW_PREVIEW = {
+  eyebrow: "JOB.READY OVERVIEW",
+  headline: "From application to interview-ready.",
+  body: "See how JOB.READY turns a single opportunity into a full preparation plan: understand what to expect, learn what you're missing, practise realistically, and track your improvement.",
+  ctaLabel: "See how it works",
+  target: "how",
+  visual: "overview",
+};
+
+// One preview per feature. Every feature CTA routes to "login" (no
+// `target` field needed — HowItWorksPreviewPanel defaults to it).
+const HOW_IT_WORKS_PREVIEWS = {
+  ai_mock_interviews: {
+    eyebrow: "AI MOCK INTERVIEWS", headline: "Practise the interview you're actually going to face.",
+    body: "Adaptive interviews that follow up on what you say, or fixed-length sets — built around the company, role and job description you add, with your own question mix and technical difficulty.",
+    ctaLabel: "Explore AI interviews", visual: "interview",
+  },
+  invitation_analysis: {
+    eyebrow: "INVITATION ANALYSIS", headline: "Start with what the employer has actually told you.",
+    body: "Paste an interview invitation email and JOB.READY pulls out the company, role, stage and format, then helps you set up practice around it.",
+    ctaLabel: "Explore invitation analysis",
+  },
+  question_mix: {
+    eyebrow: "QUESTION MIX & DIFFICULTY", headline: "Choose exactly what your interview tests.",
+    body: "Set the balance between technical knowledge, behavioural / competency and motivational questions, and the technical difficulty, before you sit an interview.",
+    ctaLabel: "Explore AI interviews",
+  },
+  learn: {
+    eyebrow: "LEARN", headline: "Learn what you're missing.",
+    body: "When an interview or exercise exposes a gap, JOB.READY turns it into a Classroom topic — a lesson and a development module generated for that specific gap, not a generic syllabus.",
+    ctaLabel: "Explore learning", visual: "modules",
+  },
+  flashcards: {
+    eyebrow: "FLASHCARDS", headline: "Learn faster. Remember more.",
+    body: "Every development module comes with flashcards, so you actively test recall instead of just re-reading the material.",
+    ctaLabel: "Explore Flashcards", visual: "flashcard",
+  },
+  quizzes: {
+    eyebrow: "QUIZZES", headline: "Test what you actually know.",
+    body: "Multiple-choice quizzes and written knowledge checks for every module, so you know whether it's actually sunk in.",
+    ctaLabel: "Explore quizzes", visual: "quiz",
+  },
+  feedback: {
+    eyebrow: "PERSONALISED FEEDBACK", headline: "Know exactly what to improve next.",
+    body: "Every answer is evaluated against the competencies your target role actually tests, with a scored report and a recommended next step.",
+    ctaLabel: "Explore feedback", visual: "report",
+  },
+  progress: {
+    eyebrow: "PROGRESS", headline: "See the progress you're actually making.",
+    body: "Every completed interview adds to your history. JOB.READY tracks your competency scores over time, so you can see whether you're actually improving.",
+    ctaLabel: "Explore progress", visual: "trend",
+  },
+  dna: {
+    eyebrow: "INTERVIEW DNA", headline: "Understand your interview profile.",
+    body: "A picture of your recurring strengths, weak spots and answering style, built from every interview you complete.",
+    ctaLabel: "Explore Interview DNA",
+  },
+  memory: {
+    eyebrow: "INTERVIEW MEMORY", headline: "See how far you've come.",
+    body: "Re-attempt a similar question later and see whether your answer — and your score — actually improved.",
+    ctaLabel: "Explore Interview Memory",
+  },
+  applications: {
+    eyebrow: "APPLICATIONS", headline: "Prepare with your opportunity in mind.",
+    body: "Keep every application in one workspace, and let Application Intelligence turn the job description into the competencies, themes and CV claims worth preparing for.",
+    ctaLabel: "Explore Applications",
+  },
+  assessment_centre: {
+    eyebrow: "ASSESSMENT CENTRE", headline: "Prepare for more than the interview.",
+    body: "Case studies, group exercises, presentations, written exercises and inbox exercises — each one scored with a competency breakdown.",
+    ctaLabel: "Explore the Assessment Centre", visual: "assessment",
+  },
+};
+
+// LEFT-hand feature navigation, grouped exactly as specified: Prepare / Learn
+// / Improve / Career. `previewKey` lets two nav entries share one preview
+// (Classroom + Development Modules; Applications + Application Intelligence)
+// — it defaults to the item's own `key` when omitted.
+const HOW_IT_WORKS_CATEGORIES = [
+  { id: "prepare", label: "Prepare", items: [
+    { key: "ai_mock_interviews", label: "AI Mock Interviews", icon: MessageSquare },
+    { key: "invitation_analysis", label: "Invitation Analysis", icon: ScanLine },
+    { key: "question_mix", label: "Question Mix & Difficulty", icon: ListChecks },
+  ] },
+  { id: "learn", label: "Learn", items: [
+    { key: "classroom", label: "Classroom", icon: GraduationCap, previewKey: "learn" },
+    { key: "development_modules", label: "Development Modules", icon: BookOpen, previewKey: "learn" },
+    { key: "flashcards", label: "Flashcards", icon: Layers },
+    { key: "quizzes", label: "Quizzes & Knowledge Checks", icon: NotebookPen },
+  ] },
+  { id: "improve", label: "Improve", items: [
+    { key: "feedback", label: "Personalised Feedback", icon: Target },
+    { key: "progress", label: "Progress Tracking", icon: LineChart },
+    { key: "dna", label: "Interview DNA", icon: Compass },
+    { key: "memory", label: "Interview Memory", icon: History },
+  ] },
+  { id: "career", label: "Career", items: [
+    { key: "applications", label: "Applications", icon: FileText, previewKey: "applications" },
+    { key: "app_intelligence", label: "Application Intelligence", icon: Route, previewKey: "applications" },
+    { key: "assessment_centre", label: "Assessment Centre", icon: Briefcase },
+  ] },
+];
+
+// Small illustrative visuals reused by both the dropdown preview panel and
+// the redesigned `how` screen. Every number is sample data, always
+// labelled; the whole thing is decorative (aria-hidden) — the surrounding
+// copy carries the real information for assistive tech.
+function HowPreviewVisual({ type }) {
+  if (type === "overview") {
+    const journey = ["Prepare", "Learn", "Practise", "Improve", "Perform"];
+    return (
+      <div aria-hidden="true" className="flex flex-wrap items-center justify-center gap-2" style={{ marginTop: 16 }}>
+        {journey.map((s, i) => (
+          <React.Fragment key={s}>
+            <span style={{ fontSize: 11.5, fontWeight: 700, color: "var(--blue-dark)", background: "var(--highlight)", padding: "6px 12px", borderRadius: 999 }}>{s}</span>
+            {i < journey.length - 1 && <ArrowRight size={12} color="var(--text-faint)" />}
+          </React.Fragment>
+        ))}
+      </div>
+    );
+  }
+  if (type === "interview") {
+    return (
+      <div aria-hidden="true" style={{ background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 12, padding: 14, marginTop: 14 }}>
+        <div className="flex items-center justify-between mb-2">
+          <span className="flex gap-2 flex-wrap">
+            {["Behavioural", "Technical", "Motivational"].map((p) => (
+              <span key={p} style={{ fontSize: 10, fontWeight: 700, color: "var(--blue-dark)", background: "var(--highlight)", padding: "2px 8px", borderRadius: 999 }}>{p}</span>
+            ))}
+          </span>
+          <span style={{ fontSize: 10.5, color: "var(--text-faint)", fontVariantNumeric: "tabular-nums" }}>Question 4 / 12</span>
+        </div>
+        <ScoreBar label="Readiness" value={78} />
+        <ScoreBar label="Structure" value={84} />
+        <div style={{ fontSize: 10, color: "var(--text-faint)" }}>Illustrative preview · sample data</div>
+      </div>
+    );
+  }
+  if (type === "modules") {
+    return (
+      <div aria-hidden="true" style={{ background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 12, padding: 14, marginTop: 14 }}>
+        <ProgressMeter value={2} max={4} label="Commercial awareness module" tone="good" />
+        <ProgressMeter value={1} max={3} label="Valuation basics module" tone="blue" style={{ marginTop: 10 }} />
+        <div style={{ fontSize: 10, color: "var(--text-faint)", marginTop: 8 }}>Illustrative preview · sample data</div>
+      </div>
+    );
+  }
+  if (type === "flashcard") {
+    return (
+      <div aria-hidden="true" style={{ background: "linear-gradient(180deg, #FFFDF7, var(--bg))", border: "1px solid var(--border)", borderRadius: 12, padding: 14, marginTop: 14 }}>
+        <div className="flex items-center justify-between mb-2">
+          <span style={{ fontSize: 11.5, fontWeight: 700, color: "var(--navy)" }}>Flashcard</span>
+          <span style={{ fontSize: 10.5, color: "var(--text-faint)" }}>Card 2 / 8</span>
+        </div>
+        <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--navy)", lineHeight: 1.4 }}>What does EV / EBITDA tell you that a P/E ratio doesn't?</div>
+        <div style={{ fontSize: 10, color: "var(--text-faint)", marginTop: 8 }}>Illustrative preview · sample data</div>
+      </div>
+    );
+  }
+  if (type === "quiz") {
+    return (
+      <div aria-hidden="true" style={{ background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 12, padding: 14, marginTop: 14 }}>
+        <div className="flex items-center justify-between mb-2">
+          <span style={{ fontSize: 11.5, fontWeight: 700, color: "var(--navy)" }}>Quick quiz</span>
+          <span style={{ fontSize: 10.5, color: "var(--text-faint)" }}>Q3 / 5</span>
+        </div>
+        {["A written check", "A multiple-choice item", "A recall prompt"].map((o, i) => (
+          <div key={o} className="flex items-center gap-2" style={{ padding: "5px 0", fontSize: 12, color: "var(--text-dim)" }}>
+            <span style={{ width: 13, height: 13, borderRadius: 999, border: "1.5px solid " + (i === 1 ? "var(--blue)" : "var(--border)"), background: i === 1 ? "var(--blue)" : "transparent", flexShrink: 0 }} /> {o}
+          </div>
+        ))}
+        <div style={{ fontSize: 10, color: "var(--text-faint)", marginTop: 6 }}>Illustrative preview · sample data</div>
+      </div>
+    );
+  }
+  if (type === "report") {
+    return (
+      <div aria-hidden="true" style={{ background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 12, padding: 14, marginTop: 14 }}>
+        <LandingCompetencyRow label="Communication" state="strong" value={82} />
+        <LandingCompetencyRow label="Commercial awareness" state="improving" value={64} />
+        <LandingCompetencyRow label="Technical knowledge" state="needswork" value={48} />
+        <div style={{ fontSize: 10, color: "var(--text-faint)", marginTop: 8 }}>Illustrative preview · sample data</div>
+      </div>
+    );
+  }
+  if (type === "trend") {
+    return (
+      <div aria-hidden="true" style={{ background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 12, padding: 14, marginTop: 14 }}>
+        <div className="flex items-end gap-2" style={{ height: 60 }}>
+          {[58, 63, 71, 77, 84].map((v, i, a) => (
+            <div key={i} style={{ flex: 1, display: "flex", alignItems: "flex-end", justifyContent: "center", height: "100%" }}>
+              <div style={{ width: "60%", height: (v / 100) * 46, background: i === a.length - 1 ? "linear-gradient(180deg, var(--blue), var(--violet))" : "#C7DBFF", borderRadius: "4px 4px 0 0" }} />
+            </div>
+          ))}
+        </div>
+        <div style={{ fontSize: 10, color: "var(--text-faint)", marginTop: 8 }}>Illustrative preview · sample data</div>
+      </div>
+    );
+  }
+  if (type === "assessment") {
+    return (
+      <div aria-hidden="true" className="flex flex-wrap gap-2" style={{ marginTop: 14 }}>
+        {["Case Study", "Group Exercise", "Presentation", "Written Exercise", "Inbox Exercise"].map((t) => (
+          <span key={t} style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-dim)", background: "var(--bg)", border: "1px solid var(--border)", padding: "6px 11px", borderRadius: 999 }}>{t}</span>
+        ))}
+      </div>
+    );
+  }
+  return null;
+}
+
+// RIGHT-hand dynamic preview, shared by the desktop dropdown. `activeKey` is
+// "overview" or a HOW_IT_WORKS_PREVIEWS key. `onNavigate(target)` performs
+// the navigation (the caller decides what "closing the menu" means).
+function HowItWorksPreviewPanel({ activeKey, onNavigate }) {
+  const preview = activeKey === "overview" ? HOW_IT_WORKS_OVERVIEW_PREVIEW : HOW_IT_WORKS_PREVIEWS[activeKey];
+  if (!preview) return null;
+  return (
+    <div>
+      <div style={{ fontSize: 11.5, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--blue)", marginBottom: 8 }}>{preview.eyebrow}</div>
+      <div style={{ fontSize: 19, fontWeight: 800, color: "var(--navy)", lineHeight: 1.25, marginBottom: 10 }}>{preview.headline}</div>
+      <div style={{ fontSize: 13.5, color: "var(--text-dim)", lineHeight: 1.55 }}>{preview.body}</div>
+      {preview.visual && <HowPreviewVisual type={preview.visual} />}
+      <Btn variant="secondary" onClick={() => onNavigate(preview.target || "login")} style={{ marginTop: 18 }}>
+        {preview.ctaLabel} <ArrowRight size={14} />
+      </Btn>
+    </div>
+  );
+}
+
+// Desktop "How it works" mega-menu. Opens on hover — trigger and panel share
+// one hoverable wrapper, so the pointer stays "inside" moving from one to the
+// other — and also toggles on click, so it never depends on hover alone.
+// Escape closes it and returns focus to the trigger; a document click
+// outside the wrapper closes it too. LEFT = feature navigation (Overview,
+// visually separated, then the four categories); RIGHT = a preview that
+// updates on hover *and* focus, so tabbing through with a keyboard reveals
+// the same information a mouse hover does.
+function HowItWorksDesktopMenu({ screen, setScreen }) {
+  const [open, setOpen] = useState(false);
+  const [activeKey, setActiveKey] = useState("overview");
+  const wrapRef = useRef(null);
+
+  useEffect(() => { setOpen(false); }, [screen]);
+  useEffect(() => { if (open) setActiveKey("overview"); }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    function onDocClick(e) { if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false); }
+    function onKey(e) {
+      if (e.key === "Escape") {
+        setOpen(false);
+        wrapRef.current?.querySelector("[data-howdrop-trigger]")?.focus();
+      }
+    }
+    document.addEventListener("mousedown", onDocClick);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", onDocClick); document.removeEventListener("keydown", onKey); };
+  }, [open]);
+
+  function navigate(target) { setOpen(false); setScreen(target); }
+
+  const active = screen === "how";
+  // No `position` on the wrapper below, on purpose: `.jr-howdrop-panel` is
+  // `position: absolute; left:0; right:0`, and needs its containing block
+  // to be NavBar's own outer `position:sticky` wrapper (so it spans the
+  // full nav width) rather than this trigger-sized wrapper.
+  return (
+    <div ref={wrapRef} onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
+      <button type="button" data-howdrop-trigger aria-haspopup="true" aria-expanded={open} onClick={() => setOpen((v) => !v)}
+        style={{ fontFamily: "var(--font)", fontSize: 13.5, fontWeight: active ? 600 : 500, cursor: "pointer", display: "flex", alignItems: "center", gap: 5, padding: "7px 11px", borderRadius: "var(--r-sm)", color: active ? "var(--navy)" : "var(--text-dim)", background: active ? "var(--highlight)" : "transparent", border: "none" }}>
+        How it works
+        <ChevronDown size={14} aria-hidden="true" style={{ transition: "transform 0.15s ease", transform: open ? "rotate(180deg)" : "none" }} />
+      </button>
+
+      {open && (
+        <div className="jr-howdrop-panel" role="menu" aria-label="How JOB.READY works">
+          <div style={{ position: "relative", maxWidth: 880, margin: "0 auto", padding: "24px 24px 28px", display: "grid", gridTemplateColumns: "260px 1fr", gap: 28 }}>
+            <div>
+              <button type="button" role="menuitem" onClick={() => navigate("how")} onMouseEnter={() => setActiveKey("overview")} onFocus={() => setActiveKey("overview")}
+                style={{ width: "100%", textAlign: "left", display: "block", padding: "12px 13px", borderRadius: "var(--radius-sm)", border: "1px solid " + (activeKey === "overview" ? "rgba(37,99,235,0.35)" : "var(--border)"), background: activeKey === "overview" ? "var(--highlight)" : "var(--bg)", cursor: "pointer", fontFamily: "var(--font)", marginBottom: 16 }}>
+                <div style={{ fontSize: 13.5, fontWeight: 800, color: "var(--navy)" }}>✦ Overview</div>
+                <div style={{ fontSize: 11.5, color: "var(--text-dim)", marginTop: 2 }}>See the complete JOB.READY journey</div>
+              </button>
+
+              {HOW_IT_WORKS_CATEGORIES.map((cat) => (
+                <div key={cat.id} style={{ marginBottom: 14 }}>
+                  <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.07em", textTransform: "uppercase", color: "var(--text-faint)", padding: "0 6px", marginBottom: 4 }}>{cat.label}</div>
+                  {cat.items.map((item) => {
+                    const previewKey = item.previewKey || item.key;
+                    const isActive = activeKey === previewKey;
+                    return (
+                      <button key={item.key} type="button" role="menuitem"
+                        onClick={() => navigate("login")} onMouseEnter={() => setActiveKey(previewKey)} onFocus={() => setActiveKey(previewKey)}
+                        style={{ width: "100%", textAlign: "left", display: "flex", alignItems: "center", gap: 8, padding: "7px 6px", borderRadius: "var(--radius-sm)", fontSize: 13, fontWeight: isActive ? 700 : 500, color: isActive ? "var(--navy)" : "var(--text-dim)", background: isActive ? "var(--highlight)" : "transparent", border: "none", cursor: "pointer", fontFamily: "var(--font)" }}>
+                        <item.icon size={14} aria-hidden="true" style={{ flexShrink: 0, opacity: isActive ? 1 : 0.7 }} />
+                        {item.label}
+                        {isActive && <CheckCircle2 size={12} aria-hidden="true" style={{ marginLeft: "auto", color: "var(--blue)" }} />}
+                      </button>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+
+            <div style={{ borderLeft: "1px solid var(--border)", paddingLeft: 28 }}>
+              <HowItWorksPreviewPanel activeKey={activeKey} onNavigate={navigate} />
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Mobile "How it works" section — tap-only, no hover dependency. A nested
+// disclosure: the section expands, then each category expands to reveal its
+// features, then tapping a feature reveals a short description + an
+// "Explore" link. Nothing beyond the top toggle is rendered until it's
+// tapped open, so the menu stays compact instead of dumping the whole
+// desktop mega-menu onto the page.
+function HowItWorksMobileSection({ screen, setScreen }) {
+  const [sectionOpen, setSectionOpen] = useState(false);
+  const [openCategory, setOpenCategory] = useState(null);
+  const [openFeature, setOpenFeature] = useState(null);
+  useEffect(() => { setSectionOpen(false); setOpenCategory(null); setOpenFeature(null); }, [screen]);
+
+  const active = screen === "how";
+  return (
+    <div>
+      <button type="button" aria-expanded={sectionOpen} onClick={() => setSectionOpen((v) => !v)}
+        style={{ width: "100%", padding: "13px 10px", fontSize: 15, fontWeight: active ? 600 : 500, color: active ? "var(--navy)" : "var(--text-dim)", background: active ? "var(--highlight)" : "transparent", borderRadius: "var(--r-sm)", display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", border: "none", fontFamily: "var(--font)" }}>
+        How it works
+        <ChevronDown size={16} aria-hidden="true" style={{ transition: "transform 0.15s ease", transform: sectionOpen ? "rotate(180deg)" : "none" }} />
+      </button>
+
+      {sectionOpen && (
+        <div style={{ padding: "4px 6px 10px 14px" }}>
+          <button type="button" onClick={() => setScreen("how")}
+            style={{ width: "100%", textAlign: "left", padding: "10px 8px", fontSize: 13.5, fontWeight: 700, color: "var(--navy)", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", cursor: "pointer", fontFamily: "var(--font)", marginBottom: 8 }}>
+            ✦ Overview
+            <div style={{ fontSize: 11.5, fontWeight: 500, color: "var(--text-dim)", marginTop: 2 }}>See the complete JOB.READY journey</div>
+          </button>
+
+          {HOW_IT_WORKS_CATEGORIES.map((cat) => {
+            const catOpen = openCategory === cat.id;
+            return (
+              <div key={cat.id} style={{ marginBottom: 2 }}>
+                <button type="button" aria-expanded={catOpen} onClick={() => { setOpenCategory(catOpen ? null : cat.id); setOpenFeature(null); }}
+                  style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 8px", fontSize: 12.5, fontWeight: 800, letterSpacing: "0.05em", textTransform: "uppercase", color: "var(--text-dim)", background: "transparent", border: "none", cursor: "pointer", fontFamily: "var(--font)" }}>
+                  {cat.label}
+                  <ChevronDown size={13} aria-hidden="true" style={{ transition: "transform 0.15s ease", transform: catOpen ? "rotate(180deg)" : "none" }} />
+                </button>
+                {catOpen && cat.items.map((item) => {
+                  const previewKey = item.previewKey || item.key;
+                  const preview = HOW_IT_WORKS_PREVIEWS[previewKey];
+                  const featOpen = openFeature === item.key;
+                  return (
+                    <div key={item.key}>
+                      <button type="button" aria-expanded={featOpen} onClick={() => setOpenFeature(featOpen ? null : item.key)}
+                        style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "9px 8px 9px 16px", fontSize: 13.5, fontWeight: featOpen ? 700 : 500, color: featOpen ? "var(--navy)" : "var(--text-dim)", background: featOpen ? "var(--highlight)" : "transparent", border: "none", borderRadius: "var(--radius-sm)", cursor: "pointer", fontFamily: "var(--font)" }}>
+                        <span className="flex items-center gap-2"><item.icon size={13} aria-hidden="true" />{item.label}</span>
+                        <ChevronDown size={12} aria-hidden="true" style={{ transition: "transform 0.15s ease", transform: featOpen ? "rotate(180deg)" : "none" }} />
+                      </button>
+                      {featOpen && preview && (
+                        <div style={{ padding: "6px 10px 12px 34px" }}>
+                          <div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.5, marginBottom: 8 }}>{preview.body}</div>
+                          <LinkBtn onClick={() => setScreen("login")} style={{ fontSize: 12.5, fontWeight: 700, color: "var(--blue-dark)", cursor: "pointer" }}>{preview.ctaLabel} →</LinkBtn>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ================================================================== */
+/* PHASE 36 — "HOW IT WORKS" PAGE (full redesign)                      */
+/* ------------------------------------------------------------------ */
+/* Presentation only, same contract as LandingPage below: `onStart` ->  */
+/* the real sign-up flow, `onBack` -> the landing page. Every step and  */
+/* feature callout below is a real, existing capability (see the        */
+/* Phase 36 dropdown audit comment above). Illustrative numbers are     */
+/* labelled; no promised outcomes, no adoption or headcount figures,    */
+/* no quoted endorsements, no institutional relationships and no        */
+/* unimplemented pricing benefit is claimed.                            */
+/* Defined here (not beside LandingPage) so it stays out of the         */
+/* existing LandingPage-only source slices earlier Phase 32/34 tests    */
+/* rely on. */
+/* ================================================================== */
+function HowItWorksPage({ onStart, onBack }) {
+  const journeySteps = [
+    {
+      n: "01", title: "Add your opportunity", subtitle: "Applications · Application Intelligence · Invitation Analysis",
+      body: "Enter the company, role and stage — or paste an interview invitation email and JOB.READY pulls out the details for you. Add the job description and your CV, and Application Intelligence reads them together.",
+      icon: Briefcase, tone: "blue",
+    },
+    {
+      n: "02", title: "Understand what you need to prepare", subtitle: "Turning an opportunity into a prep plan",
+      body: "JOB.READY maps the competencies, themes and CV claims your specific role is likely to test, and structures your preparation around them — not a generic checklist.",
+      icon: Route, tone: "violet",
+    },
+    {
+      n: "03", title: "Learn what you're missing", subtitle: "Classroom · Development Modules · Flashcards · Quizzes · Written Knowledge Checks",
+      body: "Gaps become Classroom topics — a lesson and a development module, backed by flashcards, a quiz and a written knowledge check so it actually sticks.",
+      icon: GraduationCap, tone: "good", visual: "learning-cards",
+    },
+    {
+      n: "04", title: "Practise realistically", subtitle: "AI Mock Interviews · question mix · technical difficulty",
+      body: "Sit an adaptive interview that follows up on your answers, or a fixed-length set. Choose your question mix — technical knowledge, behavioural / competency, motivational — and your technical difficulty.",
+      icon: MessageSquare, tone: "blue", visual: "interview",
+    },
+    {
+      n: "05", title: "Learn from every answer", subtitle: "Personalised feedback · scored reports · competency breakdowns",
+      body: "Every answer is evaluated against the competency it's meant to show. Your report scores each competency and recommends a specific next step — often straight back into the Classroom.",
+      icon: Target, tone: "violet", visual: "report",
+    },
+    {
+      n: "06", title: "Track your improvement", subtitle: "Progress · competency history · readiness · Interview DNA · Interview Memory",
+      body: "Every interview adds to your history. Watch your competency scores and readiness move over time, see your Interview DNA — recurring strengths and weak spots — and revisit past questions through Interview Memory.",
+      icon: LineChart, tone: "teal", visual: "trend",
+    },
+    {
+      n: "07", title: "Prepare for the complete recruitment process", subtitle: "Assessment Centre",
+      body: "Graduate schemes rarely stop at an interview. Practise the real Assessment Centre exercise types — each one scored with its own competency breakdown.",
+      icon: Briefcase, tone: "violet", visual: "assessment",
+    },
+  ];
+
+  // Real feature names only (drawn from LandingPage's own audited
+  // `inventory`/`acTypes`), grouped into the six stages requested — varied
+  // layouts, not a repeat of the landing page's single flat pill list.
+  const discovery = [
+    { group: "Prepare", items: ["AI mock interviews", "Applications workspace", "Application Intelligence", "Interview invitation analysis", "Question mix control"] },
+    { group: "Learn", items: ["Classroom lessons", "Development modules", "Flashcards", "Quizzes", "Written knowledge checks"] },
+    { group: "Practise", items: ["Adaptive interviews", "Set-length interviews", "Case Study", "Group Exercise", "Presentation", "Written Exercise", "Inbox Exercise"] },
+    { group: "Improve", items: ["Per-answer evaluation", "Interview reports", "Recommended learning"] },
+    { group: "Track", items: ["Progress tracking", "Competency history", "Interview history", "Interview DNA", "Interview Memory"] },
+    { group: "Perform", items: ["Readiness view", "Career claims"] },
+  ];
+
+  return (
+    <div className="jr-landing-atmosphere">
+      {/* ============ HERO ============ */}
+      <div className="jr-landing-hero">
+        <div style={{ maxWidth: 880, margin: "0 auto", padding: "clamp(48px, 8vw, 76px) 24px clamp(36px, 6vw, 52px)", textAlign: "center" }}>
+          <div style={{ textAlign: "left" }}>
+            <Btn variant="ghost" onClick={onBack} style={{ marginBottom: 20, padding: "6px 4px" }}><ArrowLeft size={14} /> Back</Btn>
+          </div>
+          <LandingEyebrow>How JOB.READY works</LandingEyebrow>
+          <h1 style={{ fontSize: "clamp(30px, 5.5vw, 46px)", lineHeight: 1.15, fontWeight: 800, letterSpacing: "-0.03em", margin: "10px 0 16px", color: "var(--navy)", textWrap: "balance" }}>
+            From application to interview-ready.
+          </h1>
+          <p style={{ fontSize: "clamp(14.5px, 2vw, 16.5px)", color: "var(--text-dim)", lineHeight: 1.6, maxWidth: 620, margin: "0 auto" }}>
+            Understand what you're preparing for. Learn what you're missing. Practise realistically. Improve with every attempt.
+          </p>
+          <HowPreviewVisual type="overview" />
+        </div>
+      </div>
+
+      {/* ============ THE COMPLETE JOURNEY ============ */}
+      <div style={{ maxWidth: 880, margin: "0 auto", padding: "clamp(48px, 8vw, 76px) 24px" }}>
+        <div style={{ textAlign: "center", maxWidth: 560, margin: "0 auto 40px" }}>
+          <LandingEyebrow tone="var(--violet)">The complete journey</LandingEyebrow>
+          <LandingH2>Seven steps, from opportunity to interview-ready.</LandingH2>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+          {journeySteps.map((s) => (
+            <Card key={s.n} style={{ padding: 24, display: "flex", gap: 18, alignItems: "flex-start", flexWrap: "wrap" }}>
+              <div style={{ flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+                <div style={{ fontSize: 13, fontWeight: 800, color: "var(--blue)", fontVariantNumeric: "tabular-nums" }}>{s.n}</div>
+                <IconBadge icon={s.icon} tone={s.tone} lg />
+              </div>
+              <div style={{ flex: "1 1 240px", minWidth: 0 }}>
+                <div style={{ fontSize: 17, fontWeight: 800, color: "var(--navy)", marginBottom: 3 }}>{s.title}</div>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 8 }}>{s.subtitle}</div>
+                <div style={{ fontSize: 14, color: "var(--text-dim)", lineHeight: 1.6 }}>{s.body}</div>
+                {s.visual === "learning-cards" ? (
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3" style={{ marginTop: 14 }}>
+                    <HowPreviewVisual type="modules" />
+                    <HowPreviewVisual type="flashcard" />
+                    <HowPreviewVisual type="quiz" />
+                  </div>
+                ) : s.visual ? (
+                  <HowPreviewVisual type={s.visual} />
+                ) : null}
+              </div>
+            </Card>
+          ))}
+        </div>
+      </div>
+
+      {/* ============ FEATURE DISCOVERY ============ */}
+      <LandingBand tone="navy" className="jr-landing-band-inventory">
+        <div style={{ textAlign: "center", maxWidth: 620, margin: "0 auto 36px" }}>
+          <LandingEyebrow tone="var(--teal)">Full feature discovery</LandingEyebrow>
+          <LandingH2 light>Everything in one preparation platform.</LandingH2>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          {discovery.map((g) => (
+            <div key={g.group}>
+              <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: "0.07em", textTransform: "uppercase", color: "var(--teal)", marginBottom: 10 }}>{g.group}</div>
+              <div className="flex flex-wrap gap-2">
+                {g.items.map((t) => (
+                  <span key={t} style={{ fontSize: 12, fontWeight: 600, color: "#E2E8F0", background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.14)", padding: "6px 11px", borderRadius: 999 }}>{t}</span>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </LandingBand>
+
+      {/* ============ FINAL CTA ============ */}
+      <div className="jr-landing-cta" style={{ padding: "clamp(64px, 10vw, 92px) 24px", textAlign: "center" }}>
+        <h2 style={{ position: "relative", fontSize: "clamp(24px, 4.5vw, 34px)", fontWeight: 800, color: "#fff", marginBottom: 14, letterSpacing: "-0.02em", textWrap: "balance", maxWidth: 640, marginLeft: "auto", marginRight: "auto" }}>
+          Your preparation shouldn't stop at a question generator.
+        </h2>
+        <p style={{ position: "relative", color: "#AFC4E6", fontSize: 15.5, marginBottom: 28, maxWidth: 520, marginLeft: "auto", marginRight: "auto" }}>
+          Prepare with your opportunity in mind. Learn what you're missing. Practise realistically. Improve with every attempt.
+        </p>
+        <Btn variant="accent" onClick={onStart} style={{ position: "relative", padding: "14px 28px", fontSize: 15.5, boxShadow: "0 18px 40px -14px rgba(37,99,235,0.55)" }}>Start practising for free <ChevronRight size={16} /></Btn>
+      </div>
+    </div>
+  );
+}
+
 function NavBar({ screen, setScreen, user, classroomNeedsWorkCount, onSignOut }) {
   const [isMobile, setIsMobile] = useState(typeof window !== "undefined" ? window.innerWidth < 768 : false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -3277,6 +3842,10 @@ function NavBar({ screen, setScreen, user, classroomNeedsWorkCount, onSignOut })
         {!isMobile && (
           <nav aria-label="Main" style={{ display: "flex", alignItems: "center", gap: user ? 4 : 8 }}>
             {links.map((l) => {
+              // Phase 36: the public "How it works" link becomes a full
+              // product-discovery mega-menu; every other link (including
+              // "For universities" and every authenticated link) is unchanged.
+              if (l.to === "how") return <HowItWorksDesktopMenu key="how" screen={screen} setScreen={setScreen} />;
               const active = screen === l.to;
               return (
                 <LinkBtn key={l.to} onClick={() => setScreen(l.to)} ariaCurrent={active}
@@ -3291,7 +3860,7 @@ function NavBar({ screen, setScreen, user, classroomNeedsWorkCount, onSignOut })
             {!user && (
               <>
                 <LinkBtn onClick={() => setScreen("login")} style={{ fontSize: 14, fontWeight: 500, color: "var(--text-dim)", cursor: "pointer", padding: "7px 11px" }}>Log in</LinkBtn>
-                <Btn variant="accent" onClick={() => setScreen("login")}>Start practising</Btn>
+                <Btn variant="accent" onClick={() => setScreen("login")}>Start practising for free</Btn>
               </>
             )}
             {user && (
@@ -3310,6 +3879,9 @@ function NavBar({ screen, setScreen, user, classroomNeedsWorkCount, onSignOut })
       {isMobile && menuOpen && (
         <nav aria-label="Main" style={{ borderTop: "1px solid var(--border)", background: "#fff", padding: "6px 16px 16px" }}>
           {links.map((l) => {
+            // Phase 36: mobile gets its own tap-only accordion for "How it
+            // works" (never the desktop mega-menu squeezed onto mobile).
+            if (l.to === "how") return <HowItWorksMobileSection key="how" screen={screen} setScreen={setScreen} />;
             const active = screen === l.to;
             return (
             <LinkBtn key={l.to} onClick={() => setScreen(l.to)} ariaCurrent={active}
@@ -3323,7 +3895,7 @@ function NavBar({ screen, setScreen, user, classroomNeedsWorkCount, onSignOut })
           })}
           {!user ? (
             <div style={{ paddingTop: 14 }}>
-              <Btn variant="accent" full onClick={() => setScreen("login")}>Start practising</Btn>
+              <Btn variant="accent" full onClick={() => setScreen("login")}>Start practising for free</Btn>
             </div>
           ) : (
             <LinkBtn onClick={onSignOut} style={{ width: "100%", padding: "14px 10px", fontSize: 15, fontWeight: 500, color: "var(--text-dim)", cursor: "pointer" }}>Sign out</LinkBtn>
@@ -3600,7 +4172,7 @@ function LandingPage({ onStart, onHow, onUniversities }) {
               Practise realistic interviews. Get personalised feedback. Find your weaknesses. Learn what you're missing, and track your improvement over time.
             </p>
             <div className="flex flex-wrap gap-3">
-              <Btn variant="accent" onClick={onStart} style={{ padding: "13px 24px", fontSize: 15 }}>Start preparing <ChevronRight size={16} /></Btn>
+              <Btn variant="accent" onClick={onStart} style={{ padding: "13px 24px", fontSize: 15 }}>Start practising for free <ChevronRight size={16} /></Btn>
               <Btn variant="secondary" onClick={onHow}>See how it works</Btn>
             </div>
             <div className="flex flex-wrap gap-4 mt-6" style={{ fontSize: 12.5, color: "var(--text-faint)", fontWeight: 600 }}>
@@ -4005,7 +4577,7 @@ function LandingPage({ onStart, onHow, onUniversities }) {
         <p style={{ position: "relative", color: "#AFC4E6", fontSize: 15.5, marginBottom: 28, maxWidth: 520, marginLeft: "auto", marginRight: "auto" }}>
           Know what to expect. Practise realistically. Learn from every answer.
         </p>
-        <Btn variant="accent" onClick={onStart} style={{ position: "relative", padding: "14px 28px", fontSize: 15.5, boxShadow: "0 18px 40px -14px rgba(37,99,235,0.55)" }}>Start preparing <ChevronRight size={16} /></Btn>
+        <Btn variant="accent" onClick={onStart} style={{ position: "relative", padding: "14px 28px", fontSize: 15.5, boxShadow: "0 18px 40px -14px rgba(37,99,235,0.55)" }}>Start practising for free <ChevronRight size={16} /></Btn>
       </div>
     </div>
   );
@@ -7028,23 +7600,16 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
       )}
 
       {/* ---------------- HOW / UNIVERSITIES ---------------- */}
+      {/* Phase 36: full redesign — HowItWorksPage (hero, 7-step journey,
+          feature discovery, final CTA) replaces the old plain-text list.
+          Same contract as the `landing` screen block below it: presentation
+          component + the shared LegalFooter rendered by App() itself. */}
       {screen === "how" && (
-        <div className="jr-fade" style={{ maxWidth: 640, margin: "0 auto", padding: "64px 24px" }}>
-          <Btn variant="ghost" onClick={() => setScreen("landing")} style={{ marginBottom: 20, padding: "8px 4px" }}><ArrowLeft size={14} /> Back</Btn>
-          <h2 style={{ fontSize: 28, fontWeight: 800, color: "var(--navy)", marginBottom: 24 }}>How JOB.READY works</h2>
-          {[
-            "Tell us the company, role and stage, and add the job description and your CV.",
-            "The AI reads both together and builds an interview profile — competencies, likely themes, and CV claims worth probing.",
-            "You sit a live, adaptive interview: the next question depends on how you answered the last one, just like a real interviewer.",
-            "You get a structured report — scored, specific, honest about what's inferred versus stated — and your weak spots carry into the next session.",
-          ].map((t, i) => (
-            <div key={i} className="flex gap-4 mb-5">
-              <div style={{ width: 26, height: 26, borderRadius: 8, background: "var(--highlight)", color: "var(--blue)", fontSize: 12, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{i + 1}</div>
-              <div style={{ fontSize: 15, lineHeight: 1.55, color: "var(--text-dim)" }}>{t}</div>
-            </div>
-          ))}
-          <Btn variant="accent" onClick={() => setScreen("login")} style={{ marginTop: 8 }}>Start practising <ChevronRight size={16} /></Btn>
-          <LegalFooter openLegal={openLegal} />
+        <div className="jr-fade">
+          <HowItWorksPage onStart={() => setScreen("login")} onBack={() => setScreen("landing")} />
+          <div style={{ maxWidth: 1120, margin: "0 auto", padding: "0 24px" }}>
+            <LegalFooter openLegal={openLegal} />
+          </div>
         </div>
       )}
       {screen === "universities" && (

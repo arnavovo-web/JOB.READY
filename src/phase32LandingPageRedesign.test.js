@@ -50,7 +50,10 @@ describe("Phase 32 — landing page integration", () => {
     expect(LANDING_SCREEN).toMatch(/onStart=\{\(\) => setScreen\("login"\)\}/);
     // …and the component's CTAs invoke it (hero + final CTA at least).
     expect((LANDING.match(/onClick=\{onStart\}/g) || []).length).toBeGreaterThanOrEqual(2);
-    expect(LANDING).toMatch(/Start preparing/);
+    // Phase 36: public acquisition CTA copy unified to "Start practising for
+    // free" across the nav, hero, final CTA and `how` screen — see
+    // phase36HowItWorksDropdown.test.js for the full CTA-copy audit.
+    expect(LANDING).toMatch(/Start practising for free/);
   });
 
   it("the 'how it works' and 'for universities' public screens are still reachable from the page", () => {
