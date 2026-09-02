@@ -3532,19 +3532,51 @@ function HowItWorksPreviewPanel({ activeKey, onNavigate }) {
 // updates on hover *and* focus, so tabbing through with a keyboard reveals
 // the same information a mouse hover does.
 function HowItWorksDesktopMenu({ screen, setScreen }) {
-  const [open, setOpen] = useState(false);
+  // Bug fix (click-to-pin): a single `open` boolean driven by BOTH hover and
+  // click meant a click's "open" was indistinguishable from hover's, so the
+  // very next mouseleave (fired almost immediately while moving the pointer
+  // from the trigger down into the panel) closed it regardless of the
+  // click — the panel could never actually be pinned open. Split into two
+  // independent signals: `isHovering` (mouse is over the trigger OR the
+  // panel — both live inside `wrapRef`, so one enter/leave pair covers
+  // both) and `isPinned` (click toggles this, and only this). `open` is
+  // just their OR, so hover-to-preview and click-to-pin compose naturally:
+  // hovering shows the panel; clicking pins it open even after the pointer
+  // leaves; a second click un-pins it (it then closes as soon as the
+  // pointer is no longer hovering); Escape/click-outside/navigate clear
+  // both so nothing can leave the menu "stuck" open.
+  const [isHovering, setIsHovering] = useState(false);
+  const [isPinned, setIsPinned] = useState(false);
+  const open = isHovering || isPinned;
   const [activeKey, setActiveKey] = useState("overview");
   const wrapRef = useRef(null);
+  // Bug fix (hover-transit gap): `.jr-howdrop-panel` is positioned relative
+  // to NavBar's sticky wrapper (see the comment below), not `wrapRef` — so
+  // between the trigger's own small rendered box and the panel's rendered
+  // position there's a real, unavoidable vertical gap that belongs to
+  // neither. A pointer crossing it makes `wrapRef` genuinely lose hover
+  // (a real mouseleave, not a false one), and closing on that leave would
+  // unmount the panel before the pointer ever reaches it. A short close
+  // delay — cancelled by the mouseenter that fires the instant the pointer
+  // lands back inside `wrapRef` (the panel is still a DOM descendant of it,
+  // just visually offset) — bridges that gap without a CSS-only hover
+  // trick, and is a no-op for the click-to-pin path (isPinned isn't timed).
+  const closeTimerRef = useRef(null);
+  function clearCloseTimer() { if (closeTimerRef.current) { clearTimeout(closeTimerRef.current); closeTimerRef.current = null; } }
+  function scheduleClose() { clearCloseTimer(); closeTimerRef.current = setTimeout(() => setIsHovering(false), 200); }
+  useEffect(() => () => clearCloseTimer(), []);
 
-  useEffect(() => { setOpen(false); }, [screen]);
+  useEffect(() => { clearCloseTimer(); setIsHovering(false); setIsPinned(false); }, [screen]);
   useEffect(() => { if (open) setActiveKey("overview"); }, [open]);
 
   useEffect(() => {
     if (!open) return;
-    function onDocClick(e) { if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false); }
+    function onDocClick(e) { if (wrapRef.current && !wrapRef.current.contains(e.target)) { clearCloseTimer(); setIsHovering(false); setIsPinned(false); } }
     function onKey(e) {
       if (e.key === "Escape") {
-        setOpen(false);
+        clearCloseTimer();
+        setIsHovering(false);
+        setIsPinned(false);
         wrapRef.current?.querySelector("[data-howdrop-trigger]")?.focus();
       }
     }
@@ -3553,7 +3585,7 @@ function HowItWorksDesktopMenu({ screen, setScreen }) {
     return () => { document.removeEventListener("mousedown", onDocClick); document.removeEventListener("keydown", onKey); };
   }, [open]);
 
-  function navigate(target) { setOpen(false); setScreen(target); }
+  function navigate(target) { clearCloseTimer(); setIsHovering(false); setIsPinned(false); setScreen(target); }
 
   const active = screen === "how";
   // No `position` on the wrapper below, on purpose: `.jr-howdrop-panel` is
@@ -3561,8 +3593,8 @@ function HowItWorksDesktopMenu({ screen, setScreen }) {
   // to be NavBar's own outer `position:sticky` wrapper (so it spans the
   // full nav width) rather than this trigger-sized wrapper.
   return (
-    <div ref={wrapRef} onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
-      <button type="button" data-howdrop-trigger aria-haspopup="true" aria-expanded={open} onClick={() => setOpen((v) => !v)}
+    <div ref={wrapRef} onMouseEnter={() => { clearCloseTimer(); setIsHovering(true); }} onMouseLeave={scheduleClose}>
+      <button type="button" data-howdrop-trigger aria-haspopup="true" aria-expanded={open} onClick={() => setIsPinned((v) => !v)}
         style={{ fontFamily: "var(--font)", fontSize: 13.5, fontWeight: active ? 600 : 500, cursor: "pointer", display: "flex", alignItems: "center", gap: 5, padding: "7px 11px", borderRadius: "var(--r-sm)", color: active ? "var(--navy)" : "var(--text-dim)", background: active ? "var(--highlight)" : "transparent", border: "none" }}>
         How it works
         <ChevronDown size={14} aria-hidden="true" style={{ transition: "transform 0.15s ease", transform: open ? "rotate(180deg)" : "none" }} />

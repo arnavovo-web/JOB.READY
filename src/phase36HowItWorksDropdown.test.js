@@ -62,9 +62,9 @@ describe("Phase 36 — dropdown navigation", () => {
   });
 
   it("desktop: opens on hover AND supports click (never hover-only)", () => {
-    expect(DROPDOWN).toMatch(/onMouseEnter=\{\(\) => setOpen\(true\)\}/);
-    expect(DROPDOWN).toMatch(/onMouseLeave=\{\(\) => setOpen\(false\)\}/);
-    expect(DROPDOWN).toMatch(/onClick=\{\(\) => setOpen\(\(v\) => !v\)\}/);
+    expect(DROPDOWN).toMatch(/onMouseEnter=\{\(\) => \{ clearCloseTimer\(\); setIsHovering\(true\); \}\}/);
+    expect(DROPDOWN).toMatch(/onMouseLeave=\{scheduleClose\}/);
+    expect(DROPDOWN).toMatch(/onClick=\{\(\) => setIsPinned\(\(v\) => !v\)\}/);
     expect(DROPDOWN).toMatch(/aria-haspopup="true"/);
     expect(DROPDOWN).toMatch(/aria-expanded=\{open\}/);
   });
@@ -86,9 +86,108 @@ describe("Phase 36 — dropdown navigation", () => {
 
   it("Escape closes the desktop menu and click-outside is implemented", () => {
     expect(DROPDOWN).toMatch(/e\.key === "Escape"/);
-    expect(DROPDOWN).toMatch(/setOpen\(false\)/);
     expect(DROPDOWN).toMatch(/document\.addEventListener\("mousedown", onDocClick\)/);
     expect(DROPDOWN).toMatch(/!wrapRef\.current\.contains\(e\.target\)/);
+  });
+
+  /* ---------------------------------------------------------------- *
+   * Bug fix — click-to-pin (dropdown stayed open only while literally
+   * hovered; a click could never pin it open long enough to reach the
+   * panel). `open` is now `isHovering || isPinned`, two independent
+   * booleans, rather than one boolean written by both hover and click.
+   * ---------------------------------------------------------------- */
+  describe("click-to-pin persistence", () => {
+    // The desktop menu's own function body, isolated from the mobile
+    // accordion and the preview-panel/visual helpers above it.
+    const MENU = DROPDOWN.slice(
+      DROPDOWN.indexOf("function HowItWorksDesktopMenu"),
+      DROPDOWN.indexOf("function HowItWorksMobileSection")
+    );
+
+    it("open is derived from two independent booleans, not one hover-and-click-shared flag", () => {
+      expect(MENU).toMatch(/const \[isHovering, setIsHovering\] = useState\(false\)/);
+      expect(MENU).toMatch(/const \[isPinned, setIsPinned\] = useState\(false\)/);
+      expect(MENU).toMatch(/const open = isHovering \|\| isPinned/);
+    });
+
+    it("1. hovering the trigger opens the dropdown (mouseenter on the shared wrapper sets isHovering)", () => {
+      expect(MENU).toMatch(/onMouseEnter=\{\(\) => \{ clearCloseTimer\(\); setIsHovering\(true\); \}\}/);
+    });
+
+    it("2. moving from trigger to panel cannot close it — leaving schedules a debounced close instead of closing immediately, and re-entering cancels it before it fires", () => {
+      // Exactly one onMouseLeave in the whole component, on the outer
+      // wrapper that contains both the trigger and the panel. `.jr-howdrop-
+      // panel` renders offset from `wrapRef` (see the CSS comment in the
+      // component), so there is a real, unavoidable geometric gap between
+      // the trigger's own box and the panel's rendered position; crossing
+      // it genuinely leaves `wrapRef`. A short scheduled close — cancelled
+      // by the mouseenter that fires the instant the pointer lands back
+      // inside `wrapRef` — bridges that gap instead of unmounting the panel
+      // mid-transit (confirmed by browser QA: without this, a real cursor
+      // move from trigger to panel raced the unmount and lost).
+      const leaveHandlers = MENU.match(/onMouseLeave=/g) || [];
+      expect(leaveHandlers.length).toBe(1);
+      expect(MENU).toMatch(/onMouseLeave=\{scheduleClose\}/);
+      expect(MENU).toMatch(/function scheduleClose\(\) \{ clearCloseTimer\(\); closeTimerRef\.current = setTimeout\(\(\) => setIsHovering\(false\), 200\); \}/);
+      expect(MENU).toMatch(/function clearCloseTimer\(\) \{ if \(closeTimerRef\.current\) \{ clearTimeout\(closeTimerRef\.current\); closeTimerRef\.current = null; \} \}/);
+      // Critically, the close path (immediate or scheduled) never touches
+      // isPinned — scoped to just the scheduleClose/clearCloseTimer bodies,
+      // not the whole rest of the component (which legitimately calls
+      // setIsPinned elsewhere, e.g. the trigger's own onClick).
+      const scheduleCloseBody = MENU.slice(MENU.indexOf("function scheduleClose"), MENU.indexOf("useEffect(() => () => clearCloseTimer()"));
+      expect(scheduleCloseBody).not.toMatch(/setIsPinned/);
+    });
+
+    it("3. clicking the trigger pins the dropdown open — the click handler touches only isPinned, never isHovering", () => {
+      expect(MENU).toMatch(/onClick=\{\(\) => setIsPinned\(\(v\) => !v\)\}/);
+      expect(MENU).not.toMatch(/onClick=\{\(\) => setIsPinned[^}]*setIsHovering/);
+    });
+
+    it("4. once pinned, the pointer leaving the trigger/panel does not close it (isPinned is untouched by the hover/close-timer path)", () => {
+      // Restated from #2/#3: neither hover handler, nor the scheduled close
+      // itself, ever writes isPinned — so a pinned-open menu has no code
+      // path that un-pins it on mouseleave, immediately or after the delay.
+      expect(MENU).not.toMatch(/onMouseEnter=\{\(\) => \{[^}]*setIsPinned/);
+      expect(MENU).not.toMatch(/setTimeout\(\(\) => \{?[^)]*setIsPinned/);
+    });
+
+    it("5. clicking the trigger again un-pins it (the same toggle as the first click)", () => {
+      // setIsPinned((v) => !v) is a toggle: the second click flips true -> false.
+      expect((MENU.match(/setIsPinned\(\(v\) => !v\)/g) || []).length).toBe(1);
+    });
+
+    it("6. clicking outside clears both isHovering and isPinned (and cancels any pending debounced close)", () => {
+      const outsideClickBlock = MENU.slice(MENU.indexOf("function onDocClick"), MENU.indexOf("function onKey"));
+      expect(outsideClickBlock).toMatch(/!wrapRef\.current\.contains\(e\.target\)/);
+      expect(outsideClickBlock).toMatch(/clearCloseTimer\(\)/);
+      expect(outsideClickBlock).toMatch(/setIsHovering\(false\)/);
+      expect(outsideClickBlock).toMatch(/setIsPinned\(false\)/);
+    });
+
+    it("7. Escape clears both isHovering and isPinned, cancels any pending debounced close, and returns focus to the trigger", () => {
+      const escapeBlock = MENU.slice(MENU.indexOf("function onKey"), MENU.indexOf("document.addEventListener"));
+      expect(escapeBlock).toMatch(/e\.key === "Escape"/);
+      expect(escapeBlock).toMatch(/clearCloseTimer\(\)/);
+      expect(escapeBlock).toMatch(/setIsHovering\(false\)/);
+      expect(escapeBlock).toMatch(/setIsPinned\(false\)/);
+      expect(escapeBlock).toMatch(/data-howdrop-trigger.*focus\(\)/s);
+    });
+
+    it("navigating away (Overview or any feature) also clears both and cancels any pending debounced close, so the menu never reopens stuck", () => {
+      expect(MENU).toMatch(/function navigate\(target\) \{ clearCloseTimer\(\); setIsHovering\(false\); setIsPinned\(false\); setScreen\(target\); \}/);
+    });
+
+    it("aria-expanded reflects the combined open state, not either flag alone", () => {
+      expect(MENU).toMatch(/aria-expanded=\{open\}/);
+      expect(MENU).not.toMatch(/aria-expanded=\{isHovering\}/);
+      expect(MENU).not.toMatch(/aria-expanded=\{isPinned\}/);
+    });
+
+    it("8. existing feature navigation is unaffected by the hover/pin split — items still route through the same navigate() helper", () => {
+      expect(MENU).toContain('onClick={() => navigate("how")}');
+      expect(MENU).toContain('onClick={() => navigate("login")}');
+      expect(MENU).toMatch(/onMouseEnter=\{\(\) => setActiveKey\(previewKey\)\} onFocus=\{\(\) => setActiveKey\(previewKey\)\}/);
+    });
   });
 
   it("feature navigation is keyboard accessible — focus mirrors hover, not hover-only", () => {
