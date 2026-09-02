@@ -2654,6 +2654,50 @@ function Pill({ children, color = "var(--blue)", bg = "var(--highlight)" }) {
   return <span style={{ fontFamily: "var(--font)", fontSize: 12, fontWeight: 600, color, background: bg, padding: "4px 11px", borderRadius: 999, display: "inline-block" }}>{children}</span>;
 }
 
+// A small, reusable "info" icon + tooltip. No such component existed before —
+// the app's only prior hover-hint precedent was the native `title` attribute,
+// which most touch browsers never surface and which isn't associated with
+// its icon for screen readers. Opens on hover OR keyboard focus OR click/tap
+// (so it works on touch devices, where hover never fires), and closes on
+// Escape, blur, or a click outside — the same disclosure shape already
+// proven in this app's "How it works" nav dropdown, scaled down to icon
+// size. `label` is the icon button's own accessible name (what a screen
+// reader announces); `text` is the tooltip's content.
+function InfoTooltip({ label, text }) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef(null);
+  const idRef = useRef("jr-tooltip-" + Math.random().toString(36).slice(2));
+
+  useEffect(() => {
+    if (!open) return;
+    function onDocClick(e) { if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false); }
+    function onKey(e) { if (e.key === "Escape") setOpen(false); }
+    document.addEventListener("mousedown", onDocClick);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", onDocClick); document.removeEventListener("keydown", onKey); };
+  }, [open]);
+
+  return (
+    <span ref={wrapRef} style={{ position: "relative", display: "inline-flex", verticalAlign: "middle" }}
+      onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
+      <button type="button" aria-label={label} aria-describedby={open ? idRef.current : undefined}
+        onClick={() => setOpen((v) => !v)} onFocus={() => setOpen(true)} onBlur={() => setOpen(false)}
+        style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 16, height: 16, padding: 0, border: "none", background: "none", cursor: "pointer", color: "var(--text-faint)" }}>
+        <HelpCircle size={14} aria-hidden="true" />
+      </button>
+      {open && (
+        // Anchored to the icon's own left edge (not centred) so it can't
+        // overflow the narrow auth card regardless of where the icon sits
+        // in its label row.
+        <span id={idRef.current} role="tooltip"
+          style={{ position: "absolute", bottom: "calc(100% + 8px)", left: 0, width: 230, padding: "9px 11px", borderRadius: "var(--radius-sm)", background: "var(--navy)", color: "#fff", fontSize: 12, fontWeight: 500, lineHeight: 1.45, boxShadow: "var(--shadow-md)", zIndex: 20 }}>
+          {text}
+        </span>
+      )}
+    </span>
+  );
+}
+
 // Phase 31: the shared Beginner / Intermediate / Advanced control. One small,
 // non-noisy pill group used identically on the "Choose your interview" step, the
 // invitation review screen, and the technical Assessment Centre step. Each option
@@ -3221,12 +3265,15 @@ function AcScorecardBody({ result, onOpenClassroom }) {
 // Two modes:
 //  - legacy: <LoadingScreen messages={[...]} /> — gentle message rotation on a
 //    timer. Still used by screens outside Phase 16B's audited flows.
-//  - staged (Phase 16B): <LoadingScreen progress={{ title, subtitle, steps, stage }} />
+//  - staged (Phase 16B): <LoadingScreen progress={{ title, subtitle, steps, stage, note }} />
 //    — NO timer. `steps` is a real checklist; `stage` is the index of the step
 //    currently in progress, advanced by the calling flow only when a genuine
 //    milestone (an awaited call) has actually completed. Earlier steps show a
 //    tick, the current step spins, later steps are dimmed. This is honest
-//    progress, not a fake animation.
+//    progress, not a fake animation. `note` (optional, `{ small, main }`) is
+//    static reassurance copy rendered below the checklist — currently only
+//    the interview-creation flows set it; every other caller of the staged
+//    mode omits it and renders exactly as before.
 function LoadingScreen({ messages, progress }) {
   const [idx, setIdx] = useState(0);
   const staged = progress && Array.isArray(progress.steps) && progress.steps.length > 0;
@@ -3258,6 +3305,19 @@ function LoadingScreen({ messages, progress }) {
             );
           })}
         </div>
+        {/* Reassurance copy — set only by the interview-creation flows (see
+            startCreateFlow's generation call and startPractiseAgain) via an
+            optional `note` on the progress object; every other staged screen
+            (Application Intelligence, Development Modules, …) leaves it unset
+            and renders exactly as before. No progress bar, percentage or time
+            estimate — just honest, on-brand reassurance while the real
+            checklist above keeps advancing on genuine milestones. */}
+        {progress.note && (
+          <div style={{ marginTop: 22, paddingTop: 16, borderTop: "1px solid var(--border)", textAlign: "center", maxWidth: 280 }}>
+            {progress.note.small && <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-faint)", marginBottom: 3 }}>{progress.note.small}</div>}
+            {progress.note.main && <div style={{ fontSize: 14, fontWeight: 700, color: "var(--navy)" }}>{progress.note.main}</div>}
+          </div>
+        )}
       </div>
     );
   }
@@ -4634,6 +4694,11 @@ function App() {
   const [emailInput, setEmailInput] = useState("");
   const [passwordInput, setPasswordInput] = useState("");
   const [confirmPasswordInput, setConfirmPasswordInput] = useState("");
+  // Optional affiliate-partner reference code, sign-up only — see handleSignUp
+  // and onAuthed below. Infrastructure only: this just stores the code on the
+  // profile for a later phase to build on; no partner-crediting, checking, or
+  // reward logic exists yet.
+  const [referenceCodeInput, setReferenceCodeInput] = useState("");
   const [authNotice, setAuthNotice] = useState(""); // e.g. "check your email to confirm"
   const [authBusy, setAuthBusy] = useState(false); // Phase 23: in-flight auth request — disables submit buttons, blocks duplicate submits
   const [resetEmailSent, setResetEmailSent] = useState(false); // Phase 23: forgot-password success state
@@ -4995,12 +5060,19 @@ function App() {
     try {
       const state = await loadFullUserState(authUser.id);
       let p = state.profile;
-      // Backfill name from signup metadata if the profile row doesn't have it yet
-      // (handles both instant-session and email-confirmation-required signup flows).
+      // Backfill name (+ optional reference code) from signup metadata if the
+      // profile row doesn't have them yet (handles both instant-session and
+      // email-confirmation-required signup flows). reference_code is written
+      // once, at this first backfill, and never overwritten afterward — same
+      // "set at signup, read later" shape as first/last name.
       const metaFirst = authUser.user_metadata?.first_name, metaLast = authUser.user_metadata?.last_name;
-      if ((!p?.first_name || !p?.last_name) && (metaFirst || metaLast)) {
+      const metaReferenceCode = authUser.user_metadata?.reference_code;
+      if ((!p?.first_name || !p?.last_name || (!p?.reference_code && metaReferenceCode)) && (metaFirst || metaLast || metaReferenceCode)) {
         const supabase = await getSupabase();
-        const { data: updated } = await supabase.from("profiles").update({ first_name: metaFirst || p?.first_name || "", last_name: metaLast || p?.last_name || "" }).eq("id", authUser.id).select().maybeSingle();
+        const { data: updated } = await supabase.from("profiles").update({
+          first_name: metaFirst || p?.first_name || "", last_name: metaLast || p?.last_name || "",
+          ...(!p?.reference_code && metaReferenceCode ? { reference_code: metaReferenceCode } : {}),
+        }).eq("id", authUser.id).select().maybeSingle();
         if (updated) p = updated;
       }
       setUser({ id: authUser.id, email: authUser.email, first_name: p?.first_name || "", last_name: p?.last_name || "" });
@@ -5065,9 +5137,17 @@ function App() {
     setAuthBusy(true);
     try {
       const supabase = await getSupabase();
+      // Optional reference code — same signup-metadata pattern as first/last name
+      // above (see onAuthed's backfill below), capped at a sane length purely to
+      // prevent abuse. It's optional free text with no checking, crediting, or
+      // reward behaviour behind it yet — just storage for a later phase.
+      const cleanReferenceCode = sanitizeText(referenceCodeInput.trim()).slice(0, 40);
       const { data, error: signUpErr } = await supabase.auth.signUp({
         email: sanitizeText(emailInput.trim().toLowerCase()), password: passwordInput,
-        options: { data: { first_name: sanitizeText(firstNameInput.trim()), last_name: sanitizeText(lastNameInput.trim()) } },
+        options: { data: {
+          first_name: sanitizeText(firstNameInput.trim()), last_name: sanitizeText(lastNameInput.trim()),
+          ...(cleanReferenceCode ? { reference_code: cleanReferenceCode } : {}),
+        } },
       });
       if (signUpErr) { setError(friendlyAuthError(signUpErr.message, "Couldn't create your account. Please try again.")); return; }
       if (data?.session) { await onAuthed(data.session); }
@@ -5871,6 +5951,9 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
       title: "Creating your new interview",
       subtitle: `Using your previous settings for ${[app.company, app.role].filter(Boolean).join(" · ")}`,
       steps: ["Restoring your details", "Creating your personalised questions"],
+      // Reassurance copy, interview-creation screens only (see LoadingScreen)
+      // — no fake progress, just an honest "this takes a moment" note.
+      note: { small: "This may take a moment", main: "We're creating the perfect interview for you." },
       stage: 0,
     });
     setScreen("analyzing");
@@ -6481,6 +6564,9 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
       steps: batchPipeline
         ? ["Creating your personalised questions", "Preparing every question", "Finalising your interview"]
         : ["Creating your personalised questions", "Finalising your interview"],
+      // Reassurance copy, interview-creation screens only (see LoadingScreen)
+      // — no fake progress, just an honest "this takes a moment" note.
+      note: { small: "This may take a moment", main: "We're creating the perfect interview for you." },
       stage: 0,
     });
     setScreen("analyzing");
@@ -7687,7 +7773,12 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                 <label htmlFor="signup-password" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Password</label>
                 <PasswordInput id="signup-password" autoComplete="new-password" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} placeholder={`At least ${PASSWORD_MIN_LENGTH} characters`} style={{ marginTop: 6, marginBottom: 16 }} />
                 <label htmlFor="signup-confirm-password" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Confirm password</label>
-                <PasswordInput id="signup-confirm-password" autoComplete="new-password" value={confirmPasswordInput} onChange={(e) => setConfirmPasswordInput(e.target.value)} onKeyDown={onEnterKey(handleSignUp)} style={{ marginTop: 6, marginBottom: 8 }} />
+                <PasswordInput id="signup-confirm-password" autoComplete="new-password" value={confirmPasswordInput} onChange={(e) => setConfirmPasswordInput(e.target.value)} style={{ marginTop: 6, marginBottom: 16 }} />
+                <label htmlFor="signup-reference-code" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)", display: "flex", alignItems: "center", gap: 5 }}>
+                  Reference code <span style={{ color: "var(--text-faint)", fontWeight: 400 }}>(Optional)</span>
+                  <InfoTooltip label="What is a reference code?" text="If you have been provided a reference code from an affiliate partner, type it in here." />
+                </label>
+                <input id="signup-reference-code" autoComplete="off" value={referenceCodeInput} onChange={(e) => setReferenceCodeInput(e.target.value)} onKeyDown={onEnterKey(handleSignUp)} placeholder="e.g. UNI2026" style={{ ...inputStyle, marginTop: 6, marginBottom: 8 }} />
                 {error && <div role="alert" style={{ color: "var(--bad)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
                 {authNotice && <div role="status" style={{ color: "var(--good)", fontSize: 13, marginBottom: 10 }}>{authNotice}</div>}
                 <Btn variant="accent" full disabled={authBusy} onClick={() => guarded(handleSignUp)} style={{ marginTop: 8 }}>{authBusy ? "Creating account…" : <>Create account <ChevronRight size={16} /></>}</Btn>
