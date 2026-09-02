@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import {
   ChevronRight, Loader2, TrendingDown, CheckCircle2, ArrowLeft, ArrowRight, Sparkles,
   Target, BarChart3, AlertCircle, Upload, Mic, Menu, X,
@@ -9,6 +10,9 @@ import {
   // dependency; these are additional names from the same package, no new dep).
   MessageSquare, ListChecks, Layers, LineChart, Presentation, Inbox, NotebookPen,
   ScanLine, Route, ClipboardList, Compass,
+  // Phase B — engagement features (lucide-react is already a dependency; these
+  // are additional names from the same package, no new dep).
+  Zap, Trash2, AlertTriangle, RotateCcw,
 } from "lucide-react";
 // Phase 2A/2B: canonical taxonomy / anchor-source / stage-methodology
 // engine. A companion layer to the Phase 4A INTERVIEW_STAGES/
@@ -34,6 +38,13 @@ import {
   isTechnicalMixEnabled, applyQuestionMixToDistribution, resolveAllowedCategories, resolveOpeningCategory,
   questionMixTypeForCategory,
 } from "./questionMix";
+// Phase 37: Application Preparation Intelligence (Phase A). Pure, deterministic, offline —
+// see applicationPreparation.js's own docstring. Integrated into the existing Application
+// Overview screen only; no new screen, no new AI call.
+import {
+  getPractisedDimensions, getPreparationGaps, getApplicationPreparationStatus,
+  getNextRecommendedAction, getAutoChecklistItems, getManualChecklistDefinitions, mergeChecklist,
+} from "./applicationPreparation.js";
 // Phase 31: Technical Difficulty Control. A pure, deterministic layer (like
 // questionMix.js) that owns the Beginner/Intermediate/Advanced vocabulary, the
 // EXPLICIT per-level generation guidance injected into the real technical
@@ -112,7 +123,7 @@ import { markWrittenQuiz, coverageVerdict, normaliseConcept } from "./writtenQui
 import { classroomTopicMatch, pickContinuePreparing, redoConceptUnion } from "./continuePreparing";
 // Phase 16A: pure interview-date helpers for the Applications pillar (countdown
 // text, nearest-upcoming ordering). No AI, no DB, no reminders — status only.
-import { interviewCountdown, sortApplicationsByUpcoming, partitionApplications, nearestUpcomingApplication } from "./applicationSchedule";
+import { interviewCountdown, sortApplicationsByUpcoming, partitionApplications, nearestUpcomingApplication, interviewDateToIso, daysUntil } from "./applicationSchedule";
 // Phase 18: pure, offline reconstruction of an unfinished interview from its
 // persisted rows. No AI, no DB, no React. Resume = read + deterministic rebuild.
 import { reconstructInterviewState, sortResumableInterviews, summariseResumable, resumableProgressLabel } from "./resumeInterview";
@@ -1527,6 +1538,12 @@ async function loadFullUserState(userId) {
     // null for a legacy application that has nothing stored (or a DB without the column) —
     // every downstream reader treats null as "no intelligence yet".
     applicationIntelligence: validateApplicationIntelligence(a.application_intelligence),
+    // Phase 37: the manually-ticked subset of the Interview Checklist (a plain { itemId: true }
+    // map — auto-derived items are never persisted, see applicationPreparation.js). Reuses the
+    // existing (previously unused) applications.checklist column — no new table. null for
+    // every application that predates this feature, or that hasn't ticked anything yet;
+    // mergeChecklist() already treats null/undefined identically to {}.
+    checklist: a.checklist && typeof a.checklist === "object" ? a.checklist : null,
   }));
   let reportsByInterview = new Map();
   if (interviewsRaw.length) {
@@ -1552,6 +1569,15 @@ async function loadFullUserState(userId) {
     return {
       id: iv.id, applicationId: iv.application_id, company: app.company || "", role: app.role || "", date: new Date(iv.completed_at || iv.created_at).getTime(), overall_score: iv.overall_score, readiness: iv.readiness, breakdown: reportsByInterview.get(iv.id)?.breakdown || {}, report: reportsByInterview.get(iv.id) || null,
       stageLabel: iv.stage ? stageByKey(iv.stage).label : null, formatLabel: iv.format ? (INTERVIEW_FORMATS[iv.format]?.label || null) : null,
+      // Phase B: "quick_practice" | "challenge" | null — lets the UI label these clearly
+      // distinct from a full mock interview, per the brief ("do not falsely imply it's a full
+      // mock interview"). config was already selected (dbSelect does select("*")) — no new query.
+      sessionKind: iv.config?.session_kind || null,
+      // Phase 38: the FULL resolved config (stage/format/question_mix/technical_difficulty/
+      // max_questions/...) this interview was actually generated with — the canonical source
+      // "Practise again" reads to recreate an interview without re-asking the wizard. Same
+      // already-selected column as sessionKind above; no new query, no new persistence.
+      config: iv.config || null,
     };
   });
 
@@ -1623,6 +1649,22 @@ async function dbUpdateApplication(applicationId, fields) {
   }
   return { ok: true, error: null };
 }
+// Phase B — Delete Application. RLS (applications_self, `for all`) already scopes this to the
+// caller's own row; every application-owned child row (interviews, documents, classroom_topics,
+// assessment_attempts — and everything THOSE cascade to: interview_questions, answers,
+// evaluations, interview_reports, interview_memory, memory_comparisons, development_modules,
+// classroom_lessons, classroom_quiz_results) is deleted automatically by the existing FK "on
+// delete cascade" chain already in the baseline schema — verified by inspecting
+// supabase/migrations/20260828120000_baseline_schema.sql before writing this function; nothing
+// here duplicates that. candidate_claims.application_id and ai_usage.application_id are "on
+// delete set null" — genuinely shared/candidate-level data, deliberately NOT deleted. No new
+// migration, no manual multi-table deletion logic.
+async function dbDeleteApplication(applicationId) {
+  const supabase = await getSupabase();
+  const { error } = await supabase.from("applications").delete().eq("id", applicationId);
+  if (error) { console.error("application delete failed:", error.message); return { ok: false, error: error.message }; }
+  return { ok: true, error: null };
+}
 async function dbInsertDocument(userId, applicationId, doc) {
   const supabase = await getSupabase();
   const { error } = await supabase.from("documents").insert({ user_id: userId, application_id: applicationId, document_type: doc.type, filename: doc.filename, storage_path: doc.storagePath || null, mime_type: doc.mimeType || null, file_size: doc.fileSize || null, extracted_text: doc.extractedText || null });
@@ -1649,6 +1691,25 @@ async function dbGetApplicationDocuments(userId, applicationId) {
   const { data, error } = await supabase.from("documents").select("document_type, extracted_text, created_at").eq("user_id", userId).eq("application_id", applicationId).order("created_at", { ascending: false });
   if (error) { console.error("documents select failed:", error.message); return []; }
   return data || [];
+}
+
+// Phase 37: ground truth of which question CATEGORIES were actually asked across this
+// application's own interviews — covers BOTH the adaptive and independent/batch pipelines
+// (both write interview_questions.category; interview_memory, by contrast, is only ever
+// populated by the adaptive pipeline's finishInterview, so it would silently under-count a
+// candidate's independent/batch practice — deliberately not used here for that reason).
+// interviewIds is this application's own already-loaded completed-interview ids (interviewList,
+// filtered by applicationId — no extra query for that part); RLS scopes the read to this user's
+// own rows via the interview_questions -> interviews ownership join, same as every other child-
+// table query in this file that has no user_id column of its own to filter on directly (e.g.
+// interview_reports above). Best-effort: a failure degrades to "no practice data yet" rather
+// than blocking the Application Overview screen.
+async function dbGetApplicationQuestionCategories(interviewIds) {
+  if (!Array.isArray(interviewIds) || interviewIds.length === 0) return [];
+  const supabase = await getSupabase();
+  const { data, error } = await supabase.from("interview_questions").select("category").in("interview_id", interviewIds);
+  if (error) { console.error("interview_questions category select failed:", error.message); return []; }
+  return (data || []).map((r) => r.category).filter(Boolean);
 }
 
 async function dbCreateInterview(userId, applicationId, config, methodologyDistribution) {
@@ -1770,6 +1831,7 @@ async function dbCompleteInterview(interviewId, report) {
   if (repErr) console.error("interview report persist failed:", repErr.message);
   return { ok: !updErr && !repErr, updateOk: !updErr, reportOk: !repErr, error: (repErr && repErr.message) || (updErr && updErr.message) || null };
 }
+
 async function dbInsertMemory(userId, interviewId, entry) {
   const supabase = await getSupabase();
   const { error } = await supabase.from("interview_memory").insert({ user_id: userId, interview_id: interviewId, question_text: entry.question, category: entry.category, competency: entry.competency, score: entry.score, company: entry.company, role: entry.role, answer_text: entry.answerText || null });
@@ -1784,6 +1846,77 @@ async function dbInsertCompetencyHistory(userId, competency, score, sourceType, 
   const supabase = await getSupabase();
   const { error } = await supabase.from("competency_history").insert({ user_id: userId, competency, score, source_type: sourceType, source_id: sourceId || null, company: company || null, role: role || null });
   if (error) console.error("competency history insert failed:", error.message);
+}
+
+/* ================================================================== *
+ * PHASE B — ENGAGEMENT FEATURES (Quick Practice / Challenge Me / Try Again Now)
+ * ------------------------------------------------------------------
+ * Quick Practice reuses the EXISTING independent_batch pipeline end-to-end
+ * (analyseAndPlan -> generateQuestionBatch -> the async_interview screens ->
+ * finishAsyncInterview -> finishInterview) with question_count overridden to
+ * 3/5 and config.session_kind="quick_practice" for labelling — see
+ * startQuickPractice() below. It makes NO new AI calls and duplicates NO
+ * prompt-building logic.
+ *
+ * Challenge Me is deliberately lighter: ONE question (generateQuestionBatch,
+ * question_count=1, with novelty guidance — see buildQuestionBatchPrompt's
+ * avoidQuestions param), answered once, evaluated once
+ * (generateBatchEvaluation) — the SAME two existing request types
+ * ("interview_question_batch" / "interview_batch_evaluation"), never a new
+ * one, and deliberately stops there rather than also calling the heavier
+ * interview_report AI call finishInterview() uses — a single-question
+ * "challenge" doesn't need a full narrative report, and skipping it keeps
+ * this feature genuinely lightweight, per the brief.
+ *
+ * Try Again Now clones the SAME question text into a NEW interview_questions
+ * row (metadata.retry_of_question_id links it back) rather than touching the
+ * original answer/evaluation rows at all — the original attempt is never
+ * destroyed, and answers.question_id's existing UNIQUE constraint is why a
+ * genuine retry needs its own question row rather than a second answer row
+ * for the same question_id.
+ * ================================================================== */
+
+// Bounded, capped history — never unlimited (see buildQuestionBatchPrompt's avoidQuestions).
+// interviewIds is this application's own already-loaded interview ids (interviewList, filtered
+// by applicationId — no extra query for that part). RLS scopes the read via the
+// interview_questions -> interviews ownership join, same pattern as dbGetApplicationQuestionCategories.
+async function dbGetApplicationRecentQuestions(interviewIds, limit) {
+  if (!Array.isArray(interviewIds) || interviewIds.length === 0) return [];
+  const supabase = await getSupabase();
+  const { data, error } = await supabase.from("interview_questions").select("question_text, created_at").in("interview_id", interviewIds).order("created_at", { ascending: false }).limit(limit);
+  if (error) { console.error("recent questions select failed:", error.message); return []; }
+  return data || [];
+}
+
+// Try Again Now: a NEW question row cloning the original's text/category/competency (no AI
+// call — nothing about the question itself changes), tagged via the EXISTING metadata jsonb
+// column (no migration) so it can always be traced back to what it's a retry of.
+async function dbInsertRetryQuestion(interviewId, questionNumber, original, retryOfQuestionId) {
+  const supabase = await getSupabase();
+  const { data, error } = await supabase.from("interview_questions").insert({
+    interview_id: interviewId, question_number: questionNumber, question_text: original.text,
+    category: original.category, competency: original.competency, generation_mode: "independent",
+    anchor_source: original.anchorSource || null,
+    metadata: { difficulty: original.difficulty || null, is_technical: !!original.isTechnical, retry_of_question_id: retryOfQuestionId },
+  }).select().single();
+  if (error) throw new Error("Couldn't set up the retry. Please try again.");
+  return data;
+}
+
+// A deterministic, non-AI completion for a single-question session (Challenge Me / a retry) —
+// overall_score is the plain mean of the SAME six rubric fields callClaude's evaluation prompts
+// already return everywhere else in the app (never a new scoring model), and the readiness
+// bands mirror the same "not_ready|needs_improvement|interview_ready|strong" vocabulary
+// finishInterview's own report already uses. Best-effort: the feedback the candidate sees comes
+// straight from `evaluation` in local state regardless of whether this bookkeeping write
+// succeeds, so a failure here is logged, not surfaced as a blocking error.
+async function dbCompleteLightweightInterview(interviewId, evaluation) {
+  const overall = Math.round((num(evaluation.relevance) + num(evaluation.specificity) + num(evaluation.structure) + num(evaluation.evidence) + num(evaluation.clarity) + num(evaluation.competency_demonstration)) / 6);
+  const readiness = overall >= 85 ? "strong" : overall >= 70 ? "interview_ready" : overall >= 50 ? "needs_improvement" : "not_ready";
+  const supabase = await getSupabase();
+  const { error } = await supabase.from("interviews").update({ status: "completed", completed_at: new Date().toISOString(), overall_score: overall, readiness }).eq("id", interviewId);
+  if (error) console.error("lightweight interview completion failed:", error.message);
+  return { overall, readiness };
 }
 async function dbUpsertCandidateDna(userId, { strengths, weaknesses, style_notes, common_issues }) {
   const supabase = await getSupabase();
@@ -2165,7 +2298,11 @@ function cvBackgroundSummary(candidateProfile) {
 // ever read (see the Phase 2A/2B audit). config.*_weight/cv_weight/jd_weight
 // stay declared on INTERVIEW_FORMATS/INTERVIEW_STAGES, deprecated not
 // removed, per the standing rollback-safety decision.
-function buildQuestionBatchPrompt(config, interviewProfile, cvBackground, jdText, weaknessNote, methodologyDistribution) {
+// avoidQuestions (Phase B — Challenge Me, optional, default none): previously-asked question
+// TEXTS for this SAME application, already bounded/capped by the caller (see
+// dbGetApplicationRecentQuestions) — never sent unlimited. Every other existing call site omits
+// this, so the prompt is byte-identical to before whenever it's absent (identity/no-op).
+function buildQuestionBatchPrompt(config, interviewProfile, cvBackground, jdText, weaknessNote, methodologyDistribution, avoidQuestions = []) {
   const stageLabel = stageByKey(config.stage).label;
   const formatLabel = INTERVIEW_FORMATS[config.format].label;
   const md = methodologyDistribution || {};
@@ -2206,14 +2343,17 @@ Rules:
 - "anchor_source" describes what grounds the question: "cv" when it references a specific fact from the candidate's background below, "jd" when it's built directly from a specific requirement in the job description, "company" when it's grounded in company-specific context, or "generic" when it's a standard question for the category/competency with no specific anchor.
 - Only mark "is_technical": true, and only include a genuinely technical question, where THIS SPECIFIC role actually requires technical assessment at THIS stage. Do NOT include technical questions just because the role sounds finance-related or technical-sounding — judge from the actual job description, division, and stage. A recruiter/HR screen in particular should very rarely, if ever, include a technical question.
 - The candidate's background below is BACKGROUND CONTEXT ONLY, for light, natural personalisation (e.g. referencing something real they listed). Do NOT build any question that only makes sense given a specific expected answer to an earlier question — every question must be self-contained and independently gradable, with no chain: question 2 must not depend on how question 1 might be answered, question 3 must not depend on question 2, and so on for the entire set.
-- Vary categories and difficulty sensibly across the set rather than clustering.${technicalDifficultyRule}`;
+- Vary categories and difficulty sensibly across the set rather than clustering.${technicalDifficultyRule}${arr(avoidQuestions).length ? `
+- CHALLENGE MODE — question novelty (this is a single, standalone challenge question, not a full session): the candidate has already been asked the questions listed under "Previously asked for this application" below. Do NOT repeat any of them, and do NOT produce a near-duplicate or an obvious reformulation of one (e.g. "Why do you want to work here?" and "What attracts you to this company?" are the SAME question for this purpose — both are disallowed if either appears below). Pick a genuinely different theme/competency. Make this question meaningfully more demanding than a routine first question, while staying realistic for the stage and any technical-difficulty calibration above — "challenging" means more novel and demanding, never absurd or impossible.` : ""}`;
 
-  const userText = `${weaknessNote}\n\nInterview stage: ${stageLabel}\nInterview format: ${formatLabel}\n\nInterview profile (from JD analysis): ${JSON.stringify(interviewProfile)}\n\nCandidate background (context only — do not chain questions off this): ${JSON.stringify(cvBackground)}\n\nJob description:\n${jdText}`;
+  const userText = `${weaknessNote}\n\nInterview stage: ${stageLabel}\nInterview format: ${formatLabel}\n\nInterview profile (from JD analysis): ${JSON.stringify(interviewProfile)}\n\nCandidate background (context only — do not chain questions off this): ${JSON.stringify(cvBackground)}\n\nJob description:\n${jdText}${arr(avoidQuestions).length ? `\n\nPreviously asked for this application (avoid repeating or rephrasing any of these):\n${arr(avoidQuestions).map((q) => `- ${q}`).join("\n")}` : ""}`;
   return { system, userText };
 }
 
-async function generateQuestionBatch(config, interviewProfile, cvBackground, jdText, weaknessNote, meta, methodologyDistribution) {
-  const { system, userText } = buildQuestionBatchPrompt(config, interviewProfile, cvBackground, jdText, weaknessNote, methodologyDistribution);
+// avoidQuestions: see buildQuestionBatchPrompt above — optional, defaults to none (identity for
+// every pre-existing caller).
+async function generateQuestionBatch(config, interviewProfile, cvBackground, jdText, weaknessNote, meta, methodologyDistribution, avoidQuestions = []) {
+  const { system, userText } = buildQuestionBatchPrompt(config, interviewProfile, cvBackground, jdText, weaknessNote, methodologyDistribution, avoidQuestions);
   const maxTokens = Math.min(7500, 1200 + config.question_count * 350);
   const raw = await callClaude(system, userText, maxTokens, false, { ...meta, requestType: "interview_question_batch" });
   return validateQuestionBatch(raw, config.question_count);
@@ -2394,7 +2534,7 @@ function JobReadyLogo({ variant = "full", background = "light", size = 28 }) {
 /* ================================================================== */
 /* SHARED UI PRIMITIVES                                                 */
 /* ================================================================== */
-function Btn({ children, onClick, disabled, variant = "primary", style, full, className }) {
+function Btn({ children, onClick, disabled, variant = "primary", style, full, className, id }) {
   // Phase 26: disabled styling is now the shared `.jr-btn:disabled{ opacity:.55 }`
   // rule (applies to every variant consistently) instead of a per-variant colour
   // swap; radius uses the consolidated `--r-sm`; a `danger` variant + an optional
@@ -2408,7 +2548,51 @@ function Btn({ children, onClick, disabled, variant = "primary", style, full, cl
     ghost: { background: "transparent", color: "var(--text-dim)" },
     danger: { background: "var(--bad)", color: "#fff" },
   };
-  return <button className={className ? "jr-btn " + className : "jr-btn"} onClick={onClick} disabled={disabled} style={{ ...base, ...(variants[variant] || variants.primary), ...style }}>{children}</button>;
+  return <button id={id} className={className ? "jr-btn " + className : "jr-btn"} onClick={onClick} disabled={disabled} style={{ ...base, ...(variants[variant] || variants.primary), ...style }}>{children}</button>;
+}
+
+// Phase B — a small, reusable confirmation dialog (no existing modal/dialog component was
+// found anywhere in the codebase — see the Phase B audit). Built entirely from existing
+// primitives/tokens (this file's own Btn + colour tokens) — not a second design system.
+// Escape cancels; the Cancel button gets initial focus (never the destructive one); colour is
+// never the sole signal of danger — the heading, body copy and an icon all say so too.
+// Currently used only for "Delete application", but written generically enough to reuse for
+// any future confirm-before-destroying action.
+function ConfirmDialog({ title, body, confirmLabel, onCancel, onConfirm, busy, icon: Icon = AlertTriangle, iconColor = "var(--bad)", confirmVariant = "danger", busyLabel = "Working..." }) {
+  useEffect(() => {
+    function onKey(e) { if (e.key === "Escape") onCancel(); }
+    window.addEventListener("keydown", onKey);
+    document.getElementById("jr-confirm-cancel")?.focus();
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // Portalled to document.body: every screen wrapper carries `.jr-fade` (the existing
+  // page-enter animation), whose `transform` (identity, but present via "animation: ... both")
+  // establishes a containing block for `position: fixed` descendants — trapping this overlay
+  // BELOW the sticky nav's own stacking context instead of covering it. Rendering outside the
+  // React tree's DOM position (via a portal) sidesteps that entirely; nothing else changes.
+  // Phase 38: icon/iconColor/confirmVariant/busyLabel are optional, defaulted to the original
+  // Delete Application look (AlertTriangle / bad / danger / "Working...") — every existing
+  // caller is visually unchanged. Non-destructive confirmations (e.g. "Practise again") pass
+  // their own icon + an "accent" confirmVariant instead of reinventing a second dialog.
+  return createPortal(
+    <div role="presentation" onClick={onCancel}
+      style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200, padding: 20 }}>
+      <div role="dialog" aria-modal="true" aria-labelledby="jr-confirm-title" aria-describedby="jr-confirm-body" onClick={(e) => e.stopPropagation()}
+        style={{ background: "var(--card)", borderRadius: "var(--radius)", boxShadow: "var(--shadow-lg)", padding: 24, maxWidth: 420, width: "100%" }}>
+        <div className="flex items-center gap-2" style={{ marginBottom: 10 }}>
+          <Icon size={18} color={iconColor} aria-hidden="true" />
+          <div id="jr-confirm-title" style={{ fontSize: 17, fontWeight: 800, color: "var(--navy)" }}>{title}</div>
+        </div>
+        <div id="jr-confirm-body" style={{ fontSize: 13.5, color: "var(--text-dim)", lineHeight: 1.55, marginBottom: 20 }}>{body}</div>
+        <div className="flex gap-3 flex-wrap">
+          <Btn id="jr-confirm-cancel" variant="secondary" onClick={onCancel}>Cancel</Btn>
+          <Btn variant={confirmVariant} onClick={onConfirm} disabled={busy}>{busy ? busyLabel : confirmLabel}</Btn>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
 }
 
 function Card({ children, style, hover = true, onClick, variant, className }) {
@@ -3849,6 +4033,13 @@ function App() {
   const [wizardStep, setWizardStep] = useState(1);
   const [company, setCompany] = useState("");
   const [role, setRole] = useState("");
+  // Phase 36: the real-world interview date, collected alongside company/role on wizard step 1
+  // (an existing application never revisits step 1 — continueApplication/practiseApplicationAgain
+  // both skip straight to step 2+ — so this only ever needs to handle the brand-new-application
+  // case; confirmCompanyRole persists it onto the SAME applications.interview_date column the
+  // Applications-pillar edit form already uses, see interviewDateToIso). Bare "YYYY-MM-DD" from
+  // the native date input, or "" — genuinely optional, never validated as required.
+  const [interviewDateInput, setInterviewDateInput] = useState("");
   const [interviewStage, setInterviewStage] = useState("first_round"); // recruiter_screen | first_round | technical | final_round
   const [interviewFormat, setInterviewFormat] = useState(null); // null = use the stage's default format; only meaningful when the stage allows a choice
   const [length, setLength] = useState(12);
@@ -3872,6 +4063,36 @@ function App() {
   // the existing `applications` state + persistence.
   const [appView, setAppView] = useState(null);
   const [appForm, setAppForm] = useState(null);
+  // Phase 37: raw interview_questions.category values for the CURRENTLY OPEN application's own
+  // completed interviews only — fetched fresh by openApplication() and cleared immediately on
+  // every open (before the fetch resolves) so a slow network can never leave a moment where one
+  // application's practice data is shown while a different one is genuinely open. This is the
+  // one piece of Phase 37 state that isn't just a read of already-loaded `applications`.
+  const [appPracticeCategories, setAppPracticeCategories] = useState([]);
+  // Phase 37: Interview Checklist expand/collapse — a per-viewer UI preference only, not
+  // persisted (the checklist's actual completion state lives on the application row).
+  const [checklistExpanded, setChecklistExpanded] = useState(false);
+  const checklistRef = useRef(null);
+  // Phase B — Quick Practice: consumed once by analyseAndPlan, then cleared (see there).
+  const [quickPracticeQuestionCount, setQuickPracticeQuestionCount] = useState(null);
+  // Phase B — Challenge Me: the single active challenge question + its answer/feedback, or
+  // null. { interviewId, questionDbId, questionNumber, text, category, competency, isTechnical,
+  //   anchorSource, difficulty, evaluation, retryOfQuestionId, originalQuestionId }
+  const [challenge, setChallenge] = useState(null);
+  // Kept separate from the live interview's `answerInput` so the two flows can never bleed
+  // into each other even if a user somehow had both open across tabs/back-navigation.
+  const [challengeAnswerInput, setChallengeAnswerInput] = useState("");
+  // Phase B — Delete Application: the application pending confirmation, or null (no modal
+  // shown). deleteBusy guards against a duplicate submission while the delete is in flight.
+  const [deleteConfirmApp, setDeleteConfirmApp] = useState(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  // Phase 38 — Practise again: the application pending confirmation ("Create a new interview
+  // using your previous settings?"), or null. practiseAgainActive is a ONE-SHOT flag, consumed
+  // and cleared at the top of analyseAndPlan (same "additive override" pattern as
+  // quickPracticeQuestionCount above) purely to customise the loading screen's copy — it never
+  // changes what analyseAndPlan actually does.
+  const [practiseAgainConfirmApp, setPractiseAgainConfirmApp] = useState(null);
+  const [practiseAgainActive, setPractiseAgainActive] = useState(false);
   // Phase 16B: honest staged loading. { title, subtitle, steps:[...], stage:N }.
   // The generating flows (interview / development module / application analysis)
   // set this up front and bump `stage` only when a real awaited milestone
@@ -3970,6 +4191,9 @@ function App() {
   // "Start New Interview" bypass the duplicate check on the immediate re-entry.
   const resumeRef = useRef(false);
   const forceNewRef = useRef(false);
+  // Phase B: single-flight guard for submitChallengeAnswer — prevents a duplicate answer
+  // submission the same way resumeRef/devGenRef guard their own flows.
+  const challengeBusyRef = useRef(false);
   // Phase 15A: prefetched (best-effort) — power the Dashboard "Continue preparing"
   // pick and keep it fresh as the user learns, without a reload.
   const [developmentModules, setDevelopmentModules] = useState([]);
@@ -4338,17 +4562,21 @@ function App() {
   async function confirmCompanyRole() {
     setError("");
     const cleanCompany = sanitizeText(company), cleanRole = sanitizeText(role);
+    // Phase 36: persisted onto the SAME applications.interview_date column the Applications-
+    // pillar edit form uses (interviewDateToIso, applicationSchedule.js) — never a second/
+    // parallel date field. null when left blank, exactly like saveApplicationForm.
+    const interviewDateIso = interviewDateToIso(interviewDateInput);
     try {
       if (!applicationId) {
-        const app = await dbCreateApplication(user.id, { company: cleanCompany, role: cleanRole, status: "draft" });
+        const app = await dbCreateApplication(user.id, { company: cleanCompany, role: cleanRole, interview_date: interviewDateIso, status: "draft" });
         setApplicationId(app.id);
         // Phase 4 (returning-user continuity): keep this draft visible on the Dashboard in the
         // SAME session immediately, rather than only after the next reload — same
         // same-session-availability fix as Phase 3's report/attempt entries.
-        setApplications([{ id: app.id, company: cleanCompany, role: cleanRole, status: "draft", date: Date.now(), jobDescription: "", stageLabel: null, formatLabel: null }, ...applications]);
+        setApplications([{ id: app.id, company: cleanCompany, role: cleanRole, status: "draft", date: Date.now(), jobDescription: "", stageLabel: null, formatLabel: null, interviewDate: interviewDateIso }, ...applications]);
       } else {
-        await dbUpdateApplication(applicationId, { company: cleanCompany, role: cleanRole });
-        setApplications(applications.map((a) => (a.id === applicationId ? { ...a, company: cleanCompany, role: cleanRole } : a)));
+        await dbUpdateApplication(applicationId, { company: cleanCompany, role: cleanRole, interview_date: interviewDateIso });
+        setApplications(applications.map((a) => (a.id === applicationId ? { ...a, company: cleanCompany, role: cleanRole, interviewDate: interviewDateIso } : a)));
       }
       setWizardStep(2);
     } catch (e) {
@@ -4572,8 +4800,22 @@ Rules: mini study guide, not an essay. core_knowledge 3-5 points, key_points 3-5
       return n && m && (n === m || n.includes(m) || m.includes(n));
     });
     if (existing) { await openDevelopmentModule(existing); return; }
+    // Phase 38 — PERFORMANCE: respond to the click immediately. Previously the screen didn't
+    // move at all until dbCreateRecommendationTopic's network round-trip resolved — a real,
+    // visible dead interval on the single most common "Start learning" entry point (the
+    // Classroom's top "Recommended for your application" section). Real, staged milestones
+    // only — the "Setting up this topic" step only advances once the write actually completes.
+    setError("");
+    setGenProgress({ title: "Opening this lesson", subtitle: rec.label || "", steps: ["Setting up this topic", "Preparing your material"], stage: 0 });
+    setScreen("dev_module_generating");
     const row = await dbCreateRecommendationTopic(user.id, { applicationId: app.id, company: app.company, role: app.role }, rec);
-    if (!row) { setError("Couldn't start this development area. Please try again."); return; }
+    if (!row) {
+      setGenProgress(null);
+      setError("Couldn't start this development area. Please try again.");
+      setScreen("classroom");
+      return;
+    }
+    bumpGenStage(1);
     const clientTopic = {
       id: row.id, topic: row.topic, category: row.category, description: row.description,
       company: row.company || "", role: row.role || "",
@@ -4583,13 +4825,20 @@ Rules: mini study guide, not an essay. core_knowledge 3-5 points, key_points 3-5
       applicationId: row.application_id || null,
     };
     setClassroom((prev) => [...prev, clientTopic]);
-    await openDevelopmentModule(clientTopic);
+    // Phase 38 — PERFORMANCE: knownNew — this topic was just inserted above, so a
+    // development_modules row cannot possibly exist for it yet. Skips openDevelopmentModule's
+    // own existence check, removing one wholly redundant network round-trip from this path.
+    await openDevelopmentModule(clientTopic, { knownNew: true });
   }
 
   // The ONE AI call for Phase 14. Reuse first (dbGetDevelopmentModule); generate
   // once only if nothing exists; everything after this — Learn, Flashcards, Quiz,
   // marking, retakes — is deterministic and makes NO further AI call.
-  async function openDevelopmentModule(topic) {
+  // opts.knownNew (Phase 38 — PERFORMANCE): the caller already knows, with certainty, that no
+  // development_modules row can exist for this topic yet (it just inserted the topic itself
+  // this same call chain — see startLearningFromRecommendation). Skips the existence check
+  // below entirely instead of issuing a network round-trip whose answer is already known.
+  async function openDevelopmentModule(topic, opts = {}) {
     if (!topic || !user || devGenRef.current) return;
     setDevTopic(topic); setDevView("hub");
     setFlashIdx(0); setFlashRevealed(false);
@@ -4626,9 +4875,19 @@ Rules: mini study guide, not an essay. core_knowledge 3-5 points, key_points 3-5
       return;
     }
 
+    // Phase 38 — PERFORMANCE: respond to the click immediately. Previously the screen didn't
+    // move AT ALL past this point until the existence check below (and, for a genuinely new
+    // topic, the AI generation after it) had already finished — a real, visible dead interval
+    // on every "Start learning" for a topic that wasn't already cached. Same staged
+    // LoadingScreen the AI-generation path already used; its copy/steps are simply refined
+    // below once we know which path we're actually on — every step still only advances on a
+    // real awaited milestone, never a timer.
+    setGenProgress({ title: "Opening this lesson", subtitle: topic.topic || "", steps: ["Checking your progress", "Preparing your material"], stage: 0 });
+    setScreen("dev_module_generating");
+
     // Not in state: a legacy session from before the Phase 15A prefetch, or a
     // module created on another device this session. Direct read (still 0 AI).
-    const existing = await dbGetDevelopmentModule(topic.id);
+    const existing = opts.knownNew ? null : await dbGetDevelopmentModule(topic.id);
     if (existing) {
       const mod = hydrateDevModuleRow(existing);
       setDevModule(mod);
@@ -4637,6 +4896,7 @@ Rules: mini study guide, not an essay. core_knowledge 3-5 points, key_points 3-5
       setDevelopmentModules((prev) => [...prev.filter((m) => m.topic_id !== topic.id), existing]);
       if (prog) setModuleProgress((prev) => [...prev.filter((p) => p.module_id !== existing.id), prog]);
       setQuizOrder([...Array(mod.learning_items.length).keys()]);
+      setGenProgress(null);
       setScreen("dev_module");
       return;
     }
@@ -4872,7 +5132,7 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
   // threaded through so a candidate arriving via "Practise weaknesses" gets that weighting
   // regardless of which input method they then pick.
   function startCreateFlow(focusWeak = false) {
-    setCompany(""); setRole(""); setJdText(""); setCvText(""); setBuildMethod("jdcv");
+    setCompany(""); setRole(""); setInterviewDateInput(""); setJdText(""); setCvText(""); setBuildMethod("jdcv");
     setInvitationText(""); setInvitationDraft(null); setInvitationOriginal(null);
     setScanMix({ technical: false, behavioural: false, motivational: false });
     // Phase 11: the Question Mix must be an explicit choice every time — never carried over
@@ -4929,27 +5189,136 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
     } catch (e) { /* best-effort restore only — the candidate can always re-paste/upload */ }
   }
 
-  // Phase 4: practise again for an application that already has at least one completed
-  // interview — reuses the SAME application (rather than startCreateFlow's always-new one) so
-  // multiple stages/attempts for one real job genuinely accumulate under one application,
-  // instead of each attempt silently fragmenting into its own disconnected "application" row.
-  // job_description is always persisted for an "active" application (see analyseAndPlan), so
-  // this never needs the documents fallback continueApplication above uses for a draft.
+  /* ---------------- PHASE 38: PRACTISE AGAIN (frictionless repeat interview) ---------------- */
+  // Phase 4 originally sent "Practise again" straight into the wizard, prefilled — the candidate
+  // still had to pick stage/format/question mix/technical difficulty and click through again,
+  // even though every one of those was already decided (and persisted) the first time. Phase 38
+  // replaces that with a one-click confirm: the SAME application (never a new one — multiple
+  // attempts for one real job still accumulate under it) gets a genuinely NEW interview, built
+  // through the EXACT SAME analyseAndPlan() pipeline as every other interview (same AI call,
+  // same persistence, same batch/adaptive branching, same Phase 18 duplicate-generation guard)
+  // — never a second/shortcut creation path. The only thing that changes is where the wizard's
+  // OWN input state comes from: read back from the most recent interview's already-persisted
+  // interviews.config (the canonical source Phase 4A/11/18/31 established, and the same one
+  // Phase 18's resume path already reads) instead of the candidate re-typing it. This is exactly
+  // the "prefill wizard state, then call analyseAndPlan() directly" pattern startQuickPractice
+  // already uses — no parallel configuration system.
   function practiseApplicationAgain(app) {
+    if (!app) return;
     setError("");
-    setCompany(app.company); setRole(app.role); setApplicationId(app.id); setBuildMethod("jdcv");
+    setPractiseAgainConfirmApp(app);
+  }
+  function cancelPractiseAgain() { setPractiseAgainConfirmApp(null); }
+
+  // Required fields to faithfully recreate an interview without the wizard: stage, format and a
+  // non-empty question mix. All three are additive keys on interviews.config (Phase 4A/11) that
+  // every interview created since has — a genuinely legacy row (created before Phase 4A) simply
+  // won't have them, which is exactly what this null-return signals to startPractiseAgain below.
+  function practiseAgainConfigFor(app) {
+    const latest = (app.interviews || [])[0];
+    const config = latest?.config;
+    if (!config || !config.stage || !config.format || !arr(config.question_mix).length) return null;
+    return config;
+  }
+
+  // Confirmed from the modal. Reuses the SAME application (job_description is always persisted
+  // for an "active" application — see analyseAndPlan — so, like the old practiseApplicationAgain,
+  // this never needs the documents fallback continueApplication uses for a draft) plus the prior
+  // interview's stored stage/format/question_mix/technical_difficulty/max_questions. CV text has
+  // no durable canonical field (only the AI's already-derived candidate_profile summary is
+  // stored, never the raw text) — best-effort restored from a previously uploaded file exactly
+  // like continueApplication's own fallback, awaited here so it actually reaches this call
+  // (never blocking more than that one read; a miss just leaves cvText empty, same as today).
+  async function startPractiseAgain(app) {
+    if (!app || !user) return;
+    const config = practiseAgainConfigFor(app);
+    setError("");
+    setCompany(app.company || ""); setRole(app.role || ""); setApplicationId(app.id); setBuildMethod("jdcv");
     setFocusWeaknesses(false); setTargetTopic(null);
     setJdText(app.jobDescription || ""); setCvText("");
-    setWizardStep(app.jobDescription ? 3 : 2);
-    // Phase 20: even "Practise again" (shown when a COMPLETED interview exists)
-    // must offer to resume an in-progress one first, rather than launch a fresh
-    // AI-consuming build.
-    if (!maybeOfferResume(app.id, "wizard")) setScreen("create");
+    setInvitationText(""); setInvitationDraft(null); setInvitationOriginal(null);
+    if (!config) {
+      // Edge case: genuinely incomplete legacy data — no fabricated settings. Falls back to the
+      // SAME minimum-necessary wizard entry "Build interview" already uses (company/role/JD
+      // prefilled, question mix/stage/format the only things left to confirm) rather than the
+      // full from-scratch wizard.
+      setError("We need a little more information to create this interview — this application was started a while ago. Please confirm a few settings below.");
+      setQuestionMix({ technical: false, behavioural: false, motivational: false });
+      setWizardStep(app.jobDescription ? 3 : 2);
+      if (!maybeOfferResume(app.id, "wizard")) setScreen("create");
+      return;
+    }
+    // PERFORMANCE — respond to the confirmation click immediately, before the CV-restore
+    // network round-trip below. cvText genuinely needs that read to finish before
+    // analyseAndPlan() (a few lines down) captures it, so it can't be made non-blocking without
+    // losing the restored CV entirely — but the user should never stare at the unchanged
+    // Application screen while it happens. Same staged LoadingScreen analyseAndPlan itself
+    // uses; its own setGenProgress call moments later seamlessly replaces this with the real,
+    // accurate step list for whichever pipeline this interview actually uses.
+    setGenProgress({
+      title: "Creating your new interview",
+      subtitle: `Using your previous settings for ${[app.company, app.role].filter(Boolean).join(" · ")}`,
+      steps: ["Restoring your details", "Creating your personalised questions"],
+      stage: 0,
+    });
+    setScreen("analyzing");
+    try {
+      const docs = await dbGetApplicationDocuments(user.id, app.id);
+      const cv = docs.find((d) => d.document_type === "cv" && d.extracted_text);
+      if (cv) setCvText(cv.extracted_text);
+    } catch (e) { /* best-effort restore only — generation proceeds without it */ }
+    setInterviewStage(config.stage); setInterviewFormat(config.format);
+    setQuestionMix({
+      technical: config.question_mix.includes("technical"),
+      behavioural: config.question_mix.includes("behavioural"),
+      motivational: config.question_mix.includes("motivational"),
+    });
+    setTechnicalDifficulty(config.technical_difficulty ? resolveTechnicalDifficulty(config.technical_difficulty) : DEFAULT_TECHNICAL_DIFFICULTY);
+    setLength(typeof config.max_questions === "number" ? config.max_questions : 12);
+    setPractiseAgainActive(true);
+    analyseAndPlan(); // same duplicate-generation guard as every other caller (Phase 18) — see there
+  }
+  function confirmPractiseAgain() {
+    const app = practiseAgainConfirmApp;
+    if (!app) return;
+    setPractiseAgainConfirmApp(null);
+    startPractiseAgain(app);
   }
 
   /* ---------------- PHASE 16A: APPLICATIONS PILLAR ---------------- */
   function openApplicationsList() { setError(""); setAppForm(null); setScreen("applications"); }
-  function openApplication(app) { if (!app) return; setError(""); setAppView(app.id); setScreen("application"); }
+  function openApplication(app) {
+    if (!app) return;
+    setError(""); setAppView(app.id); setScreen("application"); setChecklistExpanded(false);
+    // Phase 37: clear FIRST (before the fetch even starts), then fetch fresh for THIS
+    // application only — never carries over the previously-open application's categories
+    // while this one loads. Scoped to this application's own completed interview ids
+    // (interviewList already loaded, filtered by applicationId — no extra query for that
+    // part). Best-effort: a failure just leaves practice data empty, same as "no data yet".
+    setAppPracticeCategories([]);
+    const completedIds = interviewList.filter((iv) => iv.applicationId === app.id).map((iv) => iv.id);
+    if (completedIds.length) {
+      dbGetApplicationQuestionCategories(completedIds).then((cats) => {
+        // Guard against a slow fetch resolving after the user has already navigated to a
+        // DIFFERENT application — never apply stale categories onto the wrong one.
+        setAppView((current) => { if (current === app.id) setAppPracticeCategories(cats); return current; });
+      }).catch(() => {});
+    }
+  }
+  // Phase 37: manual checklist toggle. Optimistic local update (instant feedback), then
+  // persisted onto the SAME applications.checklist column; reverted on a genuine write
+  // failure so the UI never silently claims something saved that didn't.
+  async function toggleChecklistItem(app, itemId) {
+    if (!app || !itemId) return;
+    const before = app.checklist && typeof app.checklist === "object" ? app.checklist : {};
+    const after = { ...before, [itemId]: !before[itemId] };
+    setApplications((prev) => prev.map((a) => (a.id === app.id ? { ...a, checklist: after } : a)));
+    const r = await dbUpdateApplication(app.id, { checklist: after });
+    if (r && r.ok === false) {
+      setApplications((prev) => prev.map((a) => (a.id === app.id ? { ...a, checklist: before } : a)));
+      setError("Couldn't save your checklist. Please try again.");
+    }
+  }
   function openApplicationForm(app) {
     setError("");
     setAppForm(app
@@ -4966,11 +5335,9 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
     const role = sanitizeText(f.role).trim();
     if (!company || !role) { setError("Enter a company and a role."); return; }
     const jd = sanitizeText(f.jd);
-    // interview_date is a timestamptz column (baseline). Anchor a date-only pick
-    // at 12:00Z so the calendar day is stable across every real timezone on
-    // read-back (a bare "YYYY-MM-DD" becomes 00:00Z and shifts to the previous
-    // day west of UTC). null stays null — the field is optional & legacy-safe.
-    const dateIso = f.date ? `${f.date}T12:00:00Z` : null;
+    // interview_date is a timestamptz column (baseline). interviewDateToIso (applicationSchedule.js,
+    // Phase 36) is the single shared conversion — also used by the wizard's own date field below.
+    const dateIso = interviewDateToIso(f.date);
     try {
       if (!f.id) {
         const row = await dbCreateApplication(user.id, { company, role, job_description: jd || null, interview_date: dateIso, status: "draft" });
@@ -5097,6 +5464,154 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
     setInvitationText(""); setInvitationDraft(null); setInvitationOriginal(null);
     setWizardStep(app.jobDescription ? 3 : 2);
     if (!maybeOfferResume(app.id, "wizard")) setScreen("create");
+  }
+
+  /* ---------------- PHASE B: QUICK PRACTICE ---------------- */
+  // Pre-populates the SAME wizard state buildInterviewFromApplication uses, forces the
+  // asynchronous_video (batch) pipeline — recruiter_screen is the one stage whose default
+  // format already IS asynchronous_video, so this always lands on the batch pipeline
+  // regardless of what stage the user was last configuring — and lets analyseAndPlan's own
+  // Quick Practice override (see there) shrink the question count. Question Mix defaults to
+  // all three types: Quick Practice is meant to be frictionless, never a second config form.
+  // Reuses analyseAndPlan's own existing duplicate-generation guard (resumable-interview
+  // check) — never a parallel one.
+  function startQuickPractice(app, questionCount) {
+    if (!app) return;
+    setError("");
+    setCompany(app.company || ""); setRole(app.role || ""); setApplicationId(app.id); setBuildMethod("jdcv");
+    setFocusWeaknesses(false); setTargetTopic(null);
+    setJdText(app.jobDescription || ""); setCvText("");
+    setInterviewStage("recruiter_screen"); setInterviewFormat("asynchronous_video");
+    setQuestionMix({ technical: true, behavioural: true, motivational: true });
+    setInvitationText(""); setInvitationDraft(null); setInvitationOriginal(null);
+    setQuickPracticeQuestionCount(questionCount);
+    analyseAndPlan();
+  }
+
+  /* ---------------- PHASE B: CHALLENGE ME ---------------- */
+  // ONE question, generated with novelty guidance against this application's own recent
+  // question history (bounded to 15 — see dbGetApplicationRecentQuestions), reusing the
+  // application's own already-analysed Application Intelligence when present (Phase 16A —
+  // zero extra AI call) so a genuinely "empty history" application still gets a strong,
+  // relevant question from company/role/JD/CV context alone (never an error for having no
+  // history). Technical difficulty is read from this application's most recent interview
+  // config when one exists (never invented, never silently escalated past what the candidate
+  // already chose) — else the product default, same as everywhere else technical_difficulty
+  // has no prior context.
+  async function startChallengeMe(app) {
+    if (!app || !user) return;
+    setError(""); setChallenge(null); setChallengeAnswerInput("");
+    setScreen("challenge_generating");
+    try {
+      const cleanCompany = sanitizeText(app.company || ""), cleanRole = sanitizeText(app.role || ""), cleanJd = sanitizeText(app.jobDescription || "");
+      const appInterviewIds = interviewList.filter((iv) => iv.applicationId === app.id).map((iv) => iv.id);
+      const recentQuestions = appInterviewIds.length ? await dbGetApplicationRecentQuestions(appInterviewIds, 15) : [];
+      const lastTechnicalDifficulty = (app.interviews || []).map((iv) => iv.config?.technical_difficulty).find(Boolean);
+
+      // Reused verbatim (whatever shape buildApplicationIntelligence produced) — no reshaping,
+      // no assumptions about internal field names beyond what already exists there.
+      const interviewProfileLike = app.applicationIntelligence || {};
+      const ivConfig = {
+        ...resolveInterviewConfig("recruiter_screen", "asynchronous_video"),
+        question_count: 1, session_kind: "challenge",
+        technical_difficulty: resolveTechnicalDifficulty(lastTechnicalDifficulty || DEFAULT_TECHNICAL_DIFFICULTY),
+      };
+      const methodologyDistribution = computeMethodologyDistribution(ivConfig.stage, {});
+      const ivRow = await dbCreateInterview(user.id, app.id, ivConfig, methodologyDistribution);
+      const jdBlock = cleanJd || `No job description on file — rely on the role, company and stage below.`;
+      const batch = await generateQuestionBatch(
+        ivConfig, interviewProfileLike, {}, jdBlock,
+        "This is a single, standalone CHALLENGE question for returning practice — not part of a longer session.",
+        { applicationId: app.id, interviewId: ivRow.id }, methodologyDistribution,
+        recentQuestions.map((q) => q.question_text),
+      );
+      if (!batch.questions.length) throw new Error("Couldn't generate a challenge question. Please try again.");
+      const [savedQ] = await dbInsertQuestionBatch(ivRow.id, batch.questions, { prepSeconds: null, answerSeconds: null });
+      setChallenge({
+        interviewId: ivRow.id, questionDbId: savedQ.id, questionNumber: savedQ.question_number,
+        text: savedQ.question_text, category: savedQ.category, competency: savedQ.competency,
+        isTechnical: !!batch.questions[0]?.is_technical, anchorSource: savedQ.anchor_source, difficulty: batch.questions[0]?.difficulty,
+        evaluation: null, retryOfQuestionId: null, originalQuestionId: savedQ.id,
+      });
+      setScreen("challenge_question");
+    } catch (e) {
+      setError(e.message || "Couldn't set up a challenge question. Please try again.");
+      setScreen("application");
+    }
+  }
+
+  // Reuses the SAME per-answer evaluation call every other pipeline already uses
+  // (generateBatchEvaluation, 1 question/1 answer — no separate scoring model), then a
+  // deterministic, non-AI completion (dbCompleteLightweightInterview) rather than the heavier
+  // narrative interview_report call — see this section's own docstring above.
+  async function submitChallengeAnswer() {
+    if (!challenge || !challengeAnswerInput.trim() || challengeBusyRef.current) return;
+    challengeBusyRef.current = true;
+    setError("");
+    const cleanAnswer = sanitizeText(challengeAnswerInput);
+    setScreen("challenge_evaluating");
+    try {
+      const savedAnswer = await dbInsertAnswerOnly(challenge.questionDbId, cleanAnswer, false);
+      const evalResult = await generateBatchEvaluation(
+        { stage: "recruiter_screen" }, {}, {},
+        [{ text: challenge.text, category: challenge.category, competency: challenge.competency, is_technical: challenge.isTechnical }],
+        [{ text: cleanAnswer, timeExpired: false }],
+        { applicationId: appView, interviewId: challenge.interviewId },
+      );
+      const evaluation = evalResult.evaluations[0];
+      await dbInsertEvaluationForAnswer(savedAnswer.id, evaluation, null);
+      await dbCompleteLightweightInterview(challenge.interviewId, evaluation);
+      setChallenge((c) => ({ ...c, evaluation, answerText: cleanAnswer }));
+      setChallengeAnswerInput("");
+      setScreen("challenge_feedback");
+    } catch (e) {
+      setError(e.message || "Something went wrong evaluating that answer.");
+      setScreen("challenge_question");
+    } finally {
+      challengeBusyRef.current = false;
+    }
+  }
+
+  /* ---------------- PHASE B: TRY AGAIN NOW ---------------- */
+  // The SAME question text, presented again — NEVER a new AI call. A NEW interview_questions
+  // row (metadata.retry_of_question_id), so the original question/answer/evaluation rows are
+  // never touched, let alone overwritten (answers.question_id's existing UNIQUE constraint is
+  // exactly why a second answer can't just be inserted against the same question row).
+  async function retryChallengeQuestion() {
+    if (!challenge) return;
+    setError("");
+    try {
+      const originalId = challenge.originalQuestionId || challenge.questionDbId;
+      const newQ = await dbInsertRetryQuestion(challenge.interviewId, challenge.questionNumber + 1, challenge, originalId);
+      setChallenge({ ...challenge, questionDbId: newQ.id, questionNumber: newQ.question_number, evaluation: null, answerText: null, retryOfQuestionId: originalId, originalQuestionId: originalId });
+      setChallengeAnswerInput("");
+      setScreen("challenge_question");
+    } catch (e) {
+      setError(e.message || "Couldn't set up another attempt. Please try again.");
+    }
+  }
+
+  /* ---------------- PHASE B: DELETE APPLICATION ---------------- */
+  // Confirmation is enforced by the caller (the modal only calls this from its own "Delete
+  // application" button, never on open) — see the ConfirmDialog render in the Application
+  // screen. Optimistic UI removal, reverted on a genuine failure so the app never silently
+  // lies about what was deleted. deleteBusy prevents a duplicate submission.
+  async function confirmDeleteApplication() {
+    if (!deleteConfirmApp || deleteBusy) return;
+    const app = deleteConfirmApp;
+    setDeleteBusy(true); setError("");
+    const before = applications;
+    setApplications((prev) => prev.filter((a) => a.id !== app.id));
+    const r = await dbDeleteApplication(app.id);
+    setDeleteBusy(false);
+    if (r && r.ok === false) {
+      setApplications(before);
+      setDeleteConfirmApp(null);
+      setError("Couldn't delete this application. Please try again.");
+      return;
+    }
+    setDeleteConfirmApp(null);
+    if (appView === app.id) { setAppView(null); setScreen("applications"); }
   }
 
   /* ---------------- PHASE 18: RESUME AN UNFINISHED INTERVIEW ---------------- */
@@ -5319,6 +5834,12 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
   /* ---------------- STEP 1: JD + CV ANALYSIS -> PROFILE ---------------- */
   async function analyseAndPlan() {
     setError("");
+    // Phase 38 — Practise again: a ONE-SHOT flag consumed here, on every single invocation of
+    // analyseAndPlan (including the early "resume_choice" return below), so it can never leak
+    // into a later, unrelated call. Read once into a local const; only ever changes the loading
+    // screen's copy below — nothing about generation/persistence itself.
+    const isPractiseAgain = practiseAgainActive;
+    if (isPractiseAgain) setPractiseAgainActive(false);
     // Phase 18 — duplicate-generation protection. Before spending an AI call on
     // a brand-new interview, check whether this application already has a
     // resumable unfinished one. If so, hand the user the choice (Continue /
@@ -5338,8 +5859,13 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
     // real awaited milestones; the batch pipeline has one extra generation step.
     const batchPipeline = resolveInterviewConfig(interviewStage, interviewFormat).pipeline === "independent_batch";
     setGenProgress({
-      title: "Preparing your interview",
-      subtitle: [cleanCompany, cleanRole].filter(Boolean).join(" · "),
+      // Phase 38: same staged LoadingScreen, same real milestones — only the headline copy
+      // changes, so a repeat-practice generation reads as "using your previous settings"
+      // rather than the generic first-time wizard copy.
+      title: isPractiseAgain ? "Creating your new interview" : "Preparing your interview",
+      subtitle: isPractiseAgain
+        ? `Using your previous settings for ${[cleanCompany, cleanRole].filter(Boolean).join(" · ")}`
+        : [cleanCompany, cleanRole].filter(Boolean).join(" · "),
       steps: batchPipeline
         ? ["Creating your personalised questions", "Preparing every question", "Finalising your interview"]
         : ["Creating your personalised questions", "Finalising your interview"],
@@ -5351,6 +5877,17 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
     // in 4A it is NOT yet used to change question-generation or evaluation behaviour — every
     // interview still runs through the existing adaptive engine unchanged (see catalog comment).
     const ivConfig = resolveInterviewConfig(interviewStage, interviewFormat);
+    // Phase B — Quick Practice: an additive override, consumed and cleared immediately so it
+    // can never leak into the NEXT interview this same wizard state later builds. Every
+    // existing call path (a normal "Build my interview") leaves quickPracticeQuestionCount
+    // null, so ivConfig/questionMix below are completely unaffected — this function is
+    // otherwise byte-for-byte unchanged. See startQuickPractice() for how the wizard state is
+    // pre-populated before this runs.
+    if (quickPracticeQuestionCount) {
+      ivConfig.question_count = quickPracticeQuestionCount;
+      ivConfig.session_kind = "quick_practice";
+      setQuickPracticeQuestionCount(null);
+    }
     // Phase 9: when this interview is being built from a scanned invitation, persist the
     // EXPLICIT-only topic/component signal (buildInvitationKnowledgeContext) onto the config
     // blob so the Knowledge Infrastructure can consume it at question-generation time and it
@@ -6239,7 +6776,9 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
   }
 
   /* ---------------- DERIVED VALUES ---------------- */
-  const showNav = ["landing", "how", "universities", "login", "privacy", "terms", "dashboard", "applications", "application", "application_form", "create", "create_choose", "resume_choice", "invitation_paste", "invitation_review", "preview", "progress", "report", "report_view", "classroom", "lesson", "ac_home", "ac_exercise", "ac_scorecard", "ac_attempt_view"].includes(screen);
+  const showNav = ["landing", "how", "universities", "login", "privacy", "terms", "dashboard", "applications", "application", "application_form", "create", "create_choose", "resume_choice", "invitation_paste", "invitation_review", "preview", "progress", "report", "report_view", "classroom", "lesson", "ac_home", "ac_exercise", "ac_scorecard", "ac_attempt_view",
+    // Phase B — engagement features
+    "quick_practice_setup", "challenge_question", "challenge_feedback"].includes(screen);
 
   // Phase 30: open a legal page, remembering where to return to. Legal pages are
   // public (no auth guard) and reachable from the landing page, the auth screens
@@ -6452,6 +6991,27 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
     <div style={{ fontFamily: "var(--font)", background: "var(--bg)", minHeight: "100%", color: "var(--text)" }}>
       <style>{TOKENS}</style>
       {showNav && <NavBar screen={screen} setScreen={setScreen} user={user} classroomNeedsWorkCount={classroomNeedsWorkCount} onSignOut={() => guarded(handleSignOut)} />}
+
+      {/* ---------------- PHASE 38: PRACTISE AGAIN — confirmation ----------------
+          Rendered here (not inside a specific screen) because "Practise again" is
+          reachable from both the Dashboard's application cards and the Application
+          Overview's Interviews list — one modal, portalled, works from either. Cancel
+          performs no side effect at all (just closes); Confirm goes straight to
+          startPractiseAgain — no wizard in between for a normal, fully-configured
+          application. ---------------- */}
+      {practiseAgainConfirmApp && (
+        <ConfirmDialog
+          title="Create a new interview?"
+          body={`We'll create a new interview for "${practiseAgainConfirmApp.company} — ${practiseAgainConfirmApp.role}" using the company, role and settings from your previous interview.`}
+          confirmLabel="Create new interview"
+          busyLabel="Creating..."
+          icon={RotateCcw}
+          iconColor="var(--blue)"
+          confirmVariant="accent"
+          onCancel={cancelPractiseAgain}
+          onConfirm={() => guarded(confirmPractiseAgain)}
+        />
+      )}
 
       {/* ---------------- LANDING (Phase 32: full product showcase) ---------------- */}
       {screen === "landing" && (
@@ -6683,6 +7243,32 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
               </div>
             } />
           </div>
+
+          {/* Phase 36: the nearest genuinely-upcoming real interview date, if the candidate has
+              set one anywhere (wizard step 1, or the Applications-pillar edit form — both write
+              the same applications.interview_date column). nearestUpcomingApp/interviewCountdown
+              are the existing Phase 16A selection + wording (applicationSchedule.js) — reused
+              verbatim, not reimplemented. Renders NOTHING when no application has an upcoming
+              date (Part 9): no empty card, no "add a date" prompt, dashboard stays exactly as it
+              is today for a candidate who has never used this field. */}
+          {nearestUpcomingApp && (() => {
+            const cd = interviewCountdown(nearestUpcomingApp.interviewDate);
+            return (
+              <Card style={{ padding: 20, marginBottom: 20, borderLeft: "3px solid var(--blue)" }}>
+                <div className="flex items-center gap-3">
+                  <IconBadge icon={CalendarClock} tone="blue" />
+                  <div style={{ minWidth: 0 }}>
+                    <div className="jr-meta">Next interview</div>
+                    <div style={{ fontSize: 15.5, fontWeight: 700, color: "var(--navy)", marginTop: 2 }}>
+                      {nearestUpcomingApp.company}{nearestUpcomingApp.role ? ` — ${nearestUpcomingApp.role}` : ""}
+                    </div>
+                  </div>
+                  <span className="jr-badge jr-badge-info" style={{ marginLeft: "auto", whiteSpace: "nowrap", flexShrink: 0 }}>{cd.label}</span>
+                </div>
+                <div className="jr-text-sm" style={{ marginTop: 10 }}>Keep preparing — every practice interview helps.</div>
+              </Card>
+            );
+          })()}
 
           {/* Phase 18: unfinished interviews. Sits above "Continue preparing" —
               a half-finished interview is the single most time-sensitive thing a
@@ -7021,6 +7607,55 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
           return n && m && (n === m || n.includes(m) || m.includes(n));
         });
 
+        /* ---------------- PHASE 37: APPLICATION PREPARATION INTELLIGENCE ----------------
+         * Pure, deterministic, offline (applicationPreparation.js) — every input below is
+         * already-scoped to THIS application (appPracticeCategories is fetched fresh per
+         * open by openApplication(); appInterviews/interviewRecs/progress above are already
+         * app-scoped). ZERO new AI calls: the one AI-derived input (weakAreaRec) is read
+         * verbatim from `recs`/`interviewRecs`, already computed above for the existing
+         * "From your interviews" section — never recomputed. */
+        const practisedDimensions = getPractisedDimensions(appPracticeCategories);
+        const { gaps: preparationGaps, allCovered: allDimensionsCovered } = getPreparationGaps({ practisedDimensions });
+        const hasFeedback = appInterviews.some((iv) => !!iv.report);
+        // The single highest-priority GENUINE weak area (tested AND weak/inconsistent —
+        // gapKind "demonstrated"; "developing"=strength and "mixed"=inconclusive are both
+        // deliberately excluded, per applicationDevelopmentPriorities' own semantics).
+        const weakAreaRec = interviewRecs.find((r) => r.gapKind === "demonstrated") || null;
+
+        const autoChecklistItems = getAutoChecklistItems({
+          completedInterviewCount: progress.interviewsCompleted, practisedDimensions, hasFeedback,
+        });
+        const manualChecklistDefs = getManualChecklistDefinitions({ hasJobDescription: jdLen > 0 });
+        const checklist = mergeChecklist(autoChecklistItems, manualChecklistDefs, app.checklist);
+        const incompleteChecklistItems = checklist.items.filter((i) => !i.done);
+
+        const nextAction = getNextRecommendedAction({
+          completedInterviewCount: progress.interviewsCompleted,
+          gaps: preparationGaps, weakAreaRecommendation: weakAreaRec, incompleteChecklistItems,
+        });
+        const readiness = getApplicationPreparationStatus({
+          completedInterviewCount: progress.interviewsCompleted,
+          practisedDimensionCount: practisedDimensions.length, totalDimensions: QUESTION_MIX_TYPES.length,
+          hasFeedback, hasWeakAreaRemaining: !!weakAreaRec,
+          checklistDone: checklist.doneCount, checklistTotal: checklist.totalCount,
+        });
+        // Resolves nextAction into a real navigation — same action mapping the existing
+        // "From your interviews" / "Prepare for this application" cards already use for
+        // "develop_weak_area" (matchTopicFor -> openDevelopmentModule, else
+        // startLearningFromRecommendation), so this is never a second/parallel routing table.
+        function runNextAction() {
+          if (nextAction.actionKind === "develop_weak_area" && nextAction.payload?.recommendation) {
+            const r = nextAction.payload.recommendation;
+            const match = matchTopicFor(r.label);
+            if (match) openDevelopmentModule(match); else startLearningFromRecommendation(r, app);
+          } else if (nextAction.actionKind === "open_checklist") {
+            setChecklistExpanded(true);
+            checklistRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+          } else {
+            buildInterviewFromApplication(app);
+          }
+        }
+
         return (
           <div className="jr-fade jr-page">
             <Btn variant="ghost" onClick={openApplicationsList} style={{ marginBottom: 16, padding: "6px 4px" }}><ArrowLeft size={14} /> My Applications</Btn>
@@ -7032,6 +7667,20 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
               </div>
               <Btn variant="secondary" onClick={() => buildInterviewFromApplication(app)} style={{ padding: "7px 12px" }}><Plus size={14} /> Build interview</Btn>
             </div>
+
+            {/* ---- PHASE B: compact engagement actions — clearly secondary to "Build
+                interview" above (a full mock interview stays the primary action), and
+                clearly distinct from each other: a short SESSION vs a single, harder,
+                novel QUESTION. ---- */}
+            <div className="flex flex-wrap gap-2" style={{ marginBottom: 20 }}>
+              <Btn variant="secondary" onClick={() => { setError(""); setScreen("quick_practice_setup"); }} style={{ padding: "7px 12px" }}>
+                <Clock size={14} aria-hidden="true" /> Quick Practice
+              </Btn>
+              <Btn variant="secondary" onClick={() => guarded(() => startChallengeMe(app))} style={{ padding: "7px 12px" }}>
+                <Zap size={14} aria-hidden="true" /> Challenge Me
+              </Btn>
+            </div>
+
             {cd.status !== "none" && (
               <div style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 13.5, fontWeight: 700, color: cd.isUpcoming ? "var(--blue)" : "var(--text-faint)", background: cd.isUpcoming ? "var(--highlight)" : "#F1F5F9", borderRadius: 8, padding: "6px 12px", marginBottom: 20 }}>
                 <CalendarClock size={15} />{cd.label}
@@ -7040,6 +7689,50 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
             )}
 
             {error && <Card style={{ padding: 12, marginBottom: 16, borderLeft: "4px solid var(--bad)", background: "#FEF2F2", fontSize: 13, color: "var(--bad)" }}>{error}</Card>}
+
+            {/* ---- PHASE 37: WHAT SHOULD YOU DO NEXT — one prominent, deterministic
+                recommendation, nearest the main preparation/interview actions ---- */}
+            <Card style={{ padding: 20, marginBottom: 24, borderLeft: "4px solid var(--blue)" }}>
+              <div className="flex items-center gap-2" style={{ marginBottom: 10 }}>
+                <IconBadge icon={Compass} tone="blue" />
+                <span className="jr-meta">What should you do next?</span>
+              </div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: "var(--navy)", marginBottom: 4 }}>{nextAction.title}</div>
+              <div style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.5, marginBottom: 14 }}>{nextAction.subtitle}</div>
+              <Btn variant="accent" onClick={() => guarded(async () => runNextAction())}>{nextAction.actionLabel} <ArrowRight size={15} /></Btn>
+            </Card>
+
+            {/* ---- PHASE 37: PREPARATION STATUS — "Have I prepared enough?" +
+                "You haven't practised this", compact, real-signal-only ---- */}
+            <h3 style={{ fontSize: 17, fontWeight: 800, color: "var(--navy)", margin: "8px 0 12px" }}>Preparation status</h3>
+            <Card style={{ padding: 20, marginBottom: 12 }}>
+              <div className="flex items-center justify-between gap-3" style={{ marginBottom: 6, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 15, fontWeight: 700, color: "var(--navy)" }}>Are you ready?</span>
+                <Pill color={readiness.level === "well_prepared" ? "var(--good)" : "var(--blue)"} bg={readiness.level === "well_prepared" ? "#E7F8F1" : "var(--highlight)"}>{readiness.label}</Pill>
+              </div>
+              <div style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.5, marginBottom: 12 }}>{readiness.summary}</div>
+              {readiness.signals.map((s, i) => (
+                <div key={i} className="flex items-center gap-2" style={{ fontSize: 13, color: s.ok ? "var(--text-dim)" : "var(--navy)", fontWeight: s.ok ? 400 : 600, padding: "4px 0" }}>
+                  <span aria-hidden="true" style={{ color: s.ok ? "var(--good)" : "var(--warn)", flexShrink: 0 }}>{s.ok ? "✓" : "⚠"}</span>{s.label}
+                </div>
+              ))}
+            </Card>
+            <Card style={{ padding: 20, marginBottom: 24 }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: "var(--navy)", marginBottom: 10 }}>🔥 You haven't practised this</div>
+              {allDimensionsCovered ? (
+                <div style={{ fontSize: 13, color: "var(--good)", lineHeight: 1.5 }}>✓ You've practised every available question category for this opportunity.</div>
+              ) : (
+                preparationGaps.map((g) => (
+                  <div key={g.dimension} className="flex items-center justify-between gap-3" style={{ padding: "8px 0", borderTop: g.dimension !== preparationGaps[0].dimension ? "1px solid var(--border)" : "none", flexWrap: "wrap" }}>
+                    <div>
+                      <div style={{ fontSize: 13.5, fontWeight: 600, color: "var(--navy)" }}>{g.label} questions</div>
+                      <div style={{ fontSize: 12.5, color: "var(--text-dim)", marginTop: 2 }}>You haven't practised {g.label.toLowerCase()} questions for this opportunity yet.</div>
+                    </div>
+                    <LinkBtn onClick={() => buildInterviewFromApplication(app)} style={{ color: "var(--blue)", fontWeight: 600, fontSize: 13, whiteSpace: "nowrap" }}>Practise now →</LinkBtn>
+                  </div>
+                ))
+              )}
+            </Card>
 
             {/* ---- YOUR PREPARATION (centre of the workspace) ---- */}
             <h3 style={{ fontSize: 17, fontWeight: 800, color: "var(--navy)", margin: "8px 0 12px" }}>Your preparation</h3>
@@ -7183,7 +7876,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                 appInterviews.map((iv, i) => (
                   <div key={iv.id} className="flex items-center justify-between gap-3" style={{ padding: "10px 0", borderTop: i ? "1px solid var(--border)" : "none" }}>
                     <div>
-                      <div style={{ fontSize: 13.5, fontWeight: 600, color: "var(--navy)" }}>{iv.stageLabel || "Interview"}{typeof iv.overall_score === "number" ? ` · ${iv.overall_score}/100` : ""}</div>
+                      <div style={{ fontSize: 13.5, fontWeight: 600, color: "var(--navy)" }}>{(iv.sessionKind === "quick_practice" ? "⏱️ Quick Practice" : iv.sessionKind === "challenge" ? "🧩 Challenge" : iv.stageLabel) || "Interview"}{typeof iv.overall_score === "number" ? ` · ${iv.overall_score}/100` : ""}</div>
                       <div style={{ fontSize: 12, color: "var(--text-faint)", marginTop: 2 }}>{iv.date ? new Date(iv.date).toLocaleDateString() : ""}</div>
                     </div>
                     <div className="flex items-center gap-2">
@@ -7218,7 +7911,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
 
             {/* ---- PROGRESS (real data only) ---- */}
             <h3 style={{ fontSize: 17, fontWeight: 800, color: "var(--navy)", margin: "8px 0 12px" }}>Progress</h3>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4" style={{ marginBottom: 28 }}>
               {[["Interviews completed", progress.interviewsCompleted], ["Development areas started", progress.areasStarted], ["Modules completed", progress.modulesCompleted]].map(([k, v]) => (
                 <Card key={k} style={{ padding: 18 }}>
                   <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 8 }}>{k}</div>
@@ -7226,9 +7919,164 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                 </Card>
               ))}
             </div>
+
+            {/* ---- PHASE 37: INTERVIEW CHECKLIST — compact, collapsible; auto items derive
+                from real activity above, manual items persist onto applications.checklist ---- */}
+            <h3 ref={checklistRef} style={{ fontSize: 17, fontWeight: 800, color: "var(--navy)", margin: "8px 0 12px" }}>🎯 Interview Checklist</h3>
+            <Card style={{ padding: 20 }}>
+              <div className="flex items-center justify-between gap-3" style={{ marginBottom: 10 }}>
+                <span style={{ fontSize: 13.5, fontWeight: 700, color: "var(--navy)" }}>{checklist.doneCount} of {checklist.totalCount} complete</span>
+              </div>
+              <div style={{ height: 7, background: "#EEF2F7", borderRadius: 999, marginBottom: 14 }}>
+                <div className="jr-bar" style={{ height: 7, width: (checklist.totalCount ? (checklist.doneCount / checklist.totalCount) * 100 : 0) + "%", background: checklist.doneCount >= checklist.totalCount ? "var(--good)" : "var(--blue)", borderRadius: 999 }} />
+              </div>
+              {(checklistExpanded ? checklist.items : checklist.items.slice(0, 4)).map((item) => (
+                <div key={item.id} className="flex items-center gap-3" style={{ padding: "7px 0" }}>
+                  {item.kind === "manual" ? (
+                    <button type="button" role="checkbox" aria-checked={item.done} aria-label={item.label}
+                      onClick={() => guarded(() => toggleChecklistItem(app, item.id))}
+                      style={{
+                        flexShrink: 0, width: 18, height: 18, borderRadius: 5, cursor: "pointer",
+                        border: item.done ? "1.5px solid var(--blue)" : "1.5px solid var(--border)",
+                        background: item.done ? "var(--blue)" : "#fff",
+                        display: "flex", alignItems: "center", justifyContent: "center", padding: 0,
+                      }}>
+                      {item.done && <CheckCircle2 size={13} color="#fff" aria-hidden="true" />}
+                    </button>
+                  ) : (
+                    <span aria-hidden="true" style={{ flexShrink: 0, width: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center", color: item.done ? "var(--good)" : "var(--border)" }}>
+                      <CheckCircle2 size={18} />
+                    </span>
+                  )}
+                  <span style={{ fontSize: 13.5, color: item.done ? "var(--text-dim)" : "var(--navy)", fontWeight: item.done ? 400 : 600, textDecoration: item.done ? "line-through" : "none" }}>{item.label}</span>
+                </div>
+              ))}
+              {checklist.items.length > 4 && (
+                <LinkBtn onClick={() => setChecklistExpanded((v) => !v)} style={{ color: "var(--blue)", fontWeight: 600, fontSize: 12.5, marginTop: 6 }}>
+                  {checklistExpanded ? "Show less" : `Show all ${checklist.items.length}`}
+                </LinkBtn>
+              )}
+            </Card>
+
+            {/* ---- PHASE B: DELETE APPLICATION — least-intrusive placement (bottom of the
+                workspace, plain text, no card), clearly distinguished from every ordinary
+                action above by its colour and wording. Opens the confirmation modal only;
+                nothing is deleted until the modal's own "Delete application" is clicked. ----
+                Phase 39 integration: kept AFTER the Phase 37 Checklist so Delete stays the
+                last, lowest-prominence element in the workspace — matching Phase B's own
+                "bottom of the workspace" placement intent regardless of what Phase 37 later
+                added above it. ---- */}
+            <div style={{ marginTop: 32, paddingTop: 20, borderTop: "1px solid var(--border)" }}>
+              <LinkBtn onClick={() => { setError(""); setDeleteConfirmApp(app); }} style={{ color: "var(--bad)", fontSize: 12.5, fontWeight: 600 }}>
+                <Trash2 size={13} aria-hidden="true" style={{ marginRight: 5, verticalAlign: "-2px" }} />Delete application
+              </LinkBtn>
+            </div>
+
+            {deleteConfirmApp && deleteConfirmApp.id === app.id && (
+              <ConfirmDialog
+                title="Delete application?"
+                body={`This will permanently delete "${app.company} — ${app.role}" and its associated interview data (interviews, questions, answers and reports). This action cannot be undone.`}
+                confirmLabel="Delete application"
+                busyLabel="Deleting..."
+                busy={deleteBusy}
+                onCancel={() => setDeleteConfirmApp(null)}
+                onConfirm={() => guarded(confirmDeleteApplication)}
+              />
+            )}
           </div>
         );
       })()}
+
+      {/* ---------------- PHASE B: QUICK PRACTICE SETUP ---------------- */}
+      {/* Frictionless by design: no config form, just "how many questions" — the SAME
+          company/role/JD context the application already has is reused automatically
+          (startQuickPractice), and the AI call itself is the EXISTING analyseAndPlan/
+          generateQuestionBatch pipeline. */}
+      {screen === "quick_practice_setup" && user && (() => {
+        const app = applicationsWithInterviews.find((a) => a.id === appView);
+        if (!app) {
+          return (
+            <div className="jr-fade jr-page">
+              <Btn variant="ghost" onClick={openApplicationsList} style={{ marginBottom: 16, padding: "6px 4px" }}><ArrowLeft size={14} /> My Applications</Btn>
+              <Card style={{ padding: 32, textAlign: "center", color: "var(--text-dim)" }}>This application is no longer available.</Card>
+            </div>
+          );
+        }
+        return (
+          <div className="jr-fade jr-page jr-page-narrow">
+            <Btn variant="ghost" onClick={() => setScreen("application")} style={{ marginBottom: 16, padding: "6px 4px" }}><ArrowLeft size={14} /> Back</Btn>
+            <div className="flex items-center gap-2" style={{ marginBottom: 6 }}>
+              <IconBadge icon={Clock} tone="blue" />
+              <h2 style={{ fontSize: 21, fontWeight: 800, color: "var(--navy)" }}>Quick Practice</h2>
+            </div>
+            <p style={{ fontSize: 13.5, color: "var(--text-dim)", marginBottom: 22, lineHeight: 1.5 }}>
+              {app.company} — {app.role}. A short, focused practice session — not a full mock interview.
+            </p>
+            <Card style={{ padding: 22 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "var(--navy)", marginBottom: 10 }}>How many questions?</div>
+              <div className="flex flex-col gap-2">
+                <Btn variant="accent" full onClick={() => guarded(() => startQuickPractice(app, 3))}>3 questions <span style={{ fontWeight: 400, opacity: 0.85 }}>· fastest</span></Btn>
+                <Btn variant="secondary" full onClick={() => guarded(() => startQuickPractice(app, 5))}>5 questions</Btn>
+              </div>
+            </Card>
+            {error && <div role="alert" style={{ color: "var(--bad)", fontSize: 13, marginTop: 14 }}>{error}</div>}
+          </div>
+        );
+      })()}
+
+      {/* ---------------- PHASE B: CHALLENGE ME ---------------- */}
+      {screen === "challenge_generating" && <LoadingScreen messages={["Reviewing this application...", "Designing a genuinely challenging question..."]} />}
+
+      {screen === "challenge_question" && challenge && (
+        <div className="jr-fade jr-page jr-page-narrow">
+          <Btn variant="ghost" onClick={() => { setChallenge(null); setScreen("application"); }} style={{ marginBottom: 16, padding: "6px 4px" }}><ArrowLeft size={14} /> Back to application</Btn>
+          <Pill color="var(--violet)" bg="#F1E9FE">🧩 Challenge Me{challenge.retryOfQuestionId ? " · Retry" : ""}</Pill>
+          <div style={{ fontSize: 21, fontWeight: 700, lineHeight: 1.4, color: "var(--navy)", margin: "16px 0 24px" }}>{challenge.text}</div>
+          <textarea aria-label="Your answer" value={challengeAnswerInput} onChange={(e) => setChallengeAnswerInput(e.target.value)} placeholder="Type your answer..."
+            className="jr-input jr-textarea" style={{ height: 200, fontSize: 15 }} />
+          {error && <div role="alert" style={{ color: "var(--bad)", fontSize: 13, marginTop: 10 }}>{error}</div>}
+          <div className="flex justify-between items-center mt-4" style={{ flexWrap: "wrap", gap: 10 }}>
+            <span style={{ fontSize: 12, color: "var(--text-faint)" }}>{challengeAnswerInput.trim().split(/\s+/).filter(Boolean).length} words</span>
+            <Btn variant="accent" onClick={() => guarded(submitChallengeAnswer)} disabled={!challengeAnswerInput.trim()}>Submit <ChevronRight size={16} /></Btn>
+          </div>
+        </div>
+      )}
+
+      {screen === "challenge_evaluating" && <LoadingScreen messages={["Reading your answer...", "Scoring against the rubric..."]} />}
+
+      {screen === "challenge_feedback" && challenge?.evaluation && (
+        <div className="jr-fade jr-page jr-page-narrow">
+          <Btn variant="ghost" onClick={() => { setChallenge(null); setScreen("application"); }} style={{ marginBottom: 16, padding: "6px 4px" }}><ArrowLeft size={14} /> Back to application</Btn>
+          <Pill color="var(--violet)" bg="#F1E9FE">🧩 Challenge Me — feedback</Pill>
+          <div style={{ fontSize: 15, fontWeight: 700, color: "var(--navy)", fontStyle: "italic", margin: "14px 0 16px" }}>"{challenge.text}"</div>
+          <Card style={{ padding: 20, marginBottom: 4 }}>
+            {[["Relevance", "relevance"], ["Specificity", "specificity"], ["Structure", "structure"], ["Evidence", "evidence"], ["Clarity", "clarity"], ["Competency", "competency_demonstration"]].map(([label, key]) => (
+              <ScoreBar key={key} label={label} value={num(challenge.evaluation[key])} />
+            ))}
+            {arr(challenge.evaluation.strengths).length > 0 && (
+              <div style={{ marginTop: 10 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "var(--good)", textTransform: "uppercase" }}>What you did well</div>
+                {challenge.evaluation.strengths.map((s, i) => <div key={i} style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 4 }}>· {s}</div>)}
+              </div>
+            )}
+            {arr(challenge.evaluation.issues).length > 0 && (
+              <div style={{ marginTop: 10 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "var(--bad)", textTransform: "uppercase" }}>What weakened it</div>
+                {challenge.evaluation.issues.map((s, i) => <div key={i} style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 4 }}>· {s}</div>)}
+              </div>
+            )}
+          </Card>
+          {error && <div role="alert" style={{ color: "var(--bad)", fontSize: 13, marginTop: 10 }}>{error}</div>}
+          {/* ---- PHASE B: TRY AGAIN NOW — contextual, only here, right where the feedback is.
+              Reuses the SAME question text (no new AI call); the previous answer/evaluation
+              rows are never touched — see retryChallengeQuestion(). ---- */}
+          <div className="flex flex-wrap gap-3 mt-5">
+            <Btn variant="accent" onClick={() => guarded(retryChallengeQuestion)}><RotateCcw size={15} /> Try Again Now</Btn>
+            <Btn variant="secondary" onClick={() => guarded(() => startChallengeMe(applicationsWithInterviews.find((a) => a.id === appView)))}>New challenge question</Btn>
+            <Btn variant="ghost" onClick={() => { setChallenge(null); setScreen("application"); }}>Done</Btn>
+          </div>
+        </div>
+      )}
 
       {/* ---------------- PHASE 18: RESUME-OR-START-NEW CHOICE ---------------- */}
       {/* Shown when the user tries to generate a new interview for an application
@@ -7293,7 +8141,20 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                 <label htmlFor="wizard-company" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Company</label>
                 <input id="wizard-company" value={company} onChange={(e) => setCompany(e.target.value)} placeholder="e.g. JPMorgan" style={{ ...inputStyle, marginTop: 6, marginBottom: 16 }} />
                 <label htmlFor="wizard-role" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Role</label>
-                <input id="wizard-role" value={role} onChange={(e) => setRole(e.target.value)} onKeyDown={onEnterKey(() => { if (company && role) confirmCompanyRole(); })} placeholder="e.g. Global Markets Summer Analyst" style={{ ...inputStyle, marginTop: 6 }} />
+                <input id="wizard-role" value={role} onChange={(e) => setRole(e.target.value)} onKeyDown={onEnterKey(() => { if (company && role) confirmCompanyRole(); })} placeholder="e.g. Global Markets Summer Analyst" style={{ ...inputStyle, marginTop: 6, marginBottom: 16 }} />
+                {/* Phase 36: genuinely optional — no asterisk, no required-field styling, never
+                    part of the Continue button's disabled condition below. A past date is not
+                    blocked (least-disruptive per the design brief); it just won't produce an
+                    upcoming countdown anywhere (interviewCountdown/partitionApplications already
+                    treat "past" as not-upcoming), so a soft inline note is enough. */}
+                <label htmlFor="wizard-interview-date" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>
+                  Interview date <span style={{ color: "var(--text-faint)", fontWeight: 400 }}>(Optional)</span>
+                </label>
+                <input id="wizard-interview-date" type="date" value={interviewDateInput} onChange={(e) => setInterviewDateInput(e.target.value)} style={{ ...inputStyle, marginTop: 6 }} />
+                <p style={{ fontSize: 12, color: "var(--text-faint)", lineHeight: 1.5, margin: "6px 0 0" }}>Add your interview date to track how long you have to prepare.</p>
+                {interviewDateInput && daysUntil(interviewDateInput) < 0 && (
+                  <p role="status" style={{ fontSize: 12, color: "var(--warn)", lineHeight: 1.5, margin: "6px 0 0" }}>Please select today or a future date.</p>
+                )}
               </Card>
               <Btn variant="accent" full onClick={() => guarded(confirmCompanyRole)} disabled={!company || !role} style={{ marginTop: 18 }}>Continue <ChevronRight size={16} /></Btn>
               {/* Phase 7: a resilient second entry point into the scanner for anyone who ends

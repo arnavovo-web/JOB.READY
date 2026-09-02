@@ -29,7 +29,7 @@ function slice(a, b) {
   return SRC.slice(s, e);
 }
 
-const OPEN_MODULE = slice("async function openDevelopmentModule(topic) {", "// ---- deterministic sub-activities");
+const OPEN_MODULE = slice("async function openDevelopmentModule(topic, opts = {}) {", "// ---- deterministic sub-activities");
 const OPEN_MODULE_FASTPATH = slice("const cachedRow = developmentModules.find((m) => m.topic_id === topic.id);", "// Not in state:");
 const ANALYSE_AND_PLAN = slice("async function analyseAndPlan() {", "function beginInterview()");
 const ANALYSE_APP_ONLY = slice("async function analyseApplicationOnly(app) {", "function buildInterviewFromApplication(");
@@ -39,7 +39,12 @@ const GO_TO_DEV_VIEW = slice("function goToDevView(v) {", "function startWritten
 const START_QUIZ = slice("function startWrittenQuiz() {", "async function saveFlashProgress(");
 const SUBMIT_WRITTEN = slice("async function submitWrittenAnswer() {", "// Phase 15A: the \"redo the ORIGINAL");
 const SAVE_REDO = slice("async function saveRedoAnswer() {", "// Phase 15A HARD-DURABILITY RETRIES");
-const OPEN_APPLICATION = slice("function openApplication(app) {", "function openApplicationForm(");
+// Phase 37 integration: tightened to end at toggleChecklistItem (the very next declaration)
+// rather than openApplicationForm — that end marker used to be immediately after
+// openApplication, but Phase 37 inserted toggleChecklistItem in between; leaving the old
+// marker would silently sweep an unrelated function's body (including its own `await`) into
+// every assertion below.
+const OPEN_APPLICATION = slice("function openApplication(app) {", "async function toggleChecklistItem(");
 
 /* ===================== FLOW 3 — existing Development Module ===================== */
 describe("FLOW 3 — reopening an existing module is instant: state-first, 0 AI, 0 blocking DB", () => {
@@ -157,10 +162,34 @@ describe("FLOW 4 — Learn <-> Flashcards <-> Quiz <-> Redo is pure state: 0 AI,
 });
 
 /* ===================== FLOW 5 — Applications ===================== */
-describe("FLOW 5 — opening an application is a pure state switch: 0 AI, 0 DB", () => {
-  it("openApplication just sets appView + screen — no fetch, no analysis", () => {
-    expect(OPEN_APPLICATION).not.toMatch(/callClaude|await |dbGet|dbSelect/);
-    expect(OPEN_APPLICATION).toMatch(/setAppView\(app\.id\); setScreen\("application"\)/);
+describe("FLOW 5 — opening an application is a pure, synchronous state switch: 0 AI, 0 blocking DB", () => {
+  it("openApplication sets appView + screen SYNCHRONOUSLY, with no AI call anywhere", () => {
+    // Phase 37: openApplication now also kicks off a best-effort, non-blocking fetch of this
+    // application's own practised question categories (see FLOW 5B below) — but the screen
+    // switch itself is still instant: setScreen happens synchronously, before any `await` or
+    // `.then()`, so this remains a "0 blocking work" navigation from the user's perspective.
+    expect(OPEN_APPLICATION).not.toMatch(/callClaude/);
+    expect(OPEN_APPLICATION).not.toMatch(/analyse|Analyse/);
+    const screenSwitchIdx = OPEN_APPLICATION.indexOf('setAppView(app.id); setScreen("application")');
+    const firstAwaitOrThen = (() => {
+      const a = OPEN_APPLICATION.indexOf("await ");
+      const b = OPEN_APPLICATION.indexOf(".then(");
+      return [a, b].filter((i) => i !== -1).sort((x, y) => x - y)[0] ?? -1;
+    })();
+    expect(screenSwitchIdx).toBeGreaterThan(-1);
+    expect(firstAwaitOrThen === -1 || firstAwaitOrThen > screenSwitchIdx).toBe(true);
+  });
+  it("FLOW 5B (Phase 37): the practice-category fetch is best-effort — its own promise chain never throws out, and it is application-scoped (interview_id .in(...) filtered to THIS application's own interview ids only)", () => {
+    expect(OPEN_APPLICATION).toMatch(/dbGetApplicationQuestionCategories\(completedIds\)\.then\(/);
+    expect(OPEN_APPLICATION).toMatch(/\.catch\(\(\) => \{\}\)/);
+    expect(OPEN_APPLICATION).toMatch(/interviewList\.filter\(\(iv\) => iv\.applicationId === app\.id\)/);
+  });
+  it("Phase 37: practice categories are cleared BEFORE the fetch starts, and a late resolve is guarded against the user having navigated to a different application meanwhile", () => {
+    const clearIdx = OPEN_APPLICATION.indexOf("setAppPracticeCategories([])");
+    const fetchIdx = OPEN_APPLICATION.indexOf("dbGetApplicationQuestionCategories(completedIds)");
+    expect(clearIdx).toBeGreaterThan(-1);
+    expect(fetchIdx).toBeGreaterThan(clearIdx);
+    expect(OPEN_APPLICATION).toMatch(/if \(current === app\.id\) setAppPracticeCategories\(cats\)/);
   });
   it("standalone analysis stays exactly one interview_profile call, explicitly triggered", () => {
     expect((ANALYSE_APP_ONLY.match(/await callClaude\(/g) || []).length).toBe(1);
@@ -208,7 +237,10 @@ describe("Loading UX — feedback is immediate and staged on real milestones, ne
     expect((ANALYSE_APP_ONLY.match(/setGenProgress\(null\)/g) || []).length).toBeGreaterThanOrEqual(3);
   });
   it("loading context carries what the user is waiting for (company / role / topic)", () => {
-    expect(ANALYSE_AND_PLAN).toMatch(/subtitle: \[cleanCompany, cleanRole\]\.filter\(Boolean\)\.join\(" · "\)/);
+    // Phase 38: analyseAndPlan's subtitle became a ternary (same company/role context either
+    // way — Practise Again's branch just adds "Using your previous settings for ..." framing),
+    // so this checks the underlying expression appears, not that it's the immediate RHS.
+    expect(ANALYSE_AND_PLAN).toMatch(/\[cleanCompany, cleanRole\]\.filter\(Boolean\)\.join\(" · "\)/);
     expect(OPEN_MODULE).toMatch(/subtitle: topic\.topic \|\| ""/);
     expect(ANALYSE_APP_ONLY).toMatch(/subtitle: \[cleanCompany, cleanRole\]\.filter\(Boolean\)\.join\(" · "\)/);
   });

@@ -119,8 +119,16 @@ describe("resumeInterview.js: interview_length is NOT part of the target chain",
 /* ===================== ISSUE 1 — entry-point guard (structural) ===================== */
 const MAYBE = slice("function maybeOfferResume(appId, next) {", "function buildInterviewFromApplication(app) {");
 const BIFF = slice("function buildInterviewFromApplication(app) {", "/* ---------------- PHASE 18: RESUME AN UNFINISHED INTERVIEW");
-const AGAIN = slice("function practiseApplicationAgain(app) {", "/* ---------------- PHASE 16A: APPLICATIONS PILLAR");
-const CONT = slice("async function continueApplication(app) {", "// Phase 4: practise again");
+// Phase 38 integration: practiseApplicationAgain's own body is now tightly scoped to just
+// opening the confirmation modal — the marker ends at cancelPractiseAgain (the very next
+// declaration), not the much later PHASE 16A comment, so this slice can never silently sweep
+// in startPractiseAgain/practiseAgainConfigFor/confirmPractiseAgain as if they were still part
+// of practiseApplicationAgain itself.
+const AGAIN = slice("function practiseApplicationAgain(app) {", "function cancelPractiseAgain()");
+// The Phase 38 fallback path (startPractiseAgain, reached only for a genuinely incomplete
+// legacy config) is where maybeOfferResume now actually lives for this entry point.
+const START_AGAIN = slice("async function startPractiseAgain(app) {", "function confirmPractiseAgain()");
+const CONT = slice("async function continueApplication(app) {", "/* ---------------- PHASE 38: PRACTISE AGAIN (frictionless repeat interview) ---------------- */");
 const ANALYSE_HEAD = slice("async function analyseAndPlan() {", "const cleanCompany = sanitizeText(company)");
 
 describe("ISSUE 1 — resume is surfaced at the entry point, for every application build path", () => {
@@ -137,8 +145,13 @@ describe("ISSUE 1 — resume is surfaced at the entry point, for every applicati
     expect(BIFF).toMatch(/setApplicationId\(app\.id\)/);
     expect(BIFF).toMatch(/setQuestionMix\(\{ technical: false, behavioural: false, motivational: false \}\)/);
   });
-  it("practiseApplicationAgain guards too (completed + in-progress coexist)", () => {
-    expect(AGAIN).toMatch(/if \(!maybeOfferResume\(app\.id, "wizard"\)\) setScreen\("create"\)/);
+  it("Phase 38 integration: practiseApplicationAgain itself no longer routes to the wizard at all — it only opens the 'Create a new interview?' confirmation modal (no AI/DB call, no maybeOfferResume of its own)", () => {
+    expect(AGAIN).toMatch(/setPractiseAgainConfirmApp\(app\)/);
+    expect(AGAIN).not.toMatch(/setScreen\(|maybeOfferResume/);
+  });
+  it("the ORIGINAL guarantee (an in-progress interview is surfaced before spending an AI call) still holds for this entry point: startPractiseAgain's legacy-config fallback still guards via maybeOfferResume, and its normal (complete-config) path reaches analyseAndPlan's own built-in Phase 18 guard directly", () => {
+    expect(START_AGAIN).toMatch(/if \(!maybeOfferResume\(app\.id, "wizard"\)\) setScreen\("create"\)/);
+    expect(START_AGAIN).toMatch(/analyseAndPlan\(\);/);
   });
   it("continueApplication guards too (early-return before the doc prefetch)", () => {
     expect(CONT).toMatch(/if \(maybeOfferResume\(app\.id, "wizard"\)\) return;/);
@@ -147,13 +160,29 @@ describe("ISSUE 1 — resume is surfaced at the entry point, for every applicati
   it("BACKSTOP retained: analyseAndPlan still guards at the creation boundary, before callClaude", () => {
     expect(ANALYSE_HEAD).toMatch(/if \(!forceNewRef\.current\) \{[\s\S]*?resumableInterviews\.find\(\(r\) => r\.applicationId === applicationId && r\.hasProfile\)[\s\S]*?setResumeChoice\(\{ \.\.\.existing, next: "generate" \}\); setScreen\("resume_choice"\); return;/);
   });
-  it("dbCreateInterview still has exactly ONE caller (analyseAndPlan) — no new creation path", () => {
-    expect((SRC.match(/\bdbCreateInterview\(/g) || []).length).toBe(2); // definition + the one call
+  it("dbCreateInterview still has exactly ONE caller in the normal interview-creation flow (analyseAndPlan)", () => {
+    // Phase B added a second, deliberate caller — startChallengeMe (Challenge Me creates its
+    // own tiny single-question `interviews` row, reusing this SAME existing function rather
+    // than a parallel one). This assertion is scoped to what Phase 20 actually claims: the
+    // NORMAL interview-creation flow (analyseAndPlan) still has exactly one call.
+    const analyseFull = slice("async function analyseAndPlan() {", "function beginInterview()");
+    expect((analyseFull.match(/\bdbCreateInterview\(/g) || []).length).toBe(1);
   });
-  it("NO database uniqueness constraint / migration was added (deliberate: a second interview is allowed, just confirmed)", () => {
+  it("Phase B's startChallengeMe is a second, deliberate dbCreateInterview caller — not an accidental duplicate creation path", () => {
+    const challengeFn = slice("async function startChallengeMe(app) {", "async function submitChallengeAnswer() {");
+    expect((challengeFn.match(/\bdbCreateInterview\(/g) || []).length).toBe(1);
+    const totalCallers = (SRC.match(/\bdbCreateInterview\(/g) || []).length - 1; // minus the definition itself
+    expect(totalCallers).toBe(2); // analyseAndPlan + startChallengeMe, no others
+  });
+  it("NO database uniqueness constraint / migration was added FOR THIS PHASE (deliberate: a second interview is allowed, just confirmed)", () => {
+    // Phase 37 later added its own, unrelated migration (applications.checklist) — this
+    // assertion is about Phase 20 specifically, so it checks that file's ABSENCE rather than
+    // an exact/exhaustive migration list (which would make this test fail every time any
+    // later, unrelated phase adds its own migration).
     const { readdirSync } = require("node:fs");
     const migs = readdirSync(new URL("../supabase/migrations", import.meta.url)).filter((f) => f.endsWith(".sql")).sort();
-    expect(migs).toEqual(["20260828120000_baseline_schema.sql", "20260828135856_development_modules.sql"]);
+    expect(migs).not.toEqual(expect.arrayContaining([expect.stringMatching(/interview.*unique|unique.*interview/i)]));
+    expect(migs).toEqual(expect.arrayContaining(["20260828120000_baseline_schema.sql", "20260828135856_development_modules.sql"]));
   });
   it("Start New never deletes/mutates the existing interview", () => {
     const choice = slice('screen === "resume_choice" && resumeChoice && (', "{/* ---------------- CREATE (progressive wizard) ---------------- */}");

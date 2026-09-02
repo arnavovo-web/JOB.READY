@@ -1,0 +1,23 @@
+-- =============================================================================
+-- PHASE 37 — APPLICATION-SPECIFIC PREPARATION CHECKLIST
+-- -----------------------------------------------------------------------------
+-- This exact version is already recorded in the live project's migration ledger
+-- (applied through the Supabase management API); the file here is the committed
+-- source of truth for a fresh environment.
+--
+-- Purely additive: one nullable jsonb column on the existing `applications` row,
+-- same pattern as jd_profile / application_intelligence (baseline schema). Stores
+-- a flat map of checklist item id -> true for items the CANDIDATE manually ticked
+-- (e.g. "researched_company": true). Auto-derived checklist items (completed a
+-- practice interview, received feedback, etc.) are computed live from existing
+-- interview/report data and are never persisted here — only the user-controlled
+-- subset needs storage, so no other table is touched and no new table is created.
+--
+-- Backward compatible by construction: every existing application row already has
+-- this column as null (Postgres ADD COLUMN default), which every reader treats as
+-- "nothing manually ticked yet" — never an error, never a missing-data problem.
+-- RLS is inherited automatically from the existing applications_self policy (row-
+-- level, not column-level) — no new policy needed.
+-- =============================================================================
+
+alter table public.applications add column if not exists checklist jsonb;

@@ -13,6 +13,20 @@
  * schedules anything.
  * ================================================================== */
 
+// Phase 36: turns a bare "YYYY-MM-DD" (what a native <input type="date"> yields) into the
+// timestamptz string the `interview_date` column expects. Anchored at 12:00Z — a date-only
+// pick with no time-of-day component would otherwise land at 00:00Z, which reads back as the
+// PREVIOUS calendar day in every timezone west of UTC. null in, null out (the field is always
+// optional); anything that isn't a plain YYYY-MM-DD also returns null rather than persisting a
+// malformed timestamp. The single source of truth for this conversion — used by both the
+// Applications-pillar edit form and the interview-setup wizard's own date field, so the two
+// entry points can never disagree on what gets stored.
+export function interviewDateToIso(dateStr) {
+  const d = typeof dateStr === "string" ? dateStr.trim() : "";
+  if (!d) return null;
+  return /^\d{4}-\d{2}-\d{2}$/.test(d) ? `${d}T12:00:00Z` : null;
+}
+
 // calendar-day difference: floor both instants to local midnight, then diff.
 // Returns integer days (negative = in the past, 0 = today). null if unparseable.
 export function daysUntil(dateValue, now = new Date()) {

@@ -56,7 +56,7 @@ describe("interview report is a hard durability boundary", () => {
 
 /* ============================== 2. Development Module durability ============================== */
 describe("Development Module persistence is a hard durability boundary", () => {
-  const OPEN = fn("async function openDevelopmentModule(topic)", "// ---- deterministic sub-activities");
+  const OPEN = fn("async function openDevelopmentModule(topic, opts = {})", "// ---- deterministic sub-activities");
   const RETRY = fn("async function retrySaveModule()", "// BUG FIX (stale state)");
 
   it("a failed persist never fakes an id:null module and never auto-regenerates", () => {

@@ -71,7 +71,12 @@ describe("Creating an Application and editing its date never calls AI", () => {
     expect(SAVE_FORM_SRC).toMatch(/if \(!company \|\| !role\) \{ setError/);
   });
   it("the interview date is optional and nullable (empty -> null, never a fabricated value)", () => {
-    expect(SAVE_FORM_SRC).toMatch(/const dateIso = f\.date \? `\$\{f\.date\}T12:00:00Z` : null;/);
+    // Phase 36: this conversion moved into the shared interviewDateToIso() helper
+    // (applicationSchedule.js) — reused verbatim by the interview-setup wizard's own date
+    // field — rather than being duplicated inline here. See
+    // applicationSchedule.test.js / phase36InterviewDateCountdown.test.js for the actual
+    // null-safety behaviour of interviewDateToIso() itself.
+    expect(SAVE_FORM_SRC).toMatch(/const dateIso = interviewDateToIso\(f\.date\);/);
   });
   it("a required edit write is checked for failure and surfaced, not silently dropped", () => {
     expect(SAVE_FORM_SRC).toMatch(/if \(r && r\.ok === false\) \{ setError/);

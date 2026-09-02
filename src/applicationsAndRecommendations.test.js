@@ -77,7 +77,7 @@ describe("ReportBody surfaces which interview stage a report was for (STRUCTURAL
 
 /* ============================== continueApplication / practiseApplicationAgain (STRUCTURAL) ============================== */
 describe("continueApplication (STRUCTURAL)", () => {
-  const FN_SRC = extractFunctionSource("async function continueApplication(app) {", "// Phase 4: practise again");
+  const FN_SRC = extractFunctionSource("async function continueApplication(app) {", "/* ---------------- PHASE 38: PRACTISE AGAIN (frictionless repeat interview) ---------------- */");
 
   it("reuses the existing application id rather than creating a new draft", () => {
     expect(FN_SRC).toMatch(/setApplicationId\(app\.id\)/);
@@ -101,24 +101,81 @@ describe("continueApplication (STRUCTURAL)", () => {
 });
 
 describe("practiseApplicationAgain (STRUCTURAL)", () => {
-  // Tight boundary — practiseApplicationAgain's own body only. The old "STEP 1: JD + CV
-  // ANALYSIS" end marker used to be immediately after this function; Phase 7 inserted the
-  // invitation-scanner helpers (which DO call callClaude/DB functions) in between, and
-  // Phase 16A then inserted the Applications-pillar helpers (analyseApplicationOnly DOES
-  // call callClaude) immediately after this function — so the end marker must be the very
-  // next block, otherwise it sweeps unrelated code into this "no AI/DB call" check.
-  const FN_SRC = extractFunctionSource("function practiseApplicationAgain(app) {", "/* ---------------- PHASE 16A: APPLICATIONS PILLAR");
+  // Phase 38: "Practise again" no longer prefills the wizard and sends the candidate through
+  // it — it now just opens the confirmation modal ("Create a new interview using your previous
+  // settings?"). All the actual wizard-state prefill + generation moved to startPractiseAgain,
+  // invoked only after explicit confirmation (see the "Phase 38 — Practise again" describe
+  // block below for that pipeline's own coverage).
+  const FN_SRC = extractFunctionSource("function practiseApplicationAgain(app) {", "function cancelPractiseAgain()");
 
-  it("reuses the existing application id — deliberately different from startCreateFlow's always-new one", () => {
-    expect(FN_SRC).toMatch(/setApplicationId\(app\.id\)/);
-  });
-
-  it("never issues an AI call or a new DB read — job_description is already in memory for an active application", () => {
+  it("never issues an AI call or a DB read/write — opening the confirmation modal is a pure state change, nothing happens yet", () => {
     expect(FN_SRC).not.toMatch(/callClaude|getSupabase|\.from\(/);
   });
 
-  it("skips straight to CV entry (step 3) when the JD is already known, otherwise step 2", () => {
-    expect(FN_SRC).toMatch(/setWizardStep\(app\.jobDescription \? 3 : 2\)/);
+  it("opens the confirmation modal for the clicked application — no wizard step, no screen change, no interview created yet", () => {
+    expect(FN_SRC).toMatch(/setPractiseAgainConfirmApp\(app\)/);
+    expect(FN_SRC).not.toMatch(/setScreen\(|setWizardStep\(/);
+  });
+});
+
+/* ============================== Phase 38 — Practise again (frictionless repeat interview) ============================== */
+describe("Phase 38 — Practise again reuses the SAME interview-generation pipeline, never a shortcut", () => {
+  const START_PRACTISE_AGAIN = extractFunctionSource("async function startPractiseAgain(app) {", "function confirmPractiseAgain()");
+  const CONFIG_FOR = extractFunctionSource("function practiseAgainConfigFor(app) {", "async function startPractiseAgain(app) {");
+
+  it("reads the canonical stored config off the application's most recent interview — no second/parallel config source", () => {
+    expect(CONFIG_FOR).toMatch(/const latest = \(app\.interviews \|\| \[\]\)\[0\]/);
+    expect(CONFIG_FOR).toMatch(/const config = latest\?\.config/);
+  });
+
+  it("requires stage, format and a non-empty question mix before treating the config as usable — no fabricated settings", () => {
+    expect(CONFIG_FOR).toMatch(/if \(!config \|\| !config\.stage \|\| !config\.format \|\| !arr\(config\.question_mix\)\.length\) return null;/);
+  });
+
+  it("on a complete config, it calls analyseAndPlan() directly — the exact same function the wizard's own \"Build my interview\" button calls, never a bypass/shortcut", () => {
+    expect(START_PRACTISE_AGAIN).toMatch(/analyseAndPlan\(\);/);
+  });
+
+  it("prefills company/role/JD from the application and stage/format/question mix/technical difficulty/length from the stored config", () => {
+    expect(START_PRACTISE_AGAIN).toMatch(/setCompany\(app\.company \|\| ""\); setRole\(app\.role \|\| ""\)/);
+    expect(START_PRACTISE_AGAIN).toMatch(/setJdText\(app\.jobDescription \|\| ""\)/);
+    expect(START_PRACTISE_AGAIN).toMatch(/setInterviewStage\(config\.stage\); setInterviewFormat\(config\.format\)/);
+    expect(START_PRACTISE_AGAIN).toMatch(/setQuestionMix\(\{/);
+    expect(START_PRACTISE_AGAIN).toMatch(/setTechnicalDifficulty\(/);
+    expect(START_PRACTISE_AGAIN).toMatch(/setLength\(/);
+  });
+
+  it("falls back to the minimum-necessary wizard entry (never the full from-scratch wizard) when the config can't be recovered, with an honest, non-fabricated message", () => {
+    expect(START_PRACTISE_AGAIN).toMatch(/if \(!config\) \{/);
+    expect(START_PRACTISE_AGAIN).toMatch(/We need a little more information to create this interview/);
+    expect(START_PRACTISE_AGAIN).toMatch(/setWizardStep\(app\.jobDescription \? 3 : 2\)/);
+  });
+
+  it("the fallback check runs, and returns, before any generation is kicked off — analyseAndPlan() is only reached on the complete-config path", () => {
+    const configCheckAt = START_PRACTISE_AGAIN.indexOf("if (!config) {");
+    const generateAt = START_PRACTISE_AGAIN.indexOf("analyseAndPlan();");
+    expect(configCheckAt).toBeGreaterThan(-1);
+    expect(generateAt).toBeGreaterThan(configCheckAt);
+  });
+
+  it("never routes to the full wizard when the config is complete — the normal path has no setScreen(\"create\") call at all", () => {
+    const normalPathOnly = START_PRACTISE_AGAIN.slice(0, START_PRACTISE_AGAIN.indexOf("if (!config) {"));
+    expect(normalPathOnly).not.toMatch(/setScreen\("create"\)/);
+  });
+
+  it("confirmPractiseAgain closes the modal before creating anything, then hands off to startPractiseAgain — Cancel (a separate function) never calls it", () => {
+    const CONFIRM_SRC = extractFunctionSource("function confirmPractiseAgain() {", "/* ---------------- PHASE 16A: APPLICATIONS PILLAR");
+    expect(CONFIRM_SRC).toMatch(/setPractiseAgainConfirmApp\(null\)/);
+    expect(CONFIRM_SRC).toMatch(/startPractiseAgain\(app\)/);
+    expect(SOURCE).toMatch(/function cancelPractiseAgain\(\) \{ setPractiseAgainConfirmApp\(null\); \}/);
+  });
+
+  it("the confirmation modal reuses the existing ConfirmDialog component, not a new one, with non-destructive (accent) styling", () => {
+    const MODAL_SRC = extractFunctionSource("{practiseAgainConfirmApp && (", "{/* ---------------- LANDING");
+    expect(MODAL_SRC).toMatch(/<ConfirmDialog/);
+    expect(MODAL_SRC).toMatch(/title="Create a new interview\?"/);
+    expect(MODAL_SRC).toMatch(/confirmVariant="accent"/);
+    expect(MODAL_SRC).toMatch(/onCancel=\{cancelPractiseAgain\}/);
   });
 });
 
@@ -126,7 +183,12 @@ describe("practiseApplicationAgain (STRUCTURAL)", () => {
 describe("starting a fresh interview always clears the previous session's JD/CV text (STRUCTURAL — regression)", () => {
   it("startCreateFlow clears company/role/jdText/cvText — previously it left them stale, so a candidate who didn't use the Report screen's own \"New interview\" button could silently see the PREVIOUS job's JD/CV on the new wizard", () => {
     const FN_SRC = extractFunctionSource("function startCreateFlow(focusWeak = false) {", "// Phase 4 (returning-user continuity): resume a draft");
-    expect(FN_SRC).toMatch(/setCompany\(""\); setRole\(""\); setJdText\(""\); setCvText\(""\);/);
+    expect(FN_SRC).toMatch(/setCompany\(""\); setRole\(""\); setInterviewDateInput\(""\); setJdText\(""\); setCvText\(""\);/);
+  });
+
+  it("startCreateFlow also clears the Phase 36 interview-date field — a stale date from a previous build must never leak into a fresh one", () => {
+    const FN_SRC = extractFunctionSource("function startCreateFlow(focusWeak = false) {", "// Phase 4 (returning-user continuity): resume a draft");
+    expect(FN_SRC).toMatch(/setInterviewDateInput\(""\)/);
   });
 
   it("practiseThisWeakness clears jdText/cvText while still prefilling company/role from the topic", () => {

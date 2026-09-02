@@ -166,7 +166,12 @@ describe("dbUpdateApplication — required persistence failure is visible", () =
   });
 
   it("the two best-effort callers (company/role rename) still ignore the result — no throw introduced there", () => {
-    const renames = [...APP_SRC.matchAll(/await dbUpdateApplication\([^,]+,\s*\{ company: cleanCompany, role: cleanRole \}\);/g)];
+    // Phase 36: confirmCompanyRole's call (the interview-setup wizard's own step 1) now also
+    // carries interview_date onto the SAME best-effort write — still fire-and-forget, still no
+    // `if (...) throw` introduced. The invitation-matching flow's rename call is untouched.
+    expect(APP_SRC).toMatch(/await dbUpdateApplication\(applicationId, \{ company: cleanCompany, role: cleanRole, interview_date: interviewDateIso \}\);/);
+    expect(APP_SRC).toMatch(/await dbUpdateApplication\(appId, \{ company: cleanCompany, role: cleanRole \}\);/);
+    const renames = [...APP_SRC.matchAll(/await dbUpdateApplication\([^,]+,\s*\{ company: cleanCompany, role: cleanRole[^}]*\}\);/g)];
     expect(renames.length).toBe(2);
   });
 });
