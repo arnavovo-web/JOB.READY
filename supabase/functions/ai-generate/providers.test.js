@@ -15,6 +15,8 @@ import {
   callAnthropicProvider, callDeepSeekProvider,
   selectProvider, callAIProvider,
   ProviderHttpError, ProviderCapabilityError,
+  // Phase 37 — hybrid, per-request-type routing
+  KNOWN_REQUEST_TYPES, REQUEST_TYPE_ROUTING_POLICY, selectProviderForRequest,
 } from "./providers.ts";
 
 function fakeFetch(status, body, ok = status >= 200 && status < 300) {
@@ -188,10 +190,183 @@ describe("callAIProvider — the one entry point index.ts calls", () => {
   });
 });
 
+/* ============================== Phase 37: hybrid per-request-type routing ============================== */
+describe("KNOWN_REQUEST_TYPES / REQUEST_TYPE_ROUTING_POLICY — the verified inventory", () => {
+  it("has exactly the 11 request types verified live against src/App.jsx, no more, no fewer", () => {
+    expect(KNOWN_REQUEST_TYPES).toHaveLength(11);
+    expect([...KNOWN_REQUEST_TYPES].sort()).toEqual([
+      "assessment_centre", "assessment_centre_scenario", "classroom_lesson",
+      "development_module", "interview_batch_evaluation", "interview_profile",
+      "interview_question_batch", "interview_report", "interview_turn_evaluate",
+      "interview_turn_generate", "invitation_extraction",
+    ].sort());
+  });
+  it("every known request type has exactly one routing policy entry — nothing left implicit", () => {
+    KNOWN_REQUEST_TYPES.forEach((t) => {
+      expect(REQUEST_TYPE_ROUTING_POLICY[t]).toBeDefined();
+      expect(["anthropic", "deepseek"]).toContain(REQUEST_TYPE_ROUTING_POLICY[t]);
+    });
+    expect(Object.keys(REQUEST_TYPE_ROUTING_POLICY)).toHaveLength(11);
+  });
+});
+
+describe("selectProviderForRequest — hybrid mode (AI_PROVIDER unset)", () => {
+  const FAST_TYPES = ["invitation_extraction", "interview_question_batch", "classroom_lesson", "development_module", "interview_profile", "assessment_centre_scenario"];
+  const STRONG_TYPES = ["interview_turn_evaluate", "interview_turn_generate", "interview_batch_evaluation", "interview_report", "assessment_centre"];
+
+  it("routes every fast/cost-efficient request type to deepseek", () => {
+    FAST_TYPES.forEach((requestType) => {
+      const decision = selectProviderForRequest({ requestType, useWebSearch: false, configuredProvider: undefined });
+      expect(decision).toEqual({ provider: "deepseek", reason: "request_type_policy", mode: "hybrid", configWasInvalid: false });
+    });
+  });
+  it("routes every strong/quality-critical request type to anthropic", () => {
+    STRONG_TYPES.forEach((requestType) => {
+      const decision = selectProviderForRequest({ requestType, useWebSearch: false, configuredProvider: undefined });
+      expect(decision).toEqual({ provider: "anthropic", reason: "request_type_policy", mode: "hybrid", configWasInvalid: false });
+    });
+  });
+  it("all 11 known types together cover the full FAST_TYPES + STRONG_TYPES partition with no overlap and no gap", () => {
+    expect([...FAST_TYPES, ...STRONG_TYPES].sort()).toEqual([...KNOWN_REQUEST_TYPES].sort());
+  });
+  it('AI_PROVIDER="hybrid" (explicit) behaves identically to unset', () => {
+    FAST_TYPES.forEach((requestType) => {
+      expect(selectProviderForRequest({ requestType, useWebSearch: false, configuredProvider: "hybrid" }))
+        .toEqual(selectProviderForRequest({ requestType, useWebSearch: false, configuredProvider: undefined }));
+    });
+  });
+  it("an unknown/missing requestType safely defaults to anthropic rather than an arbitrary cheap provider", () => {
+    expect(selectProviderForRequest({ requestType: "some_future_call_site", useWebSearch: false }))
+      .toEqual({ provider: "anthropic", reason: "unknown_request_type_default", mode: "hybrid", configWasInvalid: false });
+    expect(selectProviderForRequest({ requestType: undefined, useWebSearch: false }))
+      .toEqual({ provider: "anthropic", reason: "unknown_request_type_default", mode: "hybrid", configWasInvalid: false });
+    expect(selectProviderForRequest({ requestType: "unknown", useWebSearch: false })) // the literal fallback string App.jsx's callAI sends
+      .toEqual({ provider: "anthropic", reason: "unknown_request_type_default", mode: "hybrid", configWasInvalid: false });
+  });
+});
+
+describe("selectProviderForRequest — web-search override always wins", () => {
+  it("classroom_lesson + useWebSearch=true routes to anthropic even though classroom_lesson normally routes to deepseek", () => {
+    const decision = selectProviderForRequest({ requestType: "classroom_lesson", useWebSearch: true, configuredProvider: undefined });
+    expect(decision).toEqual({ provider: "anthropic", reason: "web_search_override", mode: "hybrid", configWasInvalid: false });
+  });
+  it("the override applies to every fast-route request type, not just classroom_lesson, confirming it is a blanket rule and not special-cased per type", () => {
+    ["invitation_extraction", "interview_question_batch", "development_module", "interview_profile", "assessment_centre_scenario"].forEach((requestType) => {
+      expect(selectProviderForRequest({ requestType, useWebSearch: true, configuredProvider: undefined }).provider).toBe("anthropic");
+    });
+  });
+  it("wins over an explicit AI_PROVIDER=deepseek forced mode too — the one case the phase spec calls out explicitly", () => {
+    const decision = selectProviderForRequest({ requestType: "classroom_lesson", useWebSearch: true, configuredProvider: "deepseek" });
+    expect(decision).toEqual({ provider: "anthropic", reason: "web_search_override", mode: "deepseek", configWasInvalid: false });
+  });
+  it("a strong-route type with web search stays on anthropic for the same reason web search chose it, not because it's already strong-routed", () => {
+    const decision = selectProviderForRequest({ requestType: "interview_report", useWebSearch: true, configuredProvider: undefined });
+    expect(decision.provider).toBe("anthropic");
+    expect(decision.reason).toBe("web_search_override"); // not "request_type_policy" — web search is WHY, even though the policy would have agreed anyway
+  });
+});
+
+describe("selectProviderForRequest — global AI_PROVIDER overrides", () => {
+  it('AI_PROVIDER="anthropic" forces every request type to anthropic, including normally-deepseek ones', () => {
+    KNOWN_REQUEST_TYPES.forEach((requestType) => {
+      const decision = selectProviderForRequest({ requestType, useWebSearch: false, configuredProvider: "anthropic" });
+      expect(decision).toEqual({ provider: "anthropic", reason: "global_override_anthropic", mode: "anthropic", configWasInvalid: false });
+    });
+  });
+  it('AI_PROVIDER="deepseek" forces every eligible request type to deepseek, including normally-anthropic ones', () => {
+    KNOWN_REQUEST_TYPES.forEach((requestType) => {
+      const decision = selectProviderForRequest({ requestType, useWebSearch: false, configuredProvider: "deepseek" });
+      expect(decision).toEqual({ provider: "deepseek", reason: "global_override_deepseek", mode: "deepseek", configWasInvalid: false });
+    });
+  });
+  it('AI_PROVIDER="deepseek" + useWebSearch=true still forces anthropic — a global forced-DeepSeek config can never defeat the web-search guard', () => {
+    const decision = selectProviderForRequest({ requestType: "interview_question_batch", useWebSearch: true, configuredProvider: "deepseek" });
+    expect(decision.provider).toBe("anthropic");
+    expect(decision.reason).toBe("web_search_override");
+  });
+});
+
+describe("selectProviderForRequest — invalid/malformed configuration fails safely, not silently arbitrary", () => {
+  it("an unrecognised AI_PROVIDER value falls back to hybrid mode (the same safe default unset gets), not an implicit deepseek-only or anthropic-only mode", () => {
+    const decision = selectProviderForRequest({ requestType: "interview_report", useWebSearch: false, configuredProvider: "deepseak" }); // typo
+    expect(decision.mode).toBe("hybrid");
+    expect(decision.configWasInvalid).toBe(true);
+    expect(decision.provider).toBe("anthropic"); // interview_report's own hybrid-mode policy entry — unaffected by the typo
+  });
+  it("an invalid AI_PROVIDER never silently routes a quality-critical request type to DeepSeek", () => {
+    ["interview_turn_evaluate", "interview_turn_generate", "interview_batch_evaluation", "interview_report", "assessment_centre"].forEach((requestType) => {
+      const decision = selectProviderForRequest({ requestType, useWebSearch: false, configuredProvider: "totally-bogus-value" });
+      expect(decision.provider).toBe("anthropic");
+      expect(decision.configWasInvalid).toBe(true);
+    });
+  });
+  it("empty-string AI_PROVIDER is treated the same as unset (hybrid, not flagged invalid — an empty env var is indistinguishable from 'not configured')", () => {
+    const decision = selectProviderForRequest({ requestType: "classroom_lesson", useWebSearch: false, configuredProvider: "" });
+    expect(decision).toEqual({ provider: "deepseek", reason: "request_type_policy", mode: "hybrid", configWasInvalid: false });
+  });
+  it("configWasInvalid never changes the routing OUTCOME versus a genuinely unset AI_PROVIDER — only its own observability flag differs", () => {
+    KNOWN_REQUEST_TYPES.forEach((requestType) => {
+      const unset = selectProviderForRequest({ requestType, useWebSearch: false, configuredProvider: undefined });
+      const invalid = selectProviderForRequest({ requestType, useWebSearch: false, configuredProvider: "garbage" });
+      expect(invalid.provider).toBe(unset.provider);
+      expect(invalid.reason).toBe(unset.reason);
+      expect(invalid.mode).toBe(unset.mode);
+      expect(unset.configWasInvalid).toBe(false);
+      expect(invalid.configWasInvalid).toBe(true);
+    });
+  });
+});
+
+describe("callAIProvider — integrated with Phase 37 routing (real dispatch, mocked fetch)", () => {
+  const baseReq = { system: "s", userText: "u", maxTokens: 400, useWebSearch: false };
+
+  it("a fast-route requestType under hybrid mode actually dispatches to callDeepSeekProvider (real HTTP call shape), not just a routing-table lookup", async () => {
+    const fetchImpl = fakeFetch(200, { choices: [{ message: { content: "ok" }, finish_reason: "stop" }] });
+    const result = await callAIProvider({ ANTHROPIC_API_KEY: "a", DEEPSEEK_API_KEY: "d" }, { ...baseReq, requestType: "classroom_lesson" }, fetchImpl);
+    expect(result.provider).toBe("deepseek");
+    expect(result.routingReason).toBe("request_type_policy");
+    const [url] = fetchImpl.mock.calls[0];
+    expect(url).toBe("https://api.deepseek.com/chat/completions");
+  });
+  it("a strong-route requestType under hybrid mode actually dispatches to callAnthropicProvider", async () => {
+    const fetchImpl = fakeFetch(200, { content: [{ type: "text", text: "ok" }], stop_reason: "end_turn" });
+    const result = await callAIProvider({ ANTHROPIC_API_KEY: "a", DEEPSEEK_API_KEY: "d" }, { ...baseReq, requestType: "interview_report" }, fetchImpl);
+    expect(result.provider).toBe("anthropic");
+    expect(result.routingReason).toBe("request_type_policy");
+    const [url] = fetchImpl.mock.calls[0];
+    expect(url).toBe("https://api.anthropic.com/v1/messages");
+  });
+  it("a fast-route requestType with only ANTHROPIC_API_KEY configured (no DEEPSEEK_API_KEY) fails clearly rather than silently falling back to Anthropic unannounced", async () => {
+    await expect(callAIProvider({ ANTHROPIC_API_KEY: "a" }, { ...baseReq, requestType: "classroom_lesson" }))
+      .rejects.toThrow(/DEEPSEEK_API_KEY/);
+  });
+  it("useWebSearch on a normally-deepseek requestType still dispatches to Anthropic end-to-end, and still requires ANTHROPIC_API_KEY specifically", async () => {
+    await expect(callAIProvider({ DEEPSEEK_API_KEY: "d" }, { ...baseReq, requestType: "classroom_lesson", useWebSearch: true }))
+      .rejects.toThrow(/ANTHROPIC_API_KEY/);
+    const fetchImpl = fakeFetch(200, { content: [], stop_reason: "end_turn" });
+    const result = await callAIProvider({ ANTHROPIC_API_KEY: "a", DEEPSEEK_API_KEY: "d" }, { ...baseReq, requestType: "classroom_lesson", useWebSearch: true }, fetchImpl);
+    expect(result.provider).toBe("anthropic");
+    expect(result.routingReason).toBe("web_search_override");
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body.tools).toEqual([{ type: "web_search_20250305", name: "web_search" }]); // the actual search tool was requested, not silently dropped
+  });
+  it('AI_PROVIDER="deepseek" (forced) with an unknown requestType still routes to deepseek — global override outranks the request-type table entirely', async () => {
+    const fetchImpl = fakeFetch(200, { choices: [{ message: { content: "ok" }, finish_reason: "stop" }] });
+    const result = await callAIProvider({ AI_PROVIDER: "deepseek", DEEPSEEK_API_KEY: "d" }, { ...baseReq, requestType: "some_new_call_site" }, fetchImpl);
+    expect(result.provider).toBe("deepseek");
+    expect(result.routingReason).toBe("global_override_deepseek");
+  });
+  it("legacy callers that never pass requestType at all keep working exactly as before Phase 37 (defaults through hybrid's unknown-type bucket to anthropic)", async () => {
+    const fetchImpl = fakeFetch(200, { content: [{ type: "text", text: "ok" }], stop_reason: "end_turn" });
+    const result = await callAIProvider({ ANTHROPIC_API_KEY: "a" }, baseReq, fetchImpl); // no requestType field at all
+    expect(result.provider).toBe("anthropic");
+  });
+});
+
 /* ============================== security ============================== */
 describe("security — no client-exposed provider secrets", () => {
   it("this module never reads a VITE_-prefixed env var (those are bundled into the browser build)", () => {
-    const src = String(callAIProvider) + String(callAnthropicProvider) + String(callDeepSeekProvider) + String(selectProvider);
+    const src = String(callAIProvider) + String(callAnthropicProvider) + String(callDeepSeekProvider) + String(selectProvider) + String(selectProviderForRequest);
     expect(src).not.toMatch(/VITE_/);
   });
   it("provider/keys are plain function parameters, never read from import.meta.env, process.env or Deno.env directly in this module's CODE — the caller (index.ts) supplies them; only prose comments may mention Deno.env", () => {

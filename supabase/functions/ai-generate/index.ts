@@ -1,6 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
-import { callAIProvider, ProviderHttpError, ProviderCapabilityError } from "./providers.ts";
+import { callAIProvider, selectProviderForRequest, ProviderHttpError, ProviderCapabilityError } from "./providers.ts";
 
 // Secure AI proxy for JOB.READY.
 // verify_jwt=true (set at deploy time) means Supabase's edge runtime rejects
@@ -79,6 +79,24 @@ Deno.serve(async (req: Request) => {
   // produces) and were getting close to the old ceiling on longer interviews.
   const clampedMaxTokens = Math.max(200, Math.min(8000, Number(maxTokens) || 2000));
 
+  // Phase 37 — hybrid routing. The ACTUAL decision is made once, inside callAIProvider
+  // (providers.ts) below — this file never branches on requestType anywhere. This second call
+  // to the SAME pure, deterministic, side-effect-free function is purely a logging preview:
+  // it lets every log line (including a failure path, where callAIProvider throws before
+  // returning anything) name which provider was actually attempted and why, without threading
+  // that information through ProviderHttpError/ProviderCapabilityError. Calling it twice can
+  // never disagree with itself — same inputs, same pure function, same output — and costs a
+  // handful of string comparisons, not a network call.
+  const routingPreview = selectProviderForRequest({
+    requestType, useWebSearch: !!useWebSearch, configuredProvider: providerEnv.AI_PROVIDER,
+  });
+  if (routingPreview.configWasInvalid) {
+    // Non-fatal — normalizeRoutingMode() in providers.ts already fell back to hybrid mode
+    // safely — but a misconfigured AI_PROVIDER env var is worth a visible signal so it gets
+    // fixed rather than silently riding on the safe default indefinitely.
+    console.warn(`AI_PROVIDER is set to an unrecognised value — falling back to hybrid routing. Expected "hybrid", "anthropic", "deepseek", or unset.`);
+  }
+
   // ---- Simple server-side rate limiting using public.api_usage_limits ----
   const nowIso = new Date().toISOString();
   const { data: limitRow } = await supabase
@@ -105,26 +123,40 @@ Deno.serve(async (req: Request) => {
   );
 
   // ---- Call the configured AI provider ----
+  // Phase 37: requestType now travels into callAIProvider too (ProviderRequest.requestType,
+  // optional/additive — see providers.ts) so its internal, centralized
+  // selectProviderForRequest() call can make the real routing decision. index.ts itself still
+  // never inspects requestType to decide anything — it only reads it back for logging, both
+  // here (routingPreview, computed above) and from the returned result below.
   let result;
   try {
-    result = await callAIProvider(providerEnv, { system, userText, maxTokens: clampedMaxTokens, useWebSearch: !!useWebSearch });
+    result = await callAIProvider(providerEnv, { system, userText, maxTokens: clampedMaxTokens, useWebSearch: !!useWebSearch, requestType });
   } catch (e) {
+    // Phase 37: every failure log now also records WHICH provider the routing policy had
+    // actually selected for this request (routingPreview.provider/reason) — e.g. "was this a
+    // DeepSeek 500 or an Anthropic 500?" — the single piece of information Step 20/§16 needs
+    // to answer "should we roll back AI_PROVIDER to anthropic-only right now?". No schema
+    // change: reuses the existing free-text ai_usage.model column, tagged "<provider>:attempted"
+    // so it can never be confused with a real completed-row model string (which never contains
+    // ":attempted").
+    const attemptedModel = `${routingPreview.provider}:attempted`;
     if (e instanceof ProviderHttpError) {
-      if (e.message) console.error("Provider error:", e.status, e.message);
-      await logUsage(supabase, { userId, applicationId, interviewId, requestType, status: "upstream_error_" + e.status });
+      if (e.message) console.error("Provider error:", routingPreview.provider, e.status, e.message);
+      await logUsage(supabase, { userId, applicationId, interviewId, requestType, status: "upstream_error_" + e.status, model: attemptedModel });
       if (e.status === 429) return json({ error: "The AI service is busy right now. Please try again shortly." }, 429);
       if (e.status >= 500) return json({ error: "The AI service is temporarily unavailable. Please try again." }, 502);
       return json({ error: "Something went wrong on our end. Please try again." }, 500);
     }
     if (e instanceof ProviderCapabilityError) {
-      console.error("Provider capability error:", e.message);
-      await logUsage(supabase, { userId, applicationId, interviewId, requestType, status: "provider_capability_error" });
+      console.error("Provider capability error:", routingPreview.provider, e.message);
+      await logUsage(supabase, { userId, applicationId, interviewId, requestType, status: "provider_capability_error", model: attemptedModel });
       return json({ error: "Something went wrong on our end. Please try again." }, 500);
     }
     // Network failure (fetch threw) or misconfiguration (missing key for the
     // selected provider) — same "couldn't reach the AI service" shape the
     // frontend has always handled for a network error.
-    await logUsage(supabase, { userId, applicationId, interviewId, requestType, status: "network_error" });
+    console.error("AI provider call failed:", routingPreview.provider, e instanceof Error ? e.message : String(e));
+    await logUsage(supabase, { userId, applicationId, interviewId, requestType, status: "network_error", model: attemptedModel });
     return json({ error: "Couldn't reach the AI service. Please try again." }, 502);
   }
 
@@ -133,6 +165,13 @@ Deno.serve(async (req: Request) => {
   // EXISTING free-text ai_usage.model column (no schema change) while making
   // provider observable per Step 11. Legacy rows keep their bare model name;
   // both are just text, so no migration is needed and no reader breaks.
+  // Phase 37: result.routingReason (from the SAME callAIProvider call, never recomputed) is
+  // logged to the console only, not the database — request_type + model (which already
+  // encodes provider) is the complete, already-schema-supported observability pair the spec
+  // asks for; routingReason is a deterministic function of (requestType, AI_PROVIDER) and adds
+  // no new information a DB reader couldn't already derive by cross-referencing
+  // REQUEST_TYPE_ROUTING_POLICY, so it isn't worth a schema change to persist redundantly.
+  console.log(`AI routing: requestType=${requestType || "unknown"} provider=${result.provider} reason=${result.routingReason}`);
   await logUsage(supabase, {
     userId, applicationId, interviewId, requestType,
     status: "completed",

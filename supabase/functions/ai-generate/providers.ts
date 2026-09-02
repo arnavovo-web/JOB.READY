@@ -61,6 +61,12 @@ export interface ProviderRequest {
   userText: string;
   maxTokens: number;
   useWebSearch: boolean;
+  // Phase 37: optional — every real call site sends it (see App.jsx's callAI, which defaults
+  // to the literal string "unknown" when a caller omits meta.requestType), but it stays
+  // optional here so every pre-Phase-37 test/call that constructs a ProviderRequest without
+  // it keeps compiling and behaving identically (see selectProviderForRequest's docstring:
+  // a missing requestType is treated exactly like an unrecognised one).
+  requestType?: string;
 }
 
 export interface NormalizedContentBlock {
@@ -205,15 +211,193 @@ export class ProviderHttpError extends Error {
   }
 }
 
+export type Provider = "anthropic" | "deepseek";
+
 // ---- Provider selection (server-side only — never exposed to the client) ----
-// Reused unconditionally for EVERY call: a request that asked for web search
-// always goes to Anthropic, regardless of the configured default provider,
-// because DeepSeek's web-search support could not be confirmed. This is the
-// one place selection logic lives — callAIProvider is the only entry point
-// index.ts calls into.
-export function selectProvider(configuredProvider: string | undefined, useWebSearch: boolean): "anthropic" | "deepseek" {
+// Kept EXACTLY as Phase 36 shipped it (signature and behaviour both unchanged) — this was
+// the original global-only routing rule and stays exported so nothing that already depends
+// on it (existing tests included) breaks. It is no longer called by callAIProvider below
+// (selectProviderForRequest, Phase 37, supersedes it there), but it remains a correct,
+// standalone description of the pre-Phase-37 "single global provider + web-search override"
+// rule, useful on its own (e.g. for a caller that genuinely never wants request-type routing).
+export function selectProvider(configuredProvider: string | undefined, useWebSearch: boolean): Provider {
   if (useWebSearch) return "anthropic";
   return configuredProvider === "deepseek" ? "deepseek" : "anthropic";
+}
+
+// ================================================================================
+// PHASE 37 — HYBRID, PER-REQUEST-TYPE ROUTING
+// --------------------------------------------------------------------------------
+// One centralized routing policy + one pure decision function. index.ts never branches on
+// requestType itself — it only ever calls callAIProvider(), which calls
+// selectProviderForRequest() below. Nothing about this changes what a provider CALL looks
+// like (callAnthropicProvider/callDeepSeekProvider, and their normalization, are completely
+// untouched above) — this section only decides WHICH of those two gets called.
+// ================================================================================
+
+// The exact, verified inventory of requestType values every real call site in src/App.jsx
+// sends today — re-derived directly from source at the start of Phase 37
+// (`grep -oE 'requestType:\s*"[a-z_]+"' src/App.jsx`), not carried over from memory. This
+// list is the routing/observability allowlist ONLY: an unrecognised requestType still gets a
+// normal AI response (see "unknown_request_type_default" below) rather than the whole request
+// being rejected — outright rejection would be a NEW failure mode for any future call site
+// added without this file being updated in lockstep, which the phase spec explicitly weighs
+// against ("preserve backward compatibility"). It just never gets policy-based DeepSeek
+// routing until this list is updated to know about it; it safely defaults to Anthropic
+// instead (see REQUEST_TYPE_ROUTING_POLICY's docstring).
+export const KNOWN_REQUEST_TYPES = [
+  "interview_question_batch",
+  "interview_batch_evaluation",
+  "classroom_lesson",
+  "development_module",
+  "interview_profile",
+  "invitation_extraction",
+  "interview_turn_evaluate",
+  "interview_turn_generate",
+  "interview_report",
+  "assessment_centre_scenario",
+  "assessment_centre",
+] as const;
+export type KnownRequestType = typeof KNOWN_REQUEST_TYPES[number];
+
+// The ONE place a request type maps to a default provider tier under hybrid mode.
+//
+// FAST / COST-EFFICIENT route (DeepSeek): high-volume or one-shot generation where the
+// existing structural validator (validateQuestionBatch/validateLesson/validateDevelopmentModule/
+// validateProfile/validateInvitationExtraction/validateAcScenario — all untouched by this
+// phase) is the real product-level safeguard, not provider choice.
+//   - invitation_extraction, interview_question_batch, classroom_lesson, development_module,
+//     assessment_centre_scenario: exactly the fast-route list given in the phase spec.
+//   - interview_profile: deliberately included here too, after inspecting it specifically
+//     (per the spec's instruction not to blindly classify it) — it is a single per-application
+//     extraction step, not a per-turn or scored call; ~6000 max_tokens is mid-sized, not the
+//     largest prompt in the app; and everything materially downstream of it
+//     (interview_turn_evaluate/interview_turn_generate for the live interview,
+//     interview_report for the final score) independently re-evaluates the candidate's actual
+//     answers against the real rubric — it never trusts interview_profile's output as a score
+//     or a judgement. A weaker extraction here degrades to "slightly less tailored questions",
+//     never a silently wrong candidate-facing score. That risk profile matches the fast route,
+//     not the strong one.
+//
+// STRONG / QUALITY-CRITICAL route (Anthropic): every call that scores an answer, decides the
+// next live question, or produces a candidate-facing judgement — interview_turn_evaluate,
+// interview_turn_generate, interview_batch_evaluation, interview_report, assessment_centre —
+// exactly the strong-route list given in the phase spec. A quality regression here is both
+// expensive (it can shape the rest of a live interview or a final score) and hard for a
+// candidate to detect on their own, unlike a slightly blander generated question.
+//
+// Kept as a bare Provider (not a provider+model tuple): there is currently only ONE verified/
+// documented model per provider (ANTHROPIC_MODEL/DEEPSEEK_MODEL above) — inventing a second
+// DeepSeek tier ("Flash"/"Pro") without a verified model ID would violate the phase's explicit
+// "do not fabricate model IDs" rule. This table's VALUE type is what changes when a second,
+// verified tier exists (e.g. `{ provider: "deepseek", tier: "fast" }`) — RoutingDecision/
+// selectProviderForRequest's callers already consume a decision object, not a bare string, so
+// that extension needs no change to callAIProvider's contract or to index.ts.
+export const REQUEST_TYPE_ROUTING_POLICY: Record<KnownRequestType, Provider> = {
+  // ---- fast / cost-efficient route ----
+  invitation_extraction: "deepseek",
+  interview_question_batch: "deepseek",
+  classroom_lesson: "deepseek",
+  development_module: "deepseek",
+  interview_profile: "deepseek",
+  assessment_centre_scenario: "deepseek",
+  // ---- strong / quality-critical route ----
+  interview_turn_evaluate: "anthropic",
+  interview_turn_generate: "anthropic",
+  interview_batch_evaluation: "anthropic",
+  interview_report: "anthropic",
+  assessment_centre: "anthropic",
+};
+
+// AI_PROVIDER's three valid values under Phase 37 (reuses the SAME env var Phase 36
+// introduced — no new env var for this). "hybrid" is the new default: unset behaves
+// identically to explicit "hybrid" (see normalizeRoutingMode below), so an existing
+// deployment that has never set AI_PROVIDER at all picks up hybrid routing with no
+// configuration change required.
+export type RoutingMode = "hybrid" | "anthropic" | "deepseek";
+
+export type RoutingReason =
+  | "web_search_override"          // useWebSearch=true — always wins, over every mode
+  | "global_override_anthropic"    // AI_PROVIDER=anthropic — emergency rollback
+  | "global_override_deepseek"     // AI_PROVIDER=deepseek — forced DeepSeek (still web-search-gated above)
+  | "request_type_policy"          // hybrid mode, requestType found in REQUEST_TYPE_ROUTING_POLICY
+  | "unknown_request_type_default";// hybrid mode, requestType missing/not in KNOWN_REQUEST_TYPES
+
+// Machine-readable routing outcome. `mode` is the EFFECTIVE mode this decision was made
+// under, AFTER normalizing an unset or invalid AI_PROVIDER value down to "hybrid" (see
+// normalizeRoutingMode) — `configWasInvalid` separately flags an AI_PROVIDER value that was
+// neither unset nor one of "hybrid"/"anthropic"/"deepseek" (e.g. a typo like "deepseak"),
+// purely for index.ts's own logging. It never changes the routing OUTCOME: an invalid value
+// is always treated exactly like "hybrid" (the same safe default an unset value gets), never
+// silently treated as "deepseek" or as an error that breaks the request — see the "Invalid
+// configuration" reasoning in the module-level comment above selectProviderForRequest.
+export interface RoutingDecision {
+  provider: Provider;
+  reason: RoutingReason;
+  mode: RoutingMode;
+  configWasInvalid: boolean;
+}
+
+function normalizeRoutingMode(configuredProvider: string | undefined): { mode: RoutingMode; configWasInvalid: boolean } {
+  if (configuredProvider === "anthropic") return { mode: "anthropic", configWasInvalid: false };
+  if (configuredProvider === "deepseek") return { mode: "deepseek", configWasInvalid: false };
+  if (configuredProvider === undefined || configuredProvider === "" || configuredProvider === "hybrid") {
+    return { mode: "hybrid", configWasInvalid: false };
+  }
+  // Invalid configuration (Phase 37 spec §6): a value that is set but isn't one of the three
+  // recognised modes. "Fail safely and predictably" here means falling back to hybrid — the
+  // SAME safe default an unset value already gets — rather than either (a) silently treating
+  // an unrecognised string as an implicit "deepseek" (Phase 36's old selectProvider() had the
+  // opposite failure mode: anything not EXACTLY "deepseek" silently became "anthropic", which
+  // is safe but not informative), or (b) hard-erroring every AI call in the product over a
+  // single mistyped env var. Hybrid mode itself still keeps every quality-critical request
+  // type on Anthropic (REQUEST_TYPE_ROUTING_POLICY), so a misconfigured AI_PROVIDER can never
+  // route interview_turn_evaluate/interview_report/etc. to DeepSeek by accident — only the
+  // already-fast-eligible request types are affected, and configWasInvalid=true still makes
+  // this observable (index.ts logs it) rather than silent.
+  return { mode: "hybrid", configWasInvalid: true };
+}
+
+// The ONE routing decision function — the single centralized place this entire policy lives.
+// Pure, synchronous, no I/O: directly unit-testable without mocking fetch or Deno.env.
+//
+// Priority order (highest first), matching the phase spec exactly:
+//   1. useWebSearch=true -> ALWAYS Anthropic. This cannot be overridden by ANY mode,
+//      including AI_PROVIDER=deepseek (Phase 36's original hard guard, preserved verbatim —
+//      DeepSeek's web-search support was never confirmed; callDeepSeekProvider itself still
+//      throws ProviderCapabilityError as a second, independent layer of defense if this
+//      priority order were ever bypassed).
+//   2. AI_PROVIDER=anthropic -> Anthropic for everything (emergency rollback mode).
+//   3. AI_PROVIDER=deepseek -> DeepSeek for everything eligible (i.e. everything priority 1
+//      didn't already claim).
+//   4. Otherwise (hybrid — explicit "hybrid", unset, or an invalid value normalized to
+//      hybrid) -> REQUEST_TYPE_ROUTING_POLICY[requestType] when requestType is a known type,
+//      else Anthropic (the safe, non-arbitrary default for an unrecognised/missing
+//      requestType — see KNOWN_REQUEST_TYPES's own docstring for why this doesn't hard-reject
+//      the request).
+export function selectProviderForRequest({ requestType, useWebSearch, configuredProvider }: {
+  requestType?: string;
+  useWebSearch?: boolean;
+  configuredProvider?: string;
+}): RoutingDecision {
+  const { mode, configWasInvalid } = normalizeRoutingMode(configuredProvider);
+
+  if (useWebSearch) {
+    return { provider: "anthropic", reason: "web_search_override", mode, configWasInvalid };
+  }
+  if (mode === "anthropic") {
+    return { provider: "anthropic", reason: "global_override_anthropic", mode, configWasInvalid };
+  }
+  if (mode === "deepseek") {
+    return { provider: "deepseek", reason: "global_override_deepseek", mode, configWasInvalid };
+  }
+
+  // mode === "hybrid"
+  const isKnownType = !!requestType && (KNOWN_REQUEST_TYPES as readonly string[]).includes(requestType);
+  if (!isKnownType) {
+    return { provider: "anthropic", reason: "unknown_request_type_default", mode, configWasInvalid };
+  }
+  return { provider: REQUEST_TYPE_ROUTING_POLICY[requestType as KnownRequestType], reason: "request_type_policy", mode, configWasInvalid };
 }
 
 export interface ProviderEnv {
@@ -223,29 +407,39 @@ export interface ProviderEnv {
 }
 
 export interface ProviderResult extends NormalizedResponse {
-  provider: "anthropic" | "deepseek";
+  provider: Provider;
+  // Phase 37: routing metadata, additive to the Phase 36 shape (`{ provider, ...result }`
+  // callers that only read `.provider`/`.content`/`.stop_reason` are completely unaffected).
+  // index.ts uses these two purely for observability (ai_usage/console logging) — they never
+  // feed back into another routing decision.
+  routingReason: RoutingReason;
+  configWasInvalid: boolean;
 }
 
-// The one function index.ts calls. Resolves which provider serves this
-// request, validates the corresponding key is configured, calls it, and
-// returns the normalized result tagged with which provider actually served
-// it (for usage logging — see logUsage in index.ts).
+// The one function index.ts calls. Resolves which provider serves this request (Phase 37:
+// selectProviderForRequest, not the legacy global-only selectProvider), validates the
+// corresponding key is configured, calls it, and returns the normalized result tagged with
+// which provider actually served it plus why (for usage logging — see logUsage in index.ts).
 export async function callAIProvider(
   env: ProviderEnv,
   req: ProviderRequest,
   fetchImpl: FetchImpl = fetch,
 ): Promise<ProviderResult> {
-  const provider = selectProvider(env.AI_PROVIDER, req.useWebSearch);
-  if (provider === "deepseek") {
+  const routing = selectProviderForRequest({
+    requestType: req.requestType,
+    useWebSearch: req.useWebSearch,
+    configuredProvider: env.AI_PROVIDER,
+  });
+  if (routing.provider === "deepseek") {
     if (!env.DEEPSEEK_API_KEY) {
-      throw new Error("AI_PROVIDER is set to \"deepseek\" but DEEPSEEK_API_KEY is not configured.");
+      throw new Error(`DeepSeek was selected (${routing.reason}) but DEEPSEEK_API_KEY is not configured.`);
     }
     const result = await callDeepSeekProvider(env.DEEPSEEK_API_KEY, req, fetchImpl);
-    return { provider: "deepseek", ...result };
+    return { provider: "deepseek", routingReason: routing.reason, configWasInvalid: routing.configWasInvalid, ...result };
   }
   if (!env.ANTHROPIC_API_KEY) {
-    throw new Error("ANTHROPIC_API_KEY is not configured.");
+    throw new Error(`Anthropic was selected (${routing.reason}) but ANTHROPIC_API_KEY is not configured.`);
   }
   const result = await callAnthropicProvider(env.ANTHROPIC_API_KEY, req, fetchImpl);
-  return { provider: "anthropic", ...result };
+  return { provider: "anthropic", routingReason: routing.reason, configWasInvalid: routing.configWasInvalid, ...result };
 }

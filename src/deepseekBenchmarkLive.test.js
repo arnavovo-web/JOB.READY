@@ -28,7 +28,22 @@
  * Neither key is ever hardcoded, logged, or committed — only read from
  * process.env, and never printed. This file was NOT run with live keys as
  * part of Phase 36 (no keys were available in the sandbox it was built in)
- * — see the Phase 36 report's "Quality benchmark" section.
+ * — see the Phase 36 report's "Quality benchmark" section. Still not run
+ * with live keys as part of Phase 37 either, for the same reason (no
+ * ANTHROPIC_API_KEY/DEEPSEEK_API_KEY available in this sandbox) — no live
+ * benchmark results are claimed here.
+ *
+ * PHASE 37 addition: each task below now also names the REAL requestType it
+ * represents and prints what Phase 37's actual hybrid routing policy
+ * (selectProviderForRequest, the same centralized function
+ * supabase/functions/ai-generate/index.ts calls) would route that requestType
+ * to. This doesn't change which provider the raw side-by-side comparison
+ * calls (both providers are still called directly, unconditionally, for
+ * every task — that's the whole point of a comparison benchmark) — it makes
+ * the benchmark's output legible against Phase 37's actual routing table,
+ * so a real run with live keys tells you not just "which provider does
+ * better on this task" but "does that match what hybrid mode would actually
+ * choose for it".
  * ================================================================== */
 import { describe, it, expect } from "vitest";
 import {
@@ -36,7 +51,7 @@ import {
   validateInvitationExtraction, buildInvitationExtractionPrompt,
   validateAcScenario, validateReport,
 } from "./App.jsx";
-import { callAnthropicProvider, callDeepSeekProvider } from "../supabase/functions/ai-generate/providers.ts";
+import { callAnthropicProvider, callDeepSeekProvider, selectProviderForRequest } from "../supabase/functions/ai-generate/providers.ts";
 
 const LIVE_ENABLED = process.env.RUN_DEEPSEEK_BENCHMARK === "1";
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
@@ -49,10 +64,18 @@ function section(title) {
 // Runs one task against both providers (DeepSeek skipped if no key), prints
 // the spec's comparison format, and returns pass/fail per provider so the
 // test assertion is itself meaningful rather than just "did not throw".
-async function runTask(taskName, { system, userText, maxTokens, validate, inputSummary }) {
+// `requestType` (Phase 37, optional) is the REAL requestType this task represents — when
+// given, prints what selectProviderForRequest (the actual hybrid routing policy) would route
+// it to, so the benchmark's output is legible against Phase 37's real routing table.
+async function runTask(taskName, { system, userText, maxTokens, validate, inputSummary, requestType }) {
   section(`TASK: ${taskName}`);
   console.log("INPUT");
   console.log(inputSummary);
+  if (requestType) {
+    const routing = selectProviderForRequest({ requestType, useWebSearch: false, configuredProvider: undefined });
+    section("HYBRID ROUTING (Phase 37)");
+    console.log(`requestType="${requestType}" -> hybrid mode routes this to: ${routing.provider} (${routing.reason})`);
+  }
 
   const results = {};
   for (const [label, key, caller] of [
@@ -134,6 +157,7 @@ Rules:
       system, userText, maxTokens: 3000,
       validate: (parsed) => validateQuestionBatch(parsed, 5),
       inputSummary: "Investment Banking Summer Analyst — technical+behavioural+motivational mix, intermediate technical difficulty, 5 questions requested.",
+      requestType: "interview_question_batch",
     });
   });
 
@@ -149,6 +173,7 @@ Score 0-100 for each evaluation dimension honestly. "strengths"/"issues" should 
       system, userText, maxTokens: 900,
       validate: (parsed) => validateEvaluationSignals(parsed),
       inputSummary: "Behavioural answer (STAR-shaped, concrete outcome) to a resilience-under-pressure question.",
+      requestType: "interview_turn_evaluate",
     });
   });
 
@@ -169,6 +194,7 @@ Northwind Capital Partners Recruiting`;
       system, userText, maxTokens: 1600,
       validate: (parsed) => validateInvitationExtraction(parsed),
       inputSummary: "A representative first-round IB interview invitation email (company, role, stage, format, duration, topics all explicit).",
+      requestType: "invitation_extraction",
     });
   });
 
@@ -184,6 +210,7 @@ Rules: ground it in the specific company and role given, for a "Case Study" exer
       system, userText, maxTokens: 1400,
       validate: (parsed) => validateAcScenario(parsed),
       inputSummary: "Case Study exercise for a graduate IB assessment centre.",
+      requestType: "assessment_centre_scenario",
     });
   });
 
@@ -203,6 +230,7 @@ Rules: ground it in the specific company and role given, for a "Case Study" exer
       system, userText, maxTokens: 3000,
       validate: (parsed) => validateReport(parsed),
       inputSummary: "3-question mixed-stage transcript with per-question scores, requesting a full readiness report.",
+      requestType: "interview_report",
     });
   });
 
@@ -214,6 +242,13 @@ Rules: ground it in the specific company and role given, for a "Case Study" exer
     expect(typeof validateInvitationExtraction).toBe("function");
     expect(typeof validateAcScenario).toBe("function");
     expect(typeof validateReport).toBe("function");
+    // Phase 37: the benchmark's routing-preview line uses the SAME centralized routing
+    // function index.ts calls, and every task's requestType really is one of the 11 known
+    // types (so a real run's "hybrid mode routes this to: ..." line reflects the actual
+    // production policy, not a made-up label).
+    expect(typeof selectProviderForRequest).toBe("function");
+    const decision = selectProviderForRequest({ requestType: "interview_question_batch", useWebSearch: false, configuredProvider: undefined });
+    expect(decision.provider).toBe("deepseek");
     if (!LIVE_ENABLED) {
       console.log("\n[deepseekBenchmarkLive] RUN_DEEPSEEK_BENCHMARK is not set — live benchmark tasks skipped, as expected for `npm test`. Run `npm run benchmark:deepseek` (with ANTHROPIC_API_KEY / DEEPSEEK_API_KEY set) to actually compare providers.");
     }

@@ -76,8 +76,8 @@ describe("request contract preserved", () => {
 
 /* ============================== provider dispatch wiring ============================== */
 describe("provider dispatch wiring", () => {
-  it("imports the provider abstraction from providers.ts rather than calling Anthropic inline", () => {
-    expect(SRC).toMatch(/import \{ callAIProvider, ProviderHttpError, ProviderCapabilityError \} from "\.\/providers\.ts";/);
+  it("imports the provider abstraction (including Phase 37's routing function) from providers.ts rather than calling Anthropic inline", () => {
+    expect(SRC).toMatch(/import \{ callAIProvider, selectProviderForRequest, ProviderHttpError, ProviderCapabilityError \} from "\.\/providers\.ts";/);
     expect(codeOnly(SRC)).not.toMatch(/https:\/\/api\.anthropic\.com/);
     expect(codeOnly(SRC)).not.toMatch(/https:\/\/api\.deepseek\.com/);
   });
@@ -91,6 +91,42 @@ describe("provider dispatch wiring", () => {
   it("preserves the existing 429/5xx friendly-error-message mapping so the frontend's existing regex-based error handling (/rate\\|busy\\|quickly/i) keeps working unchanged", () => {
     expect(SRC).toMatch(/The AI service is busy right now\. Please try again shortly\./);
     expect(SRC).toMatch(/The AI service is temporarily unavailable\. Please try again\./);
+  });
+});
+
+/* ============================== Phase 37: hybrid routing integration ============================== */
+describe("Phase 37 — the real Edge Function path feeds requestType/useWebSearch into the routing decision", () => {
+  it("requestType is threaded into the actual callAIProvider() call, not dropped at the Edge Function boundary", () => {
+    const callSite = SRC.slice(SRC.indexOf("result = await callAIProvider("), SRC.indexOf("result = await callAIProvider(") + 220);
+    expect(callSite).toMatch(/requestType/);
+    expect(callSite).toMatch(/useWebSearch: !!useWebSearch/);
+  });
+  it("computes a routing preview from the SAME selectProviderForRequest providers.ts exports, fed by the real requestType/useWebSearch/AI_PROVIDER — not a re-derived or hard-coded copy", () => {
+    expect(SRC).toMatch(/selectProviderForRequest\(\{\s*\n\s*requestType, useWebSearch: !!useWebSearch, configuredProvider: providerEnv\.AI_PROVIDER,/);
+  });
+  it("AI_PROVIDER (the routing-mode config) still comes from Deno.env only — the routing preview never reads it from the request body", () => {
+    const idxPreview = SRC.indexOf("selectProviderForRequest({");
+    const previewCall = SRC.slice(idxPreview, SRC.indexOf("});", idxPreview));
+    expect(previewCall).toMatch(/providerEnv\.AI_PROVIDER/);
+    expect(previewCall).not.toMatch(/body\.(AI_PROVIDER|provider)/);
+  });
+  it("index.ts itself never branches on requestType (no if/switch keyed on its value) — it only ever reads it back for logging; the routing DECISION stays entirely inside providers.ts", () => {
+    const code = codeOnly(SRC);
+    expect(code).not.toMatch(/if\s*\(\s*requestType\s*===/);
+    expect(code).not.toMatch(/switch\s*\(\s*requestType\s*\)/);
+  });
+  it("logs a warning (not a hard failure) when AI_PROVIDER is configured but not one of the recognised values", () => {
+    expect(SRC).toMatch(/routingPreview\.configWasInvalid/);
+    expect(SRC).toMatch(/console\.warn\(/);
+  });
+  it("every failure path (HTTP error, capability error, network/misconfiguration) now records which provider was actually attempted, not just that something failed", () => {
+    const errorBlock = SRC.slice(SRC.indexOf("} catch (e) {"), SRC.indexOf("// Phase 36: model is recorded"));
+    expect(errorBlock).toMatch(/routingPreview\.provider/);
+    expect(errorBlock.match(/model: attemptedModel/g)?.length).toBe(3); // ProviderHttpError, ProviderCapabilityError, network/misconfig — all three failure branches
+  });
+  it("a successful response still logs which provider actually served it and why, from the SAME result callAIProvider returned (never a second, possibly-stale lookup)", () => {
+    expect(SRC).toMatch(/result\.provider/);
+    expect(SRC).toMatch(/result\.routingReason/);
   });
 });
 
