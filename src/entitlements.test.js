@@ -92,10 +92,21 @@ describe("subscriptionIsActive", () => {
     expect(subscriptionIsActive({ status: "active", current_period_end: almost })).toBe(true);
   });
 
-  it("missing / unparseable period end falls back to the status", () => {
-    expect(subscriptionIsActive({ status: "active", current_period_end: null })).toBe(true);
-    expect(subscriptionIsActive({ status: "active", current_period_end: "not-a-date" })).toBe(true);
+  it("FAILS CLOSED on a missing / null / unparseable period end — even for active/trialing (R1)", () => {
+    for (const status of ["active", "trialing"]) {
+      expect(subscriptionIsActive({ status, current_period_end: null })).toBe(false);
+      expect(subscriptionIsActive({ status, current_period_end: undefined })).toBe(false);
+      expect(subscriptionIsActive({ status })).toBe(false); // key absent
+      expect(subscriptionIsActive({ status, current_period_end: "" })).toBe(false);
+      expect(subscriptionIsActive({ status, current_period_end: "not-a-date" })).toBe(false);
+      expect(subscriptionIsActive({ status, current_period_end: 0 })).toBe(false);
+    }
     expect(subscriptionIsActive({ status: "canceled", current_period_end: null })).toBe(false);
+  });
+
+  it("still active for active/trialing WITH a concrete, still-valid period end (unchanged)", () => {
+    expect(subscriptionIsActive({ status: "active", current_period_end: future })).toBe(true);
+    expect(subscriptionIsActive({ status: "trialing", current_period_end: future })).toBe(true);
   });
 
   it("null / non-object input is safe", () => {

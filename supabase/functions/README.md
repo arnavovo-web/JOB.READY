@@ -241,16 +241,32 @@ Two new functions + an added check in `ai-generate`.
 | Slug | Deploy setting | Purpose |
 |---|---|---|
 | `create-checkout` | `verify_jwt = true` (default) | Authenticated. Builds a Stripe Checkout Session for Last-Minute Saver / Student Pack / Job Search Pass (inline `price_data` — £2.99 / £4.99 / £7.99·mo, **no Stripe dashboard Product/Price setup needed**) and returns its hosted-checkout URL. Grants nothing. |
-| `stripe-webhook` | **`--no-verify-jwt`** | Stripe cannot send a Supabase JWT. Authenticity = Stripe signature verification against `STRIPE_WEBHOOK_SECRET`. Writes with the **service-role key** (RLS bypassed). Idempotent: one-time grants are claimed once via `payments.provider_checkout_id` (UNIQUE); subscriptions upsert on `stripe_subscription_id`. Handles `checkout.session.completed` + `customer.subscription.created|updated|deleted`. |
+| `stripe-webhook` | **`--no-verify-jwt`** | Stripe cannot send a Supabase JWT. Authenticity = Stripe signature verification against `STRIPE_WEBHOOK_SECRET` (an unsigned/wrong request is `400`ed before any write). Writes with the **service-role key** (RLS bypassed). One-time purchases grant credits via the `public.apply_purchase_credits` RPC — see below. Subscription events upsert `public.subscriptions` on `stripe_subscription_id`. Handles `checkout.session.completed` + `customer.subscription.created|updated|deleted`. |
+
+**One-time credit grants are atomic + idempotent.** `stripe-webhook` calls
+`public.apply_purchase_credits(p_checkout_id, p_user_id, p_product, p_credits, …)`
+(SECURITY DEFINER, `search_path=public`, **granted to `service_role` only** — an
+end-user JWT cannot call it). In **one transaction** it (1) `INSERT INTO
+public.payments … ON CONFLICT (provider_checkout_id) DO NOTHING` (the UNIQUE
+idempotency claim), (2) if `row_count = 0` returns `{ already_processed: true }`
+and stops, (3) otherwise `INSERT INTO public.user_entitlements … ON CONFLICT
+(user_id) DO UPDATE SET unlock_credits = unlock_credits + p_credits` — a single
+atomic relative increment. Result: a Stripe redelivery is a no-op; two different
+concurrent purchases each add their credits (no lost update); and a
+mid-transaction failure rolls back both writes, so a payment can never be marked
+processed without its credits (a `500` just makes Stripe retry safely).
 
 `ai-generate` (Phase 40 addition): for application-scoped request types
 (`interview_*`, `classroom_lesson`, `development_module`,
 `assessment_centre_scenario`) that carry an `applicationId`, it now calls the
 `has_application_access` SECURITY DEFINER RPC and returns **HTTP 402**
 `{ error, code: "application_locked" }` if the caller has neither an
-`application_unlocks` row for that application nor an active subscription. Not
-gated: `invitation_extraction` (pre-application) and stand-alone
-`assessment_centre`.
+`application_unlocks` row for that application nor an active subscription
+(`has_active_subscription` — active/trialing **and** a concrete, still-valid
+`current_period_end`). Not gated: `invitation_extraction` (pre-application) and
+stand-alone `assessment_centre`. The Phase 36/37 provider abstraction, hybrid
+routing, rate limiting and usage logging are unchanged — the check is a
+pre-flight that 402s or falls through.
 
 ### Secrets (set once, Supabase → Project Settings → Edge Functions → Secrets)
 | Name | Used by | Notes |

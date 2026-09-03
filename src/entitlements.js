@@ -135,13 +135,18 @@ export const ACTIVE_SUBSCRIPTION_STATUSES = ["active", "trialing"];
 // seconds behind the client clock still reads as active.
 export const SUBSCRIPTION_GRACE_MS = 24 * 60 * 60 * 1000; // 24h
 
+// FAIL CLOSED — kept exactly in step with public.has_active_subscription() in
+// the migration. A subscription grants access only when its status is
+// active/trialing AND it has a concrete, still-valid current_period_end (within
+// the grace window). A missing / null / unparseable period end is treated as
+// NOT active — we never grant unbounded access off a row that has no end date.
 export function subscriptionIsActive(row, now = Date.now()) {
   if (!row || typeof row !== "object") return false;
   if (!ACTIVE_SUBSCRIPTION_STATUSES.includes(row.status)) return false;
   const rawEnd = row.current_period_end;
-  if (!rawEnd) return true;
+  if (!rawEnd) return false;
   const end = new Date(rawEnd).getTime();
-  if (Number.isNaN(end)) return true;
+  if (Number.isNaN(end)) return false;
   return end + SUBSCRIPTION_GRACE_MS > now;
 }
 

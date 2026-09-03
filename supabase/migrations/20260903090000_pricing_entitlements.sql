@@ -33,8 +33,14 @@
 --   * The only ways a row is written:
 --       - consume_free_unlock() / consume_unlock_credit(): SECURITY DEFINER,
 --         validate application ownership + entitlement invariants atomically.
---       - the Stripe webhook Edge Function, using the service-role key, after
---         verifying the Stripe signature.
+--         A PERMANENT application_unlocks row is created only for a genuine
+--         free/credit spend — an active subscriber calling these RPCs directly
+--         gets a non-persisted success, never a permanent unlock (subscription
+--         access is temporary and checked live by has_active_subscription()).
+--       - apply_purchase_credits() (Stripe webhook, service role): claims the
+--         checkout session + grants credits in one atomic transaction.
+--   * has_active_subscription() FAILS CLOSED: active/trialing AND a concrete,
+--     still-valid current_period_end (a NULL period end is never "active").
 --   * has_application_access() is SECURITY DEFINER and is what the ai-generate
 --     Edge Function calls to refuse application-scoped AI work for a locked
 --     application — so access cannot be gained by calling the AI API directly.
@@ -151,6 +157,11 @@ end;
 $$;
 
 -- Internal helper: is this user's Stripe subscription currently granting access?
+-- FAIL CLOSED: a subscription only grants access when its status is active/
+-- trialing AND it has a concrete current_period_end that is still within the
+-- one-day grace window. A NULL/absent period end is treated as NOT active
+-- (never grant unbounded access off a row with no end date). Kept exactly in
+-- step with subscriptionIsActive() in src/entitlements.js.
 create or replace function public.has_active_subscription(p_user_id uuid)
 returns boolean
 language sql
@@ -162,7 +173,8 @@ as $$
     select 1 from public.subscriptions s
     where s.user_id = p_user_id
       and s.status in ('active', 'trialing')
-      and (s.current_period_end is null or s.current_period_end + interval '1 day' > now())
+      and s.current_period_end is not null
+      and s.current_period_end + interval '1 day' > now()
   );
 $$;
 
@@ -225,13 +237,14 @@ begin
     return jsonb_build_object('ok', true, 'already', true, 'source', 'existing');
   end if;
 
-  -- An active subscription already grants access — record the unlock without
-  -- spending the free one.
+  -- An active subscription already grants access for as long as it stays active
+  -- (has_application_access checks has_active_subscription directly). Do NOT
+  -- create a permanent application_unlocks row here: that would let a subscriber
+  -- calling this RPC directly convert temporary subscription access into a
+  -- permanent unlock that survives cancellation. Return success without spending
+  -- the free unlock and without persisting anything.
   if public.has_active_subscription(uid) then
-    insert into public.application_unlocks (user_id, application_id, source)
-    values (uid, p_application_id, 'subscription')
-    on conflict (user_id, application_id) do nothing;
-    return jsonb_build_object('ok', true, 'source', 'subscription');
+    return jsonb_build_object('ok', true, 'source', 'subscription', 'persisted', false);
   end if;
 
   insert into public.user_entitlements (user_id) values (uid) on conflict (user_id) do nothing;
@@ -281,11 +294,13 @@ begin
     return jsonb_build_object('ok', true, 'already', true, 'source', 'existing');
   end if;
 
+  -- Active subscription: access is already granted (temporarily) by
+  -- has_active_subscription inside has_application_access. Do NOT persist an
+  -- application_unlocks row and do NOT decrement a credit — otherwise a
+  -- subscriber calling this RPC directly could turn temporary subscription
+  -- access into a permanent unlock surviving cancellation.
   if public.has_active_subscription(uid) then
-    insert into public.application_unlocks (user_id, application_id, source)
-    values (uid, p_application_id, 'subscription')
-    on conflict (user_id, application_id) do nothing;
-    return jsonb_build_object('ok', true, 'source', 'subscription');
+    return jsonb_build_object('ok', true, 'source', 'subscription', 'persisted', false);
   end if;
 
   insert into public.user_entitlements (user_id) values (uid) on conflict (user_id) do nothing;

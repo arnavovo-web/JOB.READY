@@ -1,0 +1,20 @@
+# Normalise line endings: every text file is stored and checked out with LF,
+# regardless of a contributor's core.autocrlf. Without this, a Windows checkout
+# produces CRLF working-tree files and the repo's source-inspection tests
+# (which slice App.jsx on "\n...\n" markers) fail at load. The committed blobs
+# are already LF, so this adds no diff — it just makes checkouts deterministic.
+* text=auto eol=lf
+
+# Common binary asset types — never touch these if any are added later.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.webp binary
+*.pdf  binary
+*.woff  binary
+*.woff2 binary
+*.ttf  binary
+*.otf  binary
+*.zip  binary
