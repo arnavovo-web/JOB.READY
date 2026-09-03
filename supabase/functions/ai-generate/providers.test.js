@@ -168,11 +168,12 @@ describe("callDeepSeekProvider", () => {
     const fetchImpl = vi.fn().mockRejectedValue(new Error("timeout"));
     await expect(callDeepSeekProvider("k", req, fetchImpl)).rejects.toThrow("timeout");
   });
-  it("never sends response_format — deliberately omitted (see providers.ts header note); asserting it stays that way is itself the regression guard", async () => {
+  it("sends response_format json_object + thinking disabled — the benchmark-verified config that stops deepseek-v4-flash burning its max_tokens budget on default high-effort reasoning (see providers.ts note)", async () => {
     const fetchImpl = fakeFetch(200, { choices: [{ message: { content: "{}" }, finish_reason: "stop" }] });
     await callDeepSeekProvider("k", req, fetchImpl);
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
-    expect(body.response_format).toBeUndefined();
+    expect(body.response_format).toEqual({ type: "json_object" });
+    expect(body.thinking).toEqual({ type: "disabled" });
   });
 });
 

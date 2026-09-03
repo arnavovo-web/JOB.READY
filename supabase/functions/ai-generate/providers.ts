@@ -48,8 +48,9 @@ const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 // reached when AI_PROVIDER routing selects "deepseek" for a request — while
 // AI_PROVIDER is unset/"anthropic" (today's production), this path is dormant.
 // JSON mode (`response_format: { type: "json_object" }`) is officially
-// supported on the V4 models but is deliberately still NOT enabled here — see
-// the note inside callDeepSeekProvider.
+// supported on the V4 models and IS now enabled below, together with
+// `thinking: { type: "disabled" }` — see the evidence note inside
+// callDeepSeekProvider for why both were turned on.
 export const DEEPSEEK_MODEL = "deepseek-v4-flash";
 const DEEPSEEK_URL = "https://api.deepseek.com/chat/completions";
 
@@ -177,14 +178,25 @@ export async function callDeepSeekProvider(
       { role: "system", content: req.system },
       { role: "user", content: req.userText },
     ],
-    // NOTE: deliberately NOT setting response_format: {type: "json_object"}.
-    // Several OpenAI-compatible providers reject that flag with a 400 unless
-    // the literal word "json" appears in the prompt text, and this could not
-    // be confirmed for DeepSeek specifically (see header note). Every
-    // existing system prompt already asks for strict JSON, and callClaude()'s
-    // existing fence-stripping + regex-fallback extraction already tolerates
-    // a non-strict-JSON response — so omitting this avoids a new, unverified
-    // failure mode without weakening JSON extraction.
+    // A live benchmark (`npm run benchmark:deepseek`) plus a controlled
+    // experiment (RUN_DEEPSEEK_JSON_EXPERIMENT=1 in
+    // src/deepseekBenchmarkLive.test.js) showed the previous "send nothing
+    // extra" config failing structural validation on most tasks:
+    //  - deepseek-v4-flash runs THINKING MODE ON BY DEFAULT at reasoning_effort
+    //    "high", and those chain-of-thought tokens count against this same
+    //    max_tokens budget — so tighter-budget requests were exhausted
+    //    mid-reasoning (finish_reason "length") and never emitted the closing
+    //    JSON. `thinking: { type: "disabled" }` removes that hidden consumer.
+    //  - `response_format: { type: "json_object" }` constrains the output to a
+    //    single bare JSON object. Both V4 models support it; its one documented
+    //    requirement — the literal word "json" in the prompt — is already met
+    //    by every DeepSeek-routed system prompt in this app (all ask for
+    //    "strict JSON only" with an explicit shape).
+    // Response normalization and error handling below are unchanged: the
+    // model's answer still arrives in choices[0].message.content, and
+    // callClaude()'s fence-stripping + regex-fallback extraction still applies.
+    response_format: { type: "json_object" },
+    thinking: { type: "disabled" },
   };
 
   const res = await fetchImpl(DEEPSEEK_URL, {

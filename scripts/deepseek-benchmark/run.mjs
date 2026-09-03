@@ -9,6 +9,15 @@
  * loaded (vitest is this repo's only JSX-aware runtime) without adding a
  * separate loader/build step.
  *
+ * Execution flags (not a change to any task/prompt/routing/validator):
+ *   --no-file-parallelism + --poolOptions.forks.singleFork
+ *       pin the whole run to ONE worker process, so each task's stdout
+ *       block is printed contiguously instead of interleaving.
+ *   --testTimeout=90000
+ *       live provider calls take 20-30s+ each — far past vitest's 5s
+ *       default. (The test file also sets this via vi.setConfig; passing
+ *       it here too keeps a bare `npx vitest run ...` honest.)
+ *
  * Requires ANTHROPIC_API_KEY (and, to see a real comparison rather than
  * Claude-only output, DEEPSEEK_API_KEY) already set in the environment —
  * this script does not read .env files itself. Neither key is read, echoed,
@@ -19,7 +28,7 @@ import { spawn } from "node:child_process";
 let child;
 try {
   child = spawn(
-    "npx vitest run src/deepseekBenchmarkLive.test.js",
+    "npx vitest run src/deepseekBenchmarkLive.test.js --no-file-parallelism --poolOptions.forks.singleFork --testTimeout=90000",
     { stdio: "inherit", shell: true, env: { ...process.env, RUN_DEEPSEEK_BENCHMARK: "1" } }
   );
 } catch (err) {
