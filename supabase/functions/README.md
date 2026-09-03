@@ -231,3 +231,52 @@ If `ai-generate` is deleted or the project is recreated:
    "Emergency rollback" above).
 3. `supabase functions deploy ai-generate` from this repo.
 The product is fully restored — no other server-side artifact exists.
+
+---
+
+## Phase 40 — pricing / payments / paywall (NOT YET DEPLOYED)
+
+Two new functions + an added check in `ai-generate`.
+
+| Slug | Deploy setting | Purpose |
+|---|---|---|
+| `create-checkout` | `verify_jwt = true` (default) | Authenticated. Builds a Stripe Checkout Session for Last-Minute Saver / Student Pack / Job Search Pass (inline `price_data` — £2.99 / £4.99 / £7.99·mo, **no Stripe dashboard Product/Price setup needed**) and returns its hosted-checkout URL. Grants nothing. |
+| `stripe-webhook` | **`--no-verify-jwt`** | Stripe cannot send a Supabase JWT. Authenticity = Stripe signature verification against `STRIPE_WEBHOOK_SECRET`. Writes with the **service-role key** (RLS bypassed). Idempotent: one-time grants are claimed once via `payments.provider_checkout_id` (UNIQUE); subscriptions upsert on `stripe_subscription_id`. Handles `checkout.session.completed` + `customer.subscription.created|updated|deleted`. |
+
+`ai-generate` (Phase 40 addition): for application-scoped request types
+(`interview_*`, `classroom_lesson`, `development_module`,
+`assessment_centre_scenario`) that carry an `applicationId`, it now calls the
+`has_application_access` SECURITY DEFINER RPC and returns **HTTP 402**
+`{ error, code: "application_locked" }` if the caller has neither an
+`application_unlocks` row for that application nor an active subscription. Not
+gated: `invitation_extraction` (pre-application) and stand-alone
+`assessment_centre`.
+
+### Secrets (set once, Supabase → Project Settings → Edge Functions → Secrets)
+| Name | Used by | Notes |
+|---|---|---|
+| `STRIPE_SECRET_KEY` | `create-checkout`, `stripe-webhook` | Stripe secret key (`sk_live_…` / `sk_test_…`). Never in the repo or the browser bundle. |
+| `STRIPE_WEBHOOK_SECRET` | `stripe-webhook` | The signing secret Stripe shows when you create the webhook endpoint (`whsec_…`). |
+| `PUBLIC_SITE_URL` | `create-checkout` (optional) | Canonical site origin for the Checkout return URL, e.g. `https://job-ready.vercel.app`. If unset, the request's Origin is used when it is `localhost` or `*.vercel.app`. |
+| `SUPABASE_SERVICE_ROLE_KEY` | `stripe-webhook` | **Auto-injected by Supabase.** Do not set manually. |
+
+### Deploy
+
+```bash
+supabase secrets set STRIPE_SECRET_KEY=sk_live_...      --project-ref dcltfxnzzfqjtctixlxe
+supabase secrets set STRIPE_WEBHOOK_SECRET=whsec_...    --project-ref dcltfxnzzfqjtctixlxe
+# optional: supabase secrets set PUBLIC_SITE_URL=https://job-ready.vercel.app --project-ref dcltfxnzzfqjtctixlxe
+
+supabase functions deploy create-checkout                --project-ref dcltfxnzzfqjtctixlxe   # verify_jwt defaults true — keep it
+supabase functions deploy stripe-webhook --no-verify-jwt --project-ref dcltfxnzzfqjtctixlxe   # Stripe can't send a Supabase JWT
+supabase functions deploy ai-generate                    --project-ref dcltfxnzzfqjtctixlxe   # redeploy for the Phase 40 gate (this also ships the pending Phase 36/37 provider work — review that first)
+```
+
+Then in Stripe Dashboard → Developers → Webhooks add an endpoint at
+`https://dcltfxnzzfqjtctixlxe.functions.supabase.co/stripe-webhook` subscribed
+to `checkout.session.completed`, `customer.subscription.created`,
+`customer.subscription.updated`, `customer.subscription.deleted`; copy its
+signing secret into `STRIPE_WEBHOOK_SECRET`.
+
+Requires `supabase/migrations/20260903090000_pricing_entitlements.sql` applied
+first (it creates `has_application_access` + the four entitlement tables).

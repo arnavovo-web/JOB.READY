@@ -79,6 +79,44 @@ Deno.serve(async (req: Request) => {
   // produces) and were getting close to the old ceiling on longer interviews.
   const clampedMaxTokens = Math.max(200, Math.min(8000, Number(maxTokens) || 2000));
 
+  // ---- Phase 40: entitlement gate for application-scoped preparation resources ----
+  // The four plans (Free / Last-Minute Saver / Student Pack / Job Search Pass)
+  // grant access per application. The browser already spends the unlock before
+  // it calls this function, but a preparation resource that incurs real AI cost
+  // must not be reachable for a locked application by calling the API directly.
+  // `has_application_access` (SECURITY DEFINER) checks, for the calling user:
+  // an application_unlocks row OR an active subscription. Not gated:
+  // invitation_extraction (pre-application) and assessment_centre (no app).
+  const APPLICATION_SCOPED_REQUEST_TYPES = new Set([
+    "interview_profile",
+    "interview_question_batch",
+    "interview_turn_generate",
+    "interview_turn_evaluate",
+    "interview_batch_evaluation",
+    "interview_report",
+    "classroom_lesson",
+    "development_module",
+    "assessment_centre_scenario",
+  ]);
+  if (typeof requestType === "string" && APPLICATION_SCOPED_REQUEST_TYPES.has(requestType) && applicationId) {
+    const { data: hasAccess, error: accessErr } = await supabase.rpc("has_application_access", {
+      p_application_id: applicationId,
+    });
+    if (accessErr) {
+      console.error("has_application_access rpc failed:", accessErr.message);
+      return json({ error: "Couldn't verify your access to this application. Please try again." }, 503);
+    }
+    if (!hasAccess) {
+      return json(
+        {
+          error: "This application isn't unlocked yet. Open it in JOB.READY to unlock it and continue.",
+          code: "application_locked",
+        },
+        402,
+      );
+    }
+  }
+
   // Phase 37 — hybrid routing. The ACTUAL decision is made once, inside callAIProvider
   // (providers.ts) below — this file never branches on requestType anywhere. This second call
   // to the SAME pure, deterministic, side-effect-free function is purely a logging preview:

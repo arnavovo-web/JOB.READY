@@ -56,6 +56,33 @@ JOB.READY takes a user from an interview opportunity to measurable improvement:
 
 ## Recently done
 
+- **Phase 40** — **pricing, payments & paywall**. A **Pricing** page (public nav)
+  showing the four plans: Free (£0, 1 unlock — **explicit confirm, never
+  auto-spent**), Last-Minute Saver (£2.99, +1 credit), Student Pack (£4.99, +5
+  credits), Job Search Pass (£7.99/mo, unlimited). Applications stay **always
+  creatable/saveable** — access is checked only when a *preparation resource* for
+  an application is opened. First access with the free unlock available →
+  `FreeUnlockDialog` ("You're about to unlock your application at {Company}" /
+  *1 free application unlock remaining* / **Not now** · **Unlock & start
+  preparing**); the unlock is spent only on confirm. Otherwise a paywall offers a
+  credit spend + the plans.
+  - New migration `20260903090000_pricing_entitlements.sql` (timestamped after
+    the reference-code migration): `user_entitlements`, `application_unlocks`,
+    `payments`, `subscriptions` (RLS = SELECT-own only, **no write policy**),
+    `SECURITY DEFINER` RPCs `consume_free_unlock` / `consume_unlock_credit` /
+    `has_application_access`, `handle_new_user` seed, and a grandfather clause so
+    every pre-existing application stays unlocked.
+  - New Edge Functions `create-checkout` (authed; Stripe Checkout Session, inline
+    prices) and `stripe-webhook` (`--no-verify-jwt`; Stripe-signature verified;
+    service-role; idempotent grants). `ai-generate` also refuses application-scoped
+    AI for a locked application (HTTP 402 `application_locked`).
+  - New pure module `src/entitlements.js` (+ `entitlements.test.js` 35 tests,
+    `phase40PricingPaywall.test.js` 42 tests). No new npm dependency, no new
+    `callAI`/`callClaude` request type.
+  - **Pending manual steps:** apply the migration, set `STRIPE_SECRET_KEY` /
+    `STRIPE_WEBHOOK_SECRET`, deploy the three Edge Functions, register the Stripe
+    webhook endpoint. See `docs/PRICING.md` and `supabase/functions/README.md`.
+
 - **Phase 16B** — **core performance & loading optimisation** (no feature
   change, no new AI call — still 17 `callClaude` sites, same 11 request types):
   - **Reopening an existing Development Module is instant** — served straight

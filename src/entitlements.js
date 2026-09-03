@@ -1,0 +1,256 @@
+/* ================================================================== *
+ * PHASE 40 — PRICING, PAYMENTS & PAYWALL: PURE ENTITLEMENT LOGIC
+ * ------------------------------------------------------------------
+ * A pure, deterministic module (same shape as questionMix.js /
+ * applicationSchedule.js — no AI call, no web search, no database access,
+ * never throws). It is the single source of truth for:
+ *
+ *   - the four published plans (Free / Last-Minute Saver / Student Pack /
+ *     Job Search Pass) and their prices, shared by the pricing page, the
+ *     paywall and the Stripe Checkout call;
+ *   - deciding, from a user's entitlement snapshot, whether a specific
+ *     application may be prepared for right now, and if not, how it could
+ *     be unlocked (free unlock / a purchased credit / a subscription);
+ *   - the "N application unlocks remaining" copy and the free-unlock
+ *     confirmation-modal copy.
+ *
+ * FREE-UNLOCK RULE (Phase 40): the one free unlock is NEVER consumed
+ * silently. `evaluateApplicationAccess` only reports that it is *available*
+ * (status ACCESS.FREE); App.jsx then shows an explicit confirmation modal
+ * ("You're about to unlock your application at <Company>"), and the unlock
+ * is spent only after the user clicks "Unlock & start preparing".
+ *
+ * SECURITY NOTE: nothing here is an enforcement boundary. Enforcement is
+ * server-side — Postgres RLS + SECURITY DEFINER RPCs
+ * (consume_free_unlock / consume_unlock_credit / has_application_access)
+ * and the Stripe webhook Edge Function. This module only drives UI and
+ * picks which server call to make; a tampered entitlement snapshot in the
+ * browser cannot grant real access because every paid capability is
+ * re-checked in the database and in the ai-generate Edge Function.
+ * ================================================================== */
+
+export const CURRENCY = "gbp";
+
+// Prices in the smallest currency unit (pence). Mirrored in
+// supabase/functions/create-checkout/index.ts and the Stripe webhook —
+// kept in sync by src/phase40PricingPaywall.test.js.
+export const PRICING_PLANS = [
+  {
+    id: "free",
+    kind: "free",
+    name: "Free",
+    emoji: "\u{1F193}", // 🆓
+    amount: 0,
+    priceLabel: "£0",
+    cadence: null,
+    unlocks: 1,
+    headline: "1 application unlock",
+    summary:
+      "Every new account can unlock one application for free. Once unlocked, you get unlimited access to every JOB.READY preparation tool for that application.",
+    features: [
+      "Unlock 1 application",
+      "Unlimited mock interviews, Classroom, Assessment Centre and reports for that application",
+      "You confirm before it's used — nothing is spent automatically",
+    ],
+  },
+  {
+    id: "last_minute_saver",
+    kind: "one_time",
+    name: "Last-Minute Saver",
+    emoji: "⚡",
+    amount: 299,
+    priceLabel: "£2.99",
+    cadence: "one-off",
+    unlocks: 1,
+    headline: "1 application unlock",
+    summary:
+      "A one-time payment that adds a single application unlock credit to your account. Spend it whenever you choose.",
+    features: [
+      "Adds 1 unlock credit",
+      "One-time payment — no subscription",
+      "Unlimited preparation for the application you spend it on",
+    ],
+  },
+  {
+    id: "student_pack",
+    kind: "one_time",
+    name: "Student Pack",
+    emoji: "\u{1F393}", // 🎓
+    amount: 499,
+    priceLabel: "£4.99",
+    cadence: "one-off",
+    unlocks: 5,
+    headline: "5 application unlocks",
+    summary:
+      "A one-time payment that adds five application unlock credits. Spend them one at a time — you don't have to choose all five applications now.",
+    features: [
+      "Adds 5 unlock credits",
+      "One-time payment — no subscription",
+      "Spend credits one application at a time",
+    ],
+  },
+  {
+    id: "job_search_pass",
+    kind: "subscription",
+    name: "Job Search Pass",
+    emoji: "\u{1F525}", // 🔥
+    amount: 799,
+    priceLabel: "£7.99",
+    cadence: "per month",
+    unlocks: Infinity,
+    headline: "Unlimited applications",
+    summary:
+      "While the subscription is active you have unlimited access to preparation resources for any number of applications.",
+    features: [
+      "Unlimited application unlocks while active",
+      "Unlimited mock interviews, Classroom, Assessment Centre and reports",
+      "Cancel anytime — access lasts until the end of the paid period",
+    ],
+  },
+];
+
+export function planById(id) {
+  return PRICING_PLANS.find((p) => p.id === id) || null;
+}
+
+// The three plans a signed-in user can actually buy (Free is not a purchase).
+export const PURCHASABLE_PRODUCT_IDS = PRICING_PLANS.filter((p) => p.kind !== "free").map((p) => p.id);
+
+export function isPurchasableProduct(id) {
+  return PURCHASABLE_PRODUCT_IDS.includes(id);
+}
+
+// How many unlock credits a completed one-time purchase grants. Mirrored
+// server-side in the Stripe webhook (guarded by the phase test).
+export const CREDITS_PER_PRODUCT = {
+  last_minute_saver: 1,
+  student_pack: 5,
+};
+
+/* ------------------------------ subscriptions ------------------------------ */
+
+export const ACTIVE_SUBSCRIPTION_STATUSES = ["active", "trialing"];
+
+// Small grace window so a just-renewed subscription whose webhook is a few
+// seconds behind the client clock still reads as active.
+export const SUBSCRIPTION_GRACE_MS = 24 * 60 * 60 * 1000; // 24h
+
+export function subscriptionIsActive(row, now = Date.now()) {
+  if (!row || typeof row !== "object") return false;
+  if (!ACTIVE_SUBSCRIPTION_STATUSES.includes(row.status)) return false;
+  const rawEnd = row.current_period_end;
+  if (!rawEnd) return true;
+  const end = new Date(rawEnd).getTime();
+  if (Number.isNaN(end)) return true;
+  return end + SUBSCRIPTION_GRACE_MS > now;
+}
+
+/* --------------------------- entitlement snapshot -------------------------- */
+
+// Canonical client-side shape. Everything downstream (paywall, pricing page,
+// dashboard copy, gating) reads this — never the raw DB rows.
+export function normalizeEntitlements(raw) {
+  const r = raw && typeof raw === "object" ? raw : {};
+  const ids = Array.isArray(r.unlockedApplicationIds) ? r.unlockedApplicationIds : [];
+  return {
+    freeUnlockUsed: !!r.freeUnlockUsed,
+    unlockCredits: Math.max(0, Math.floor(Number(r.unlockCredits) || 0)),
+    hasActiveSubscription: !!r.hasActiveSubscription,
+    subscriptionStatus: typeof r.subscriptionStatus === "string" ? r.subscriptionStatus : null,
+    subscriptionCurrentPeriodEnd: r.subscriptionCurrentPeriodEnd || null,
+    unlockedApplicationIds: [...new Set(ids.filter((x) => typeof x === "string" && x))],
+  };
+}
+
+// Build the canonical snapshot from the raw Supabase rows the client loads
+// (public.user_entitlements + public.application_unlocks + public.subscriptions).
+export function entitlementsFromRows({ entitlementRow, unlockRows, subscriptionRows }, now = Date.now()) {
+  const unlocks = Array.isArray(unlockRows) ? unlockRows : [];
+  const subs = Array.isArray(subscriptionRows) ? subscriptionRows : [];
+  const activeSub = subs.find((s) => subscriptionIsActive(s, now)) || null;
+  return normalizeEntitlements({
+    freeUnlockUsed: !!entitlementRow?.free_unlock_used,
+    unlockCredits: entitlementRow?.unlock_credits,
+    hasActiveSubscription: !!activeSub,
+    subscriptionStatus: activeSub?.status || subs[0]?.status || null,
+    subscriptionCurrentPeriodEnd: activeSub?.current_period_end || null,
+    unlockedApplicationIds: unlocks.map((u) => u.application_id),
+  });
+}
+
+/* ----------------------------- access decision ---------------------------- */
+
+export const ACCESS = {
+  UNLOCKED: "unlocked", // no action needed
+  FREE: "unlockable_free", // free unlock available — show the confirmation modal
+  CREDIT: "unlockable_credit", // user has >=1 purchased credit to spend
+  LOCKED: "locked", // nothing available — show the pricing options
+};
+
+export function evaluateApplicationAccess({ applicationId, entitlements }) {
+  const e = normalizeEntitlements(entitlements);
+  const base = { creditsRemaining: e.unlockCredits, hasSubscription: e.hasActiveSubscription };
+  if (!applicationId) return { status: ACCESS.LOCKED, reason: "no_application", ...base };
+  if (e.hasActiveSubscription) return { status: ACCESS.UNLOCKED, reason: "subscription", ...base };
+  if (e.unlockedApplicationIds.includes(applicationId))
+    return { status: ACCESS.UNLOCKED, reason: "already_unlocked", ...base };
+  if (!e.freeUnlockUsed) return { status: ACCESS.FREE, reason: "free_available", ...base };
+  if (e.unlockCredits > 0) return { status: ACCESS.CREDIT, reason: "credit_available", ...base };
+  return { status: ACCESS.LOCKED, reason: "no_entitlement", ...base };
+}
+
+export function applicationIsUnlocked({ applicationId, entitlements }) {
+  return evaluateApplicationAccess({ applicationId, entitlements }).status === ACCESS.UNLOCKED;
+}
+
+// Every not-UNLOCKED status now needs an explicit user decision in a modal
+// (FREE -> confirmation modal; CREDIT/LOCKED -> paywall).
+export function accessNeedsPrompt(status) {
+  return status === ACCESS.FREE || status === ACCESS.CREDIT || status === ACCESS.LOCKED;
+}
+
+/* ------------------------------- display copy ----------------------------- */
+
+export function remainingUnlocksSummary(entitlements) {
+  const e = normalizeEntitlements(entitlements);
+  if (e.hasActiveSubscription) {
+    return { unlimited: true, count: null, text: "Unlimited applications", detail: "Job Search Pass active" };
+  }
+  const freeLeft = e.freeUnlockUsed ? 0 : 1;
+  const count = freeLeft + e.unlockCredits;
+  const text = `${count} application unlock${count === 1 ? "" : "s"} remaining`;
+  let detail;
+  if (count === 0) detail = "Buy an unlock to prepare for another application";
+  else if (freeLeft && !e.unlockCredits) detail = "Your free unlock is still available";
+  else if (freeLeft && e.unlockCredits) detail = `Free unlock + ${e.unlockCredits} purchased`;
+  else detail = `${e.unlockCredits} purchased credit${e.unlockCredits === 1 ? "" : "s"}`;
+  return { unlimited: false, count, text, detail };
+}
+
+// Copy for the free-unlock confirmation modal. `company` is optional — when
+// present the title names the application ("...your application at Goldman Sachs").
+export function freeUnlockPromptCopy(company) {
+  const clean = typeof company === "string" ? company.trim() : "";
+  return {
+    title: clean ? `You're about to unlock your application at ${clean}` : "You're about to unlock this application",
+    body: "Once unlocked, you'll have unlimited access to all JOB.READY preparation tools for this application.",
+    note: "1 free application unlock remaining",
+    cancelLabel: "Not now",
+    confirmLabel: "Unlock & start preparing",
+  };
+}
+
+// Headline + body for the locked-application paywall (CREDIT or LOCKED).
+export function paywallCopy(access) {
+  const status = typeof access === "string" ? access : access?.status;
+  if (status === ACCESS.CREDIT) {
+    return {
+      title: "Continue your preparation",
+      body: "Unlock this application to get unlimited access to all JOB.READY preparation resources. You can spend one of your unlock credits, or choose another option below.",
+    };
+  }
+  return {
+    title: "Continue your preparation",
+    body: "Unlock this application to get unlimited access to all JOB.READY preparation resources.",
+  };
+}
