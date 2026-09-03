@@ -5283,6 +5283,14 @@ function App() {
   // profile for a later phase to build on; no partner-crediting, checking, or
   // reward logic exists yet.
   const [referenceCodeInput, setReferenceCodeInput] = useState("");
+  // Optional education info, collected at sign-up. "" = not answered,
+  // "university" = attends/attended, "not_university" = explicitly does not.
+  // Stored once on the profile (attends_university / university / degree) purely
+  // so anonymised "which universities do our users attend" stats are possible
+  // later — never required, never gates anything. See handleSignUp + onAuthed.
+  const [educationStatus, setEducationStatus] = useState("");
+  const [universityInput, setUniversityInput] = useState("");
+  const [degreeInput, setDegreeInput] = useState("");
   const [authNotice, setAuthNotice] = useState(""); // e.g. "check your email to confirm"
   const [authBusy, setAuthBusy] = useState(false); // Phase 23: in-flight auth request — disables submit buttons, blocks duplicate submits
   const [resetEmailSent, setResetEmailSent] = useState(false); // Phase 23: forgot-password success state
@@ -5773,11 +5781,24 @@ function App() {
       // "set at signup, read later" shape as first/last name.
       const metaFirst = authUser.user_metadata?.first_name, metaLast = authUser.user_metadata?.last_name;
       const metaReferenceCode = authUser.user_metadata?.reference_code;
-      if ((!p?.first_name || !p?.last_name || (!p?.reference_code && metaReferenceCode)) && (metaFirst || metaLast || metaReferenceCode)) {
+      // Optional education info — same write-once backfill as reference_code:
+      // only written when the profile doesn't have it yet, never overwritten.
+      const metaAttendsUniversity = authUser.user_metadata?.attends_university;
+      const metaUniversity = authUser.user_metadata?.university;
+      const metaDegree = authUser.user_metadata?.degree;
+      const educationBackfill = {
+        ...(p?.attends_university == null && metaAttendsUniversity != null ? { attends_university: metaAttendsUniversity } : {}),
+        ...(!p?.university && metaUniversity ? { university: metaUniversity } : {}),
+        ...(!p?.degree && metaDegree ? { degree: metaDegree } : {}),
+      };
+      const needsNameOrRef = !p?.first_name || !p?.last_name || (!p?.reference_code && metaReferenceCode);
+      const hasSignupMeta = metaFirst || metaLast || metaReferenceCode || metaAttendsUniversity != null || metaUniversity || metaDegree;
+      if ((needsNameOrRef || Object.keys(educationBackfill).length > 0) && hasSignupMeta) {
         const supabase = await getSupabase();
         const { data: updated } = await supabase.from("profiles").update({
           first_name: metaFirst || p?.first_name || "", last_name: metaLast || p?.last_name || "",
           ...(!p?.reference_code && metaReferenceCode ? { reference_code: metaReferenceCode } : {}),
+          ...educationBackfill,
         }).eq("id", authUser.id).select().maybeSingle();
         if (updated) p = updated;
       }
@@ -5853,11 +5874,23 @@ function App() {
       // prevent abuse. It's optional free text with no checking, crediting, or
       // reward behaviour behind it yet — just storage for a later phase.
       const cleanReferenceCode = sanitizeText(referenceCodeInput.trim()).slice(0, 40);
+      // Optional education info — same "store on the profile at signup for a
+      // later phase" shape as the reference code. Never required; a user who
+      // picks "I don't attend university" or leaves it blank signs up normally.
+      const attendsUniversity =
+        educationStatus === "university" ? true
+        : educationStatus === "not_university" ? false
+        : null;
+      const cleanUniversity = attendsUniversity === true ? sanitizeText(universityInput.trim()).slice(0, 200) : "";
+      const cleanDegree = attendsUniversity === true ? sanitizeText(degreeInput.trim()).slice(0, 200) : "";
       const { data, error: signUpErr } = await supabase.auth.signUp({
         email: sanitizeText(emailInput.trim().toLowerCase()), password: passwordInput,
         options: { data: {
           first_name: sanitizeText(firstNameInput.trim()), last_name: sanitizeText(lastNameInput.trim()),
           ...(cleanReferenceCode ? { reference_code: cleanReferenceCode } : {}),
+          ...(attendsUniversity !== null ? { attends_university: attendsUniversity } : {}),
+          ...(cleanUniversity ? { university: cleanUniversity } : {}),
+          ...(cleanDegree ? { degree: cleanDegree } : {}),
         } },
       });
       if (signUpErr) { setError(friendlyAuthError(signUpErr.message, "Couldn't create your account. Please try again.")); return; }
@@ -8820,7 +8853,46 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                   Reference code <span style={{ color: "var(--text-faint)", fontWeight: 400 }}>(Optional)</span>
                   <InfoTooltip label="What is a reference code?" text="If you have been provided a reference code from an affiliate partner, type it in here." />
                 </label>
-                <input id="signup-reference-code" autoComplete="off" value={referenceCodeInput} onChange={(e) => setReferenceCodeInput(e.target.value)} onKeyDown={onEnterKey(handleSignUp)} placeholder="e.g. UNI2026" style={{ ...inputStyle, marginTop: 6, marginBottom: 8 }} />
+                <input id="signup-reference-code" autoComplete="off" value={referenceCodeInput} onChange={(e) => setReferenceCodeInput(e.target.value)} onKeyDown={onEnterKey(handleSignUp)} placeholder="e.g. UNI2026" style={{ ...inputStyle, marginTop: 6, marginBottom: 16 }} />
+
+                {/* Optional education info. Free text, never required — the
+                    "I don't attend university" choice is a complete answer and
+                    users can also skip the whole section. Stored on the profile
+                    only so anonymised university stats are possible later. */}
+                <div role="group" aria-labelledby="signup-education-label" style={{ marginBottom: 8 }}>
+                  <div id="signup-education-label" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)", display: "flex", alignItems: "center", gap: 5 }}>
+                    Education <span style={{ color: "var(--text-faint)", fontWeight: 400 }}>(Optional)</span>
+                    <InfoTooltip label="Why do we ask about education?" text="This is optional and only used, in aggregate and anonymised, to understand which universities our users come from. It never affects how JOB.READY works for you." />
+                  </div>
+                  <div className="flex gap-2" style={{ marginTop: 6 }}>
+                    {[["university", "I attend / attended university"], ["not_university", "I don't attend university"]].map(([val, label]) => (
+                      <button
+                        key={val}
+                        type="button"
+                        aria-pressed={educationStatus === val}
+                        onClick={() => setEducationStatus((s) => (s === val ? "" : val))}
+                        style={{
+                          flex: 1, padding: "9px 10px", borderRadius: "var(--r-sm)", fontSize: 12.5, fontWeight: 600, cursor: "pointer",
+                          border: educationStatus === val ? "1.5px solid var(--blue)" : "1.5px solid var(--border)",
+                          background: educationStatus === val ? "var(--highlight)" : "#fff",
+                          color: educationStatus === val ? "var(--blue)" : "var(--text-dim)",
+                          fontFamily: "var(--font)", lineHeight: 1.35,
+                        }}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  {educationStatus === "university" && (
+                    <div style={{ marginTop: 10 }}>
+                      <label htmlFor="signup-university" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>University</label>
+                      <input id="signup-university" autoComplete="off" value={universityInput} onChange={(e) => setUniversityInput(e.target.value)} placeholder="e.g. University of Bristol" style={{ ...inputStyle, marginTop: 6, marginBottom: 10 }} />
+                      <label htmlFor="signup-degree" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Degree</label>
+                      <input id="signup-degree" autoComplete="off" value={degreeInput} onChange={(e) => setDegreeInput(e.target.value)} onKeyDown={onEnterKey(handleSignUp)} placeholder="e.g. BSc Economics" style={{ ...inputStyle, marginTop: 6 }} />
+                    </div>
+                  )}
+                </div>
+
                 {error && <div role="alert" style={{ color: "var(--bad)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
                 {authNotice && <div role="status" style={{ color: "var(--good)", fontSize: 13, marginBottom: 10 }}>{authNotice}</div>}
                 <Btn variant="accent" full disabled={authBusy} onClick={() => guarded(handleSignUp)} style={{ marginTop: 8 }}>{authBusy ? "Creating account…" : <>Create account <ChevronRight size={16} /></>}</Btn>

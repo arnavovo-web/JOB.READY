@@ -1,0 +1,45 @@
+-- =============================================================================
+-- OPTIONAL EDUCATION INFO ON profiles  (university / degree)
+-- -----------------------------------------------------------------------------
+-- Three additive, nullable columns on the existing `profiles` row — same
+-- pattern as 20260902200000_profiles_reference_code.sql. Captured at sign-up
+-- (see src/App.jsx handleSignUp -> signUp() metadata -> onAuthed backfill),
+-- entirely optional, and set once and never overwritten.
+--
+--   attends_university  boolean  -- true  = attends / attended university
+--                                -- false = explicitly "I don't attend university"
+--                                -- null  = not answered (the default)
+--   university          text     -- free-text institution name (only meaningful
+--                                -- when attends_university = true)
+--   degree              text     -- free-text degree / course name
+--
+-- WHY: so we can later aggregate anonymised statistics on which universities
+-- our users attend, for B2B / institutional outreach. Aggregation is a
+-- service-role reporting query, e.g.
+--   select university, count(*) from public.profiles
+--   where attends_university is true and university is not null
+--   group by 1 order by 2 desc;
+-- which returns counts only — no personal data. Free text now; a normalised
+-- canonical-university layer can be added later without touching this.
+--
+-- NOT GATING: nothing in the app requires these. Users who pick "I don't
+-- attend university", or skip the question entirely, use JOB.READY normally.
+--
+-- SECURITY: RLS is unchanged. `profiles` already has the `profiles_self`
+-- policy (id = auth.uid() for all commands), so a user can only ever read or
+-- write their own education fields. No new policy needed.
+--
+-- IDEMPOTENT: every statement is `add column if not exists`. Safe to re-run.
+--
+-- Timestamped after 20260903120000_contact_messages.sql so the repo apply
+-- order stays monotonic. Purely additive — no existing object is altered,
+-- dropped or reconciled.
+--
+-- ⚠️  DEPLOYMENT: creating this file does NOT apply it to the live database.
+-- The live migration ledger and the repo's migration files already diverge
+-- (see supabase/README.md); applying this is a separate, deliberate step.
+-- =============================================================================
+
+alter table public.profiles add column if not exists attends_university boolean;
+alter table public.profiles add column if not exists university          text;
+alter table public.profiles add column if not exists degree              text;
