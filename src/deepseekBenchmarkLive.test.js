@@ -50,6 +50,8 @@ import {
   validateQuestionBatch, validateEvaluationSignals,
   validateInvitationExtraction, buildInvitationExtractionPrompt,
   validateAcScenario, validateReport,
+  // Phase 41B — the three remaining priority DeepSeek-candidate request types
+  validateProfile, validateLesson, validateDevelopmentModule,
 } from "./App.jsx";
 import { callAnthropicProvider, callDeepSeekProvider, selectProviderForRequest } from "../supabase/functions/ai-generate/providers.ts";
 
@@ -234,6 +236,140 @@ Rules: ground it in the specific company and role given, for a "Case Study" exer
     });
   });
 
+  // ---------------------------------------------------------------------------
+  // Phase 41B additions — the remaining 3 of the 6 highest-priority
+  // DeepSeek-candidate request types not already covered by tasks 1-5:
+  //   6. interview_profile        7. classroom_lesson (non-web)   8. development_module
+  // classroom_lesson is benchmarked ONLY in its non-web-search form — the
+  // current architecture routes any useWebSearch:true lesson to Anthropic and
+  // callDeepSeekProvider hard-rejects useWebSearch, so a web lesson is not a
+  // DeepSeek candidate at all and is deliberately not benchmarked here.
+  // ---------------------------------------------------------------------------
+
+  it.skipIf(!LIVE_ENABLED)("6. Interview profile / application analysis — JD + CV -> structured profile", async () => {
+    // Faithful copy of INTERVIEW_PROFILE_SYSTEM (App.jsx, module-private const) —
+    // the exact shape/rules validateProfile enforces. Kept verbatim so a real
+    // run exercises the same provenance/verbatim-quote rules production does.
+    const system = `You are an expert interview coach and recruiter. You analyse a job description and a CV together and produce a single strict JSON object (no prose, no markdown fences) with this exact shape:
+{
+  "interview_profile": {
+    "company": "", "role": "", "division": "", "seniority": "",
+    "responsibilities": [""], "required_skills": [""], "preferred_skills": [""],
+    "competencies": [{"name": "", "basis": "explicit|inferred|general"}],
+    "technical_topics": [""], "behavioural_topics": [""], "commercial_topics": [""],
+    "question_mix": {"motivation_fit": 30, "cv_behavioural": 25, "role_specific": 20, "technical": 15, "commercial_awareness": 10},
+    "jd_requirements": [{"requirement": "", "evidence_quote": "", "confidence": "explicit|inferred|general", "category": "motivation_fit|behavioural_competency|situational_judgement|technical_functional|commercial_awareness", "occurrences": 1}]
+  },
+  "candidate_profile": {
+    "education": [""], "experience": [""], "leadership": [""], "achievements": [""],
+    "skills": [""], "behavioural_examples": [""],
+    "cv_evidence": [{"text": "", "source": "cv|jd|inferred", "evidence_quote": ""}],
+    "potential_probe_areas": [{"claim": "", "why": "", "source": "cv|jd|inferred", "evidence_quote": ""}]
+  },
+  "application_intelligence": {
+    "company_themes": [{"theme": "", "evidence": ""}],
+    "role_themes": [{"theme": "", "evidence": ""}],
+    "company_context_strength": "strong|moderate|weak",
+    "role_context_strength": "strong|moderate|weak"
+  },
+  "opening_question": { "text": "", "category": "motivation_fit|cv_behavioural|role_specific|technical|commercial_awareness", "competency": "" }
+}
+Rules: "basis" must honestly mark whether each competency is explicitly stated in the JD, reasonably inferred, or just generally expected for this role type. question_mix percentages sum to 100 and reflect the actual role type. potential_probe_areas should point at specific claims worth challenging. opening_question must be natural and specific, not generic.
+CANDIDATE PROFILE PROVENANCE (strict): the six list fields (education, experience, leadership, achievements, skills, behavioural_examples) stay plain strings. For "cv_evidence" and for each "potential_probe_areas" entry, set "source" to where the statement genuinely comes from — "cv" only if it is actually present in the supplied CV text, "jd" if it comes from the job description, "inferred" if it is your reasonable inference from the role. When "source" is "cv", "evidence_quote" MUST be a short exact substring copied verbatim from the supplied CV text — never a paraphrase, summary or inference. If you cannot copy an exact CV quote, do not use "source": "cv". If NO CV text was supplied, never use "source": "cv" for anything and leave "cv_evidence" as []. jd_requirements should list distinct requirements actually evidenced in the job description — "evidence_quote" must be an exact short quote copied verbatim from the job description text (not a paraphrase or summary), "confidence" follows the same explicit/inferred/general distinction as competencies' basis, and "occurrences" is how many times this requirement (or a clear restatement of it) appears in the job description text.
+"application_intelligence" captures what THIS specific application appears to prioritise, using ONLY the company/role/job-description-and-application-context/invitation material provided above — never outside knowledge, never assumed company values. "company_themes" = themes, culture, values or programme characteristics the material EXPLICITLY states about this company; each "evidence" MUST be an exact verbatim quote from the provided text. If the material gives nothing company-specific beyond the name, return "company_themes": [] and "company_context_strength": "weak" — do NOT invent plausible-sounding values. "role_themes" = what the role itself is about (responsibilities, focus areas) with verbatim "evidence" where possible. "*_context_strength" is your honest read of how much genuine company-/role-specific detail the material contains.`;
+    const userText = `This candidate has no prior interview history.
+
+Company: Northwind Capital Partners
+Role: Investment Banking Summer Analyst
+Interview stage: First round
+Interview format: Video call
+
+Job description:
+We are seeking a Summer Analyst for our M&A Advisory team. You will support live deal execution, build financial models (DCF, comparable companies, precedent transactions), and prepare client-facing materials. Strong technical grounding in accounting and valuation is essential; you'll work in a fast-paced, detail-oriented environment and must show excellent attention to detail under pressure.
+
+Candidate CV:
+Education: BSc Economics, University of Bristol (2:1 expected). Relevant modules: Corporate Finance, Financial Accounting.
+Experience: Summer intern, boutique M&A advisory firm (8 weeks) — built comparable-companies analyses in Excel, supported two live sell-side mandates, prepared sections of information memoranda.
+Skills: Excel financial modelling, DCF valuation, PowerPoint, Bloomberg basics.
+Extra-curricular: Treasurer, University Finance Society — managed a £4,000 budget and ran a stock-pitch competition for 40 members.`;
+    await runTask("Interview profile / application analysis (IB Summer Analyst, JD + CV)", {
+      system, userText, maxTokens: 6000,
+      validate: (parsed) => validateProfile(parsed),
+      inputSummary: "Real JD + a short but concrete CV — tests structured extraction plus the strict verbatim-quote provenance rules (cv_evidence / jd_requirements evidence_quote).",
+      requestType: "interview_profile",
+    });
+  });
+
+  it.skipIf(!LIVE_ENABLED)("7. Classroom lesson generation — non-web-search topic", async () => {
+    // Faithful copy of the classroom_lesson system prompt (openLesson, App.jsx,
+    // module-private). validateLesson enforces exactly this shape.
+    const system = `You are a specialist interview-preparation tutor. You generate one short, targeted lesson (5-10 minutes to complete) that teaches a candidate exactly what they need to know to fix ONE specific interview weakness. Return strict JSON only, no prose, no markdown fences, in this exact shape:
+{
+  "title": "", "why_it_matters": "",
+  "core_knowledge": [{"point": "", "grounded": true}],
+  "key_points": [""], "example_answer_snippet": "", "interview_application": "",
+  "quick_check": [{"question": "", "options": ["",""], "correct_index": 0, "explanation": ""}],
+  "grounding_note": ""
+}
+Rules: mini study guide, not an essay. core_knowledge 3-5 points, key_points 3-5, quick_check 2-3 questions with 3-4 options each. "grounded" is true only for points you are confident are accurate and current; mark false for general guidance and never present an unverified company fact as confirmed. If you can't establish reliable specifics, say so in grounding_note and stay general. example_answer_snippet shows how to use the knowledge, not fabricated achievements. Match depth to the candidate's level given.`;
+    const userText = `Weakness topic: Structuring behavioural answers with the STAR method
+Category: technique
+Weakness as identified: Answers jump straight to the outcome without setting up the situation or task, so the interviewer can't follow the candidate's specific contribution.
+Company: Northwind Capital Partners
+Role: Investment Banking Summer Analyst
+Related interview question: "Tell me about a time you worked under pressure."
+Candidate level: Penultimate-year undergraduate, some internship experience
+
+General interview-technique or subject-matter topic; no need to search.`;
+    await runTask("Classroom lesson generation (non-web-search — STAR technique)", {
+      system, userText, maxTokens: 2200,
+      validate: (parsed) => validateLesson(parsed),
+      inputSummary: "A technique-only lesson topic (no company facts to verify) — the exact case hybrid routing would send to DeepSeek. Web-search lessons are excluded by design.",
+      requestType: "classroom_lesson",
+    });
+  });
+
+  it.skipIf(!LIVE_ENABLED)("8. Development module generation — learning guide + flashcards + written quiz", async () => {
+    // Faithful copy of the development_module system prompt (openDevelopmentModule,
+    // App.jsx, module-private). The two runtime ${...} branches are resolved to
+    // the common case: an "area to prepare" (not a demonstrated weakness), with
+    // enough company/role context that no data-limitation caveat is needed.
+    const system = `You are a specialist interview-preparation tutor. Generate ONE reusable development module that will power a learning guide, flashcards and a written quiz WITHOUT any further AI call. Return strict JSON only, no prose, no markdown fences, in this exact shape:
+{
+  "topic": "",
+  "why_it_matters": "",
+  "context_note": "",
+  "learning_guide": { "core_explanation": "", "frameworks": [""], "examples": [""], "common_mistakes": [""], "application_context": "" },
+  "learning_items": [
+    { "concept": "", "explanation": "",
+      "flashcard_front": "", "flashcard_back": "",
+      "quiz_question": "", "model_answer": "", "review": "",
+      "expected_concepts": [ { "concept": "", "accepted_terms": ["",""], "aliases": ["",""], "definition": "", "required": true } ] }
+  ]
+}
+Rules: EXACTLY 4 learning_items, each ONE atomic idea — do not exceed 4. Keep it tight: "explanation" 2-3 sentences, "flashcard_back" 1-2 sentences, "model_answer" 3-4 sentences, "review" 2-3 sentences. flashcard_front is a short question. quiz_question is open / free-response — NEVER multiple choice.
+expected_concepts: 2-4 atomic ideas per quiz answer. These drive DETERMINISTIC (non-AI) marking, so be precise and literal. For each concept:
+ - "concept": a 2-5 word noun phrase naming the idea (not a bare generic word like "value" or "process").
+ - "accepted_terms": 2-4 alternative WORDINGS a correct student might genuinely write for this same idea — true synonyms and standard phrasings only.
+ - "aliases": abbreviations / initialisms AND their expansions (e.g. "DCF" and "discounted cash flow"), plus UK/US spelling variants if relevant (e.g. "amortisation", "amortization"). Omit or leave [] if none apply.
+ - "definition": ONE plain-language sentence stating the idea in different words from "concept" — used as a tolerant fallback when the student paraphrases. Keep it concrete and specific to this idea.
+ - "required": true for a concept the answer MUST express to be complete; false for a supporting/optional concept that is good to mention but not essential. Mark 2-3 as required and any extras as optional.
+Never invent an alias that is not genuinely equivalent. "review" is the model knowledge to show after marking. learning_guide.frameworks/examples/common_mistakes: at most 3 short bullets each. why_it_matters: this is an AREA TO PREPARE for this application; it is NOT a demonstrated weakness — say exactly that. context_note: leave it an empty string unless a genuine data-limitation caveat is needed. Do not use web search. Match depth to the candidate level given.`;
+    const userText = `Development need: DCF valuation fundamentals
+Dimension: technical
+Diagnosis / description: Area to prepare for this M&A Advisory role — the candidate should be able to walk through a DCF end to end and defend each assumption.
+Original interview question: n/a
+Company: Northwind Capital Partners
+Role: Investment Banking Summer Analyst
+Candidate level: Penultimate-year undergraduate, some internship experience`;
+    await runTask("Development module generation (DCF valuation fundamentals)", {
+      system, userText, maxTokens: 6000,
+      validate: (parsed) => validateDevelopmentModule(parsed),
+      inputSummary: "Technical learning module — large structured output (4 items x flashcard + open quiz + expected_concepts for deterministic marking). The expected_concepts precision is the thing to eyeball.",
+      requestType: "development_module",
+    });
+  });
+
   it("harness sanity check — always runs, never calls a live API, confirms the file itself is wired correctly", () => {
     expect(typeof callAnthropicProvider).toBe("function");
     expect(typeof callDeepSeekProvider).toBe("function");
@@ -242,6 +378,10 @@ Rules: ground it in the specific company and role given, for a "Case Study" exer
     expect(typeof validateInvitationExtraction).toBe("function");
     expect(typeof validateAcScenario).toBe("function");
     expect(typeof validateReport).toBe("function");
+    // Phase 41B: the three added priority tasks (interview_profile / classroom_lesson / development_module)
+    expect(typeof validateProfile).toBe("function");
+    expect(typeof validateLesson).toBe("function");
+    expect(typeof validateDevelopmentModule).toBe("function");
     // Phase 37: the benchmark's routing-preview line uses the SAME centralized routing
     // function index.ts calls, and every task's requestType really is one of the 11 known
     // types (so a real run's "hybrid mode routes this to: ..." line reflects the actual
@@ -249,6 +389,14 @@ Rules: ground it in the specific company and role given, for a "Case Study" exer
     expect(typeof selectProviderForRequest).toBe("function");
     const decision = selectProviderForRequest({ requestType: "interview_question_batch", useWebSearch: false, configuredProvider: undefined });
     expect(decision.provider).toBe("deepseek");
+    // Phase 41B: the six benchmarked priority types are exactly the ones hybrid mode fast-routes
+    // to DeepSeek; the two exploratory types stay on Anthropic regardless of benchmark result.
+    ["interview_profile", "classroom_lesson", "development_module", "assessment_centre_scenario", "invitation_extraction"].forEach((rt) => {
+      expect(selectProviderForRequest({ requestType: rt, useWebSearch: false, configuredProvider: undefined }).provider).toBe("deepseek");
+    });
+    ["interview_turn_evaluate", "interview_report"].forEach((rt) => {
+      expect(selectProviderForRequest({ requestType: rt, useWebSearch: false, configuredProvider: undefined }).provider).toBe("anthropic");
+    });
     if (!LIVE_ENABLED) {
       console.log("\n[deepseekBenchmarkLive] RUN_DEEPSEEK_BENCHMARK is not set — live benchmark tasks skipped, as expected for `npm test`. Run `npm run benchmark:deepseek` (with ANTHROPIC_API_KEY / DEEPSEEK_API_KEY set) to actually compare providers.");
     }
