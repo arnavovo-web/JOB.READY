@@ -13,8 +13,12 @@ import Stripe from "npm:stripe@17.7.0";
 // Writes run with the service-role key (RLS bypassed) because the paying user
 // is not the caller here. Everything is keyed for idempotency so Stripe's
 // at-least-once redelivery never double-grants:
-//   * one-time purchases  -> public.payments.provider_checkout_id is UNIQUE;
-//     credits are added to public.user_entitlements only on the first insert.
+//   * one-time purchases  -> the public.apply_purchase_credits RPC claims the
+//     checkout session (public.payments.provider_checkout_id is UNIQUE) AND
+//     increments public.user_entitlements.unlock_credits ATOMICALLY, in one
+//     transaction. A redelivery of the same session is a no-op; two different
+//     purchases each add their credits with no lost update; a failure can never
+//     leave a payment claimed without its credits.
 //   * subscriptions       -> upsert on public.subscriptions.stripe_subscription_id.
 //
 // Handled events:
@@ -49,57 +53,33 @@ async function grantCredits(userId: string, product: string, session: Stripe.Che
   const db = admin();
   const credits = CREDITS_PER_PRODUCT[product] ?? 0;
 
-  // Idempotent claim of this checkout session. ignoreDuplicates -> a redelivery
-  // returns an empty array and we skip the grant.
-  const { data: inserted, error: insErr } = await db
-    .from("payments")
-    .upsert(
-      {
-        user_id: userId,
-        provider: "stripe",
-        provider_checkout_id: session.id,
-        provider_payment_intent:
-          typeof session.payment_intent === "string" ? session.payment_intent : null,
-        product,
-        amount_total: session.amount_total ?? null,
-        currency: session.currency ?? "gbp",
-        credits_granted: credits,
-        status: "completed",
-        completed_at: new Date().toISOString(),
-      },
-      { onConflict: "provider_checkout_id", ignoreDuplicates: true },
-    )
-    .select();
+  // Claim the checkout session AND grant its credits in ONE atomic DB
+  // transaction (public.apply_purchase_credits). No service-role read-modify-write.
+  const { data, error } = await db.rpc("apply_purchase_credits", {
+    p_checkout_id: session.id,
+    p_user_id: userId,
+    p_product: product,
+    p_credits: credits,
+    p_amount_total: session.amount_total ?? null,
+    p_currency: session.currency ?? "gbp",
+    p_payment_intent:
+      typeof session.payment_intent === "string" ? session.payment_intent : null,
+  });
 
-  if (insErr) {
-    console.error("payments upsert failed:", insErr.message);
-    throw new Error("payments upsert failed");
+  if (error) {
+    // 500 -> Stripe retries. Safe: the RPC is atomic + idempotent, so a retry
+    // either finds the session already processed or completes the whole grant.
+    console.error("apply_purchase_credits failed:", error.message);
+    throw new Error("apply_purchase_credits failed");
   }
-  if (!inserted || inserted.length === 0) {
+  if (data?.already_processed) {
     console.log("checkout session already processed, skipping grant:", session.id);
     return;
   }
-
-  await db.from("user_entitlements").upsert({ user_id: userId }, { onConflict: "user_id", ignoreDuplicates: true });
-  const { data: entRow, error: entErr } = await db
-    .from("user_entitlements")
-    .select("unlock_credits")
-    .eq("user_id", userId)
-    .maybeSingle();
-  if (entErr) {
-    console.error("user_entitlements read failed:", entErr.message);
-    throw new Error("entitlements read failed");
-  }
-  const next = Math.max(0, (entRow?.unlock_credits ?? 0)) + credits;
-  const { error: updErr } = await db
-    .from("user_entitlements")
-    .update({ unlock_credits: next, updated_at: new Date().toISOString() })
-    .eq("user_id", userId);
-  if (updErr) {
-    console.error("user_entitlements credit update failed:", updErr.message);
-    throw new Error("entitlements update failed");
-  }
-  console.log(`granted ${credits} credit(s) to ${userId} for ${product} (session ${session.id})`);
+  console.log(
+    `granted ${data?.credits_granted ?? credits} credit(s) to ${userId} for ${product} ` +
+      `(session ${session.id}); unlock_credits now ${data?.unlock_credits ?? "?"}`,
+  );
 }
 
 async function syncSubscription(sub: Stripe.Subscription) {

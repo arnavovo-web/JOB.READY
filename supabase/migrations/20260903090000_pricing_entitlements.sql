@@ -309,17 +309,97 @@ begin
 end;
 $$;
 
+-- Apply a completed one-time Stripe purchase: claim the checkout session
+-- idempotently AND grant its credits, atomically, in one transaction. Called by
+-- the stripe-webhook Edge Function (service role) instead of a service-role
+-- read-modify-write, which could lose an increment under concurrent webhook
+-- delivery or leave a payment permanently "processed" without its credits if the
+-- process died between the two writes.
+--
+--   * The INSERT into public.payments uses provider_checkout_id (UNIQUE) as the
+--     idempotency key: on conflict it does nothing and row_count is 0.
+--   * Only when a payment row is newly inserted (row_count = 1) do we increment
+--     credits, via a single atomic `unlock_credits = unlock_credits + p_credits`
+--     upsert (which also creates the user_entitlements row if it is missing).
+--   * Both writes are in the same function body, so they commit or roll back
+--     together — a failure can never leave the payment claimed without credits.
+create or replace function public.apply_purchase_credits(
+  p_checkout_id     text,
+  p_user_id         uuid,
+  p_product         text,
+  p_credits         integer,
+  p_amount_total    integer default null,
+  p_currency        text    default 'gbp',
+  p_payment_intent  text    default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path to 'public'
+as $$
+declare
+  v_credits    integer := greatest(coalesce(p_credits, 0), 0);
+  v_claimed    integer;
+  v_balance    integer;
+begin
+  if p_checkout_id is null or p_user_id is null then
+    raise exception 'apply_purchase_credits requires a checkout id and a user id'
+      using errcode = '22004';
+  end if;
+
+  -- (1) idempotent claim of this checkout session
+  insert into public.payments (
+    user_id, provider, provider_checkout_id, provider_payment_intent,
+    product, amount_total, currency, credits_granted, status, completed_at
+  )
+  values (
+    p_user_id, 'stripe', p_checkout_id, p_payment_intent,
+    p_product, p_amount_total, coalesce(p_currency, 'gbp'), v_credits, 'completed', now()
+  )
+  on conflict (provider_checkout_id) do nothing;
+
+  get diagnostics v_claimed = row_count;
+
+  -- (2) already processed -> do nothing, report it explicitly
+  if v_claimed = 0 then
+    return jsonb_build_object('ok', true, 'already_processed', true, 'credits_granted', 0);
+  end if;
+
+  -- (3) first time only: create the entitlement row if needed AND atomically
+  --     increment, in one statement (no read-modify-write, no lost update).
+  insert into public.user_entitlements (user_id, unlock_credits, updated_at)
+  values (p_user_id, v_credits, now())
+  on conflict (user_id) do update
+     set unlock_credits = user_entitlements.unlock_credits + v_credits,
+         updated_at      = now()
+  returning unlock_credits into v_balance;
+
+  return jsonb_build_object(
+    'ok', true,
+    'already_processed', false,
+    'credits_granted', v_credits,
+    'unlock_credits', v_balance
+  );
+end;
+$$;
+
 -- ---- execute grants: authenticated only; helpers stay internal --------------
 revoke all on function public.ensure_user_entitlements()          from public, anon;
 revoke all on function public.consume_free_unlock(uuid)           from public, anon;
 revoke all on function public.consume_unlock_credit(uuid)         from public, anon;
 revoke all on function public.has_application_access(uuid)        from public, anon;
 revoke all on function public.has_active_subscription(uuid)       from public, anon, authenticated;
+-- apply_purchase_credits is called ONLY by the stripe-webhook Edge Function
+-- (service role). No end-user role may call it.
+revoke all on function public.apply_purchase_credits(text, uuid, text, integer, integer, text, text)
+  from public, anon, authenticated;
 
 grant execute on function public.ensure_user_entitlements()   to authenticated;
 grant execute on function public.consume_free_unlock(uuid)    to authenticated;
 grant execute on function public.consume_unlock_credit(uuid)  to authenticated;
 grant execute on function public.has_application_access(uuid) to authenticated;
+grant execute on function public.apply_purchase_credits(text, uuid, text, integer, integer, text, text)
+  to service_role;
 
 -- =============================================================================
 -- SEED user_entitlements + grandfather existing applications

@@ -182,9 +182,18 @@ describe("Phase 40 — stripe-webhook Edge Function", () => {
     expect(WEBHOOK).toMatch(/SUPABASE_SERVICE_ROLE_KEY/);
   });
 
-  it("is idempotent: credit grants are claimed once via a unique checkout id", () => {
-    expect(WEBHOOK).toMatch(/onConflict:\s*"provider_checkout_id",\s*ignoreDuplicates:\s*true/);
+  it("grants credits via the atomic apply_purchase_credits RPC, not a service-role read-modify-write", () => {
+    expect(WEBHOOK).toMatch(/db\.rpc\("apply_purchase_credits",\s*\{/);
+    // the checkout id + user id + credit count are all passed to the RPC
+    expect(WEBHOOK).toMatch(/p_checkout_id:\s*session\.id/);
+    expect(WEBHOOK).toMatch(/p_user_id:\s*userId/);
+    expect(WEBHOOK).toMatch(/p_credits:\s*credits/);
+    // a redelivery is reported by the RPC and short-circuits
+    expect(WEBHOOK).toMatch(/already_processed/);
     expect(WEBHOOK).toMatch(/already processed, skipping grant/);
+    // the old non-atomic pattern is gone
+    expect(WEBHOOK).not.toMatch(/from\("user_entitlements"\)\s*\.\s*select\("unlock_credits"\)/s);
+    expect(WEBHOOK).not.toMatch(/from\("payments"\)\s*\.\s*upsert/s);
   });
 
   it("handles checkout completion and subscription lifecycle events; only grants on a paid one-time purchase", () => {
