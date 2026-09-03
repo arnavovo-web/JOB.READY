@@ -34,7 +34,7 @@ const OPEN_MODULE_FASTPATH = slice("const cachedRow = developmentModules.find((m
 const ANALYSE_AND_PLAN = slice("async function analyseAndPlan() {", "function beginInterview()");
 const ANALYSE_APP_ONLY = slice("async function analyseApplicationOnly(app) {", "function buildInterviewFromApplication(");
 const RETRY_SAVE_MODULE = slice("async function retrySaveModule() {", "// BUG FIX (stale state)");
-const LOADING_SCREEN = slice("function LoadingScreen({ messages, progress }) {", "function NavBar(");
+const LOADING_SCREEN = slice("function LoadingScreen({ messages, progress, note }) {", "function NavBar(");
 const GO_TO_DEV_VIEW = slice("function goToDevView(v) {", "function startWrittenQuiz() {");
 const START_QUIZ = slice("function startWrittenQuiz() {", "async function saveFlashProgress(");
 const SUBMIT_WRITTEN = slice("async function submitWrittenAnswer() {", "// Phase 15A: the \"redo the ORIGINAL");

@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import {
   ChevronRight, Loader2, TrendingDown, CheckCircle2, ArrowLeft, ArrowRight, Sparkles,
-  Target, BarChart3, AlertCircle, Upload, Mic, Menu, X,
+  Target, BarChart3, AlertCircle, Upload, Mic, MicOff, Menu, X,
   GraduationCap, BookOpen, Globe, HelpCircle, XCircle,
   Users, Briefcase, Mail, FileText, History, Clock, Plus, CalendarClock,
   Eye, EyeOff, Lock,
@@ -135,7 +135,13 @@ import { reconstructInterviewState, sortResumableInterviews, summariseResumable,
 // data flows; central contact/metadata config with clearly-marked placeholders.
 import { PRIVACY_POLICY } from "./legal/privacyPolicy";
 import { TERMS_OF_SERVICE } from "./legal/termsOfService";
-import { formatLegalDate } from "./legal/legalContact";
+import { formatLegalDate, LEGAL_CONTACT } from "./legal/legalContact";
+// Speech-to-text (voice interview answers) — pure helpers only; the browser
+// Web Speech API wrapper hook `useSpeechToText` lives in this file.
+import {
+  SPEECH_LANG, VOICE_UNSUPPORTED_MESSAGE, getSpeechRecognition,
+  appendSpokenChunk, speechErrorMessage, readRecognitionEvent,
+} from "./speech";
 // Phase 23: pure auth-form helpers — show/hide-password type+label mapping,
 // new-password + reset-email validation, the password-reset redirect-URL
 // strategy (origin-based, no hardcoded host), and recovery-link
@@ -1755,6 +1761,31 @@ async function dbLoadEntitlements(userId) {
   });
 }
 
+// Contact Us / feedback: one INSERT into public.contact_messages (the cheapest
+// sensible sink — direct Supabase write, no Edge Function, no third-party SaaS).
+// RLS on that table is INSERT-only (write-only via the API), so the browser can
+// submit but can never read messages back. Works for logged-out visitors too
+// (anon key). Throws on failure so the dialog shows an honest error and never
+// claims the message was sent. NOTE: requires the 20260903120000 migration to
+// be applied to the live database — until then this insert fails cleanly.
+async function dbSubmitContactMessage({ name, email, message }) {
+  const supabase = await getSupabase();
+  let userId = null;
+  try {
+    const { data: sessionData } = await supabase.auth.getSession();
+    userId = sessionData?.session?.user?.id || null;
+  } catch { /* logged-out visitor — userId stays null */ }
+  const { error } = await supabase.from("contact_messages").insert({
+    user_id: userId,
+    name: name || null,
+    email,
+    message,
+    page: typeof window !== "undefined" && window.location ? window.location.pathname : null,
+    user_agent: typeof navigator !== "undefined" ? String(navigator.userAgent || "").slice(0, 400) : null,
+  });
+  if (error) throw new Error(error.message || "Couldn't send your message. Please try again.");
+}
+
 // Spend the one free unlock on an application. SECURITY DEFINER RPC — it
 // validates ownership + the "only once" invariant in the database. Returns the
 // parsed jsonb result ({ ok, source?, reason?, ... }) or { ok:false } on error.
@@ -2805,6 +2836,327 @@ function FreeUnlockDialog({ company, busy, onCancel, onConfirm }) {
   );
 }
 
+/* ================================================================== *
+ * CONTACT US / FEEDBACK — portalled dialog
+ * ------------------------------------------------------------------
+ * Opened from the shared NavBar on both the public landing pages and the
+ * authenticated app. Same portalled-overlay pattern as ConfirmDialog /
+ * FreeUnlockDialog. Submits one row to `public.contact_messages` via
+ * `onSubmit` (Supabase insert, cheapest sensible sink — no Edge Function,
+ * no third-party SaaS). Never claims success unless the write actually
+ * succeeded; a failed write shows an honest error and keeps the form.
+ * ================================================================== */
+// The direct support email is the single source of truth in
+// src/legal/legalContact.js. It is `null` pre-launch (no official address
+// exists in the repo yet) — when null we show a clearly-identified
+// placeholder instead of inventing one. Set LEGAL_CONTACT.supportContactEmail
+// to light this up everywhere at once.
+const SUPPORT_CONTACT_EMAIL = LEGAL_CONTACT.supportContactEmail || null;
+
+function isPlausibleEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || "").trim());
+}
+
+function ContactDialog({ user, onClose, onSubmit }) {
+  const [name, setName] = useState(
+    user ? [user.first_name, user.last_name].filter(Boolean).join(" ") : ""
+  );
+  const [email, setEmail] = useState(user?.email || "");
+  const [message, setMessage] = useState("");
+  const [touched, setTouched] = useState(false);
+  const [status, setStatus] = useState("idle"); // idle | sending | sent | error
+  const [errorText, setErrorText] = useState("");
+  const busyRef = useRef(false);
+
+  useEffect(() => {
+    function onKey(e) { if (e.key === "Escape") onClose(); }
+    window.addEventListener("keydown", onKey);
+    document.getElementById("jr-contact-message")?.focus();
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const emailOk = isPlausibleEmail(email);
+  const messageOk = message.trim().length >= 5;
+  const canSubmit = emailOk && messageOk && status !== "sending";
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setTouched(true);
+    if (!emailOk || !messageOk) return;
+    if (busyRef.current) return; // prevent a double-submit while in flight
+    busyRef.current = true;
+    setStatus("sending");
+    setErrorText("");
+    try {
+      await onSubmit({ name: name.trim(), email: email.trim(), message: message.trim() });
+      setStatus("sent");
+    } catch (err) {
+      setStatus("error");
+      setErrorText(
+        (err && err.message) ||
+          "We couldn't send your message just now. Please try again in a moment."
+      );
+    } finally {
+      busyRef.current = false;
+    }
+  }
+
+  const labelStyle = { fontSize: 12.5, fontWeight: 700, color: "var(--navy)" };
+  const fieldWrap = { display: "flex", flexDirection: "column", gap: 6, marginBottom: 14 };
+
+  return createPortal(
+    <div role="presentation" onClick={onClose}
+      style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200, padding: 20, overflowY: "auto" }}>
+      <div role="dialog" aria-modal="true" aria-labelledby="jr-contact-title" onClick={(e) => e.stopPropagation()}
+        style={{ background: "var(--card)", borderRadius: "var(--radius)", boxShadow: "var(--shadow-lg)", padding: 24, maxWidth: 460, width: "100%" }}>
+        <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
+          <div className="flex items-center gap-2">
+            <Mail size={18} color="var(--blue)" aria-hidden="true" />
+            <div id="jr-contact-title" style={{ fontSize: 17, fontWeight: 800, color: "var(--navy)" }}>How can we help?</div>
+          </div>
+          <button type="button" aria-label="Close" onClick={onClose}
+            style={{ background: "none", border: "none", cursor: "pointer", padding: 4, display: "flex", color: "var(--text-faint)" }}>
+            <X size={18} />
+          </button>
+        </div>
+
+        {status === "sent" ? (
+          <div>
+            <div className="jr-alert jr-alert-success" role="status" style={{ marginBottom: 16 }}>
+              <span className="jr-alert-icon" aria-hidden="true"><CheckCircle2 size={16} /></span>
+              <div>Thanks for getting in touch! We'll get back to you as soon as we can.</div>
+            </div>
+            <div className="flex justify-end">
+              <Btn variant="secondary" onClick={onClose}>Close</Btn>
+            </div>
+          </div>
+        ) : (
+          <form onSubmit={handleSubmit} noValidate>
+            <div style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.55, marginBottom: 16 }}>
+              Have feedback, a question, or a query? We'd love to hear from you.
+            </div>
+
+            <div style={fieldWrap}>
+              <label htmlFor="jr-contact-name" style={labelStyle}>Name <span style={{ fontWeight: 500, color: "var(--text-faint)" }}>(optional)</span></label>
+              <input id="jr-contact-name" className="jr-input" type="text" value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" />
+            </div>
+
+            <div style={fieldWrap}>
+              <label htmlFor="jr-contact-email" style={labelStyle}>Email</label>
+              <input id="jr-contact-email" className="jr-input" type="email" inputMode="email" autoComplete="email"
+                value={email} onChange={(e) => setEmail(e.target.value)} aria-invalid={touched && !emailOk}
+                aria-describedby={touched && !emailOk ? "jr-contact-email-err" : undefined} />
+              {touched && !emailOk && (
+                <span id="jr-contact-email-err" style={{ fontSize: 12, color: "var(--bad)" }}>Enter an email address we can reply to.</span>
+              )}
+            </div>
+
+            <div style={fieldWrap}>
+              <label htmlFor="jr-contact-message" style={labelStyle}>Message</label>
+              <textarea id="jr-contact-message" className="jr-input jr-textarea" rows={5}
+                placeholder="Tell us about your feedback, question, or query..."
+                value={message} onChange={(e) => setMessage(e.target.value)} aria-invalid={touched && !messageOk}
+                aria-describedby={touched && !messageOk ? "jr-contact-message-err" : undefined}
+                style={{ minHeight: 120, fontSize: 14 }} />
+              {touched && !messageOk && (
+                <span id="jr-contact-message-err" style={{ fontSize: 12, color: "var(--bad)" }}>Please add a short message.</span>
+              )}
+            </div>
+
+            {status === "error" && (
+              <div className="jr-alert jr-alert-error" role="alert" style={{ marginBottom: 14 }}>
+                <span className="jr-alert-icon" aria-hidden="true"><AlertCircle size={16} /></span>
+                <div>{errorText}</div>
+              </div>
+            )}
+
+            <div className="flex justify-end" style={{ marginBottom: 14 }}>
+              <Btn id="jr-contact-submit" variant="accent" onClick={handleSubmit} disabled={!canSubmit}>
+                {status === "sending" ? "Sending…" : "Send message"}
+              </Btn>
+            </div>
+
+            <div style={{ borderTop: "1px solid var(--border)", paddingTop: 12, fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.55 }}>
+              {SUPPORT_CONTACT_EMAIL ? (
+                <>Or feel free to contact us directly at{" "}
+                  <a href={`mailto:${SUPPORT_CONTACT_EMAIL}`} style={{ color: "var(--blue)", fontWeight: 600 }}>{SUPPORT_CONTACT_EMAIL}</a>.
+                </>
+              ) : (
+                // TODO(config): set LEGAL_CONTACT.supportContactEmail in
+                // src/legal/legalContact.js — this line becomes the real
+                // "contact us directly at …" address once it is provided.
+                <>A direct support email address will be published here shortly.</>
+              )}
+            </div>
+          </form>
+        )}
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+/* ================================================================== *
+ * SPEECH-TO-TEXT — voice input for interview answers
+ * ------------------------------------------------------------------
+ * Wraps the browser's built-in Web Speech API. Zero direct API cost —
+ * recognition runs in the user's browser, nothing is uploaded or stored.
+ * Typing is always the fallback and always fully functional; this only
+ * ADDS a mic control next to the existing answer <textarea>.
+ *
+ * `useSpeechToText()` owns the whole recognition lifecycle for the ONE
+ * live answer surface at a time. Final (committed) chunks are handed to
+ * the caller's `onFinal` callback, which appends them to the existing
+ * answer state via `appendSpokenChunk` (never overwriting typed text).
+ * Interim (not-yet-final) text is exposed separately as a live preview
+ * and is never written to the answer, so it can't double-count.
+ * ================================================================== */
+function useSpeechToText() {
+  const Rec = getSpeechRecognition();
+  const supported = !!Rec;
+  const [listening, setListening] = useState(false);
+  const [interim, setInterim] = useState("");
+  const [error, setError] = useState(null); // { code, message } | null
+  const recRef = useRef(null);
+  const onFinalRef = useRef(null);
+
+  // Fully tear down the current recognition instance and its listeners.
+  const teardown = useCallback((silent) => {
+    const r = recRef.current;
+    recRef.current = null;
+    if (r) {
+      try {
+        r.onresult = null; r.onerror = null; r.onend = null; r.onnomatch = null;
+        r.abort();
+      } catch { /* already stopped */ }
+    }
+    if (silent) { setListening(false); setInterim(""); }
+  }, []);
+
+  const stop = useCallback(() => {
+    const r = recRef.current;
+    if (r) { try { r.stop(); } catch { teardown(true); } }
+    else { setListening(false); setInterim(""); }
+  }, [teardown]);
+
+  const reset = useCallback(() => { setError(null); setInterim(""); }, []);
+
+  const start = useCallback((onFinal) => {
+    if (!supported) {
+      setError({ code: "unsupported", message: VOICE_UNSUPPORTED_MESSAGE });
+      return;
+    }
+    setError(null);
+    setInterim("");
+    onFinalRef.current = typeof onFinal === "function" ? onFinal : null;
+    teardown(false); // drop any previous instance first
+
+    let rec;
+    try { rec = new Rec(); } catch {
+      setError({ code: "start-failed", message: "Couldn't start voice input. You can still type your answer." });
+      return;
+    }
+    rec.lang = SPEECH_LANG;
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.onresult = (e) => {
+      const { final, interim: iv } = readRecognitionEvent(e);
+      if (final && onFinalRef.current) onFinalRef.current(final);
+      setInterim(iv);
+    };
+    rec.onerror = (e) => {
+      const msg = speechErrorMessage(e && e.error);
+      if (msg) setError({ code: (e && e.error) || "error", message: msg });
+      setListening(false);
+      setInterim("");
+    };
+    rec.onend = () => {
+      recRef.current = null;
+      setListening(false);
+      setInterim("");
+    };
+    recRef.current = rec;
+    try {
+      rec.start();
+      setListening(true);
+    } catch {
+      // e.g. start() called while already started — recover, don't get stuck.
+      teardown(true);
+      setError({ code: "start-failed", message: "Couldn't start voice input. You can still type your answer." });
+    }
+  }, [supported, Rec, teardown]);
+
+  // Hard cleanup: if this component ever unmounts mid-recognition, the mic
+  // must not keep running in the background.
+  useEffect(() => () => teardown(true), [teardown]);
+
+  return { supported, listening, interim, error, start, stop, reset };
+}
+
+/* Compact mic control shown beside an interview answer <textarea>. When the
+ * browser has no Web Speech API it renders a plain, non-blocking notice
+ * instead of a button — typing is unaffected either way. `dark` adapts the
+ * palette for the async interview's dark answer panel. */
+function VoiceAnswerControl({ speech, onFinalChunk, dark = false }) {
+  const mutedColor = dark ? "rgba(255,255,255,0.6)" : "var(--text-faint)";
+  const errorColor = dark ? "#FF9B9B" : "var(--bad)";
+
+  if (!speech.supported) {
+    return (
+      <span style={{ fontSize: 12, color: mutedColor, display: "inline-flex", alignItems: "center", gap: 5 }}>
+        <MicOff size={12} aria-hidden="true" /> {VOICE_UNSUPPORTED_MESSAGE}
+      </span>
+    );
+  }
+
+  const { listening, interim, error } = speech;
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+      <button
+        type="button"
+        onClick={() => (listening ? speech.stop() : speech.start(onFinalChunk))}
+        aria-pressed={listening}
+        aria-label={listening ? "Stop voice input" : "Speak your answer"}
+        style={{
+          display: "inline-flex", alignItems: "center", gap: 6,
+          fontSize: 12, fontWeight: 600, lineHeight: 1,
+          padding: "6px 11px", borderRadius: 999, cursor: "pointer",
+          border: `1px solid ${listening ? "var(--bad)" : dark ? "rgba(255,255,255,0.28)" : "var(--border)"}`,
+          background: listening ? "rgba(239,68,68,0.12)" : "transparent",
+          color: listening ? "var(--bad)" : dark ? "#fff" : "var(--text-dim)",
+          fontFamily: "var(--font)",
+        }}
+      >
+        {listening ? (
+          <>
+            <span aria-hidden="true" style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--bad)", display: "inline-block" }} />
+            Listening…
+          </>
+        ) : (
+          <>
+            <Mic size={13} aria-hidden="true" /> Speak your answer
+          </>
+        )}
+      </button>
+
+      {/* Screen-reader status — not colour-dependent, always announced politely. */}
+      <span role="status" aria-live="polite" style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0,0,0,0)" }}>
+        {error ? error.message : listening ? "Listening. Speak your answer — the words will appear in the answer box, and you can still type or edit." : ""}
+      </span>
+
+      {listening && interim && (
+        <span style={{ fontSize: 12, color: mutedColor, fontStyle: "italic", maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          “{interim}”
+        </span>
+      )}
+      {error && (
+        <span style={{ fontSize: 12, color: errorColor }}>{error.message}</span>
+      )}
+    </span>
+  );
+}
+
 function Card({ children, style, hover = true, onClick, variant, className }) {
   // Phase 26: presentation-only additions — an optional `variant`
   // ("elevated" | "sunken") and `className` pass-through, plus the shared
@@ -3464,7 +3816,22 @@ function AcScorecardBody({ result, onOpenClassroom }) {
 //    static reassurance copy rendered below the checklist — currently only
 //    the interview-creation flows set it; every other caller of the staged
 //    mode omits it and renders exactly as before.
-function LoadingScreen({ messages, progress }) {
+//  - `note` (optional, `{ small, main }`, passed as a PROP): the same static
+//    reassurance block, but usable on screens that don't drive a staged
+//    `progress` object — currently the Classroom lesson / development-module
+//    generation screens. Rendered in BOTH modes; a `progress.note` (set inside
+//    a staged progress object) always takes precedence over this prop.
+
+// Reassurance shown while a Classroom learning resource (a lesson or a
+// development module) is being generated. Honest by construction: no
+// percentage, countdown or time estimate — just a calm "this is worth the
+// wait" note alongside the existing animation / step checklist.
+const CLASSROOM_RESOURCE_LOADING_NOTE = {
+  small: "This may take a minute…",
+  main: "We're creating personalised learning resources to help you ace this interview.",
+};
+
+function LoadingScreen({ messages, progress, note }) {
   const [idx, setIdx] = useState(0);
   const staged = progress && Array.isArray(progress.steps) && progress.steps.length > 0;
   useEffect(() => {
@@ -3508,6 +3875,15 @@ function LoadingScreen({ messages, progress }) {
             {progress.note.main && <div style={{ fontSize: 14, fontWeight: 700, color: "var(--navy)" }}>{progress.note.main}</div>}
           </div>
         )}
+        {/* Fallback for callers that pass `note` as a prop rather than on the
+            staged progress object (Classroom resource generation). Only shown
+            when the staged object didn't set its own note. */}
+        {!progress.note && note && (
+          <div style={{ marginTop: 22, paddingTop: 16, borderTop: "1px solid var(--border)", textAlign: "center", maxWidth: 280 }}>
+            {note.small && <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-faint)", marginBottom: 3 }}>{note.small}</div>}
+            {note.main && <div style={{ fontSize: 14, fontWeight: 700, color: "var(--navy)" }}>{note.main}</div>}
+          </div>
+        )}
       </div>
     );
   }
@@ -3518,6 +3894,12 @@ function LoadingScreen({ messages, progress }) {
         <Loader2 className="animate-spin" size={24} color="#fff" />
       </div>
       <div className="jr-fade" key={idx} style={{ fontSize: 17, fontWeight: 600, color: "var(--navy)" }}>{messages ? messages[idx] : ""}</div>
+      {note && (
+        <div style={{ marginTop: 22, paddingTop: 16, borderTop: "1px solid var(--border)", textAlign: "center", maxWidth: 300 }}>
+          {note.small && <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-faint)", marginBottom: 3 }}>{note.small}</div>}
+          {note.main && <div style={{ fontSize: 14, fontWeight: 700, color: "var(--navy)" }}>{note.main}</div>}
+        </div>
+      )}
     </div>
   );
 }
@@ -4107,7 +4489,7 @@ function HowItWorksPage({ onStart, onBack }) {
   );
 }
 
-function NavBar({ screen, setScreen, user, classroomNeedsWorkCount, onSignOut }) {
+function NavBar({ screen, setScreen, user, classroomNeedsWorkCount, onSignOut, onContact }) {
   const [isMobile, setIsMobile] = useState(typeof window !== "undefined" ? window.innerWidth < 768 : false);
   const [menuOpen, setMenuOpen] = useState(false);
   useEffect(() => {
@@ -4147,6 +4529,12 @@ function NavBar({ screen, setScreen, user, classroomNeedsWorkCount, onSignOut })
                 </LinkBtn>
               );
             })}
+            {onContact && (
+              <LinkBtn onClick={onContact}
+                style={{ fontSize: 13.5, fontWeight: 500, cursor: "pointer", display: "flex", alignItems: "center", gap: 6, padding: "7px 11px", borderRadius: "var(--r-sm)", color: "var(--text-dim)", background: "transparent", transition: "background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease)" }}>
+                Contact Us
+              </LinkBtn>
+            )}
             {!user && (
               <>
                 <LinkBtn onClick={() => setScreen("login")} style={{ fontSize: 14, fontWeight: 500, color: "var(--text-dim)", cursor: "pointer", padding: "7px 11px" }}>Log in</LinkBtn>
@@ -4183,6 +4571,12 @@ function NavBar({ screen, setScreen, user, classroomNeedsWorkCount, onSignOut })
             </LinkBtn>
             );
           })}
+          {onContact && (
+            <LinkBtn onClick={onContact}
+              style={{ width: "100%", padding: "13px 10px", fontSize: 15, fontWeight: 500, color: "var(--text-dim)", background: "transparent", borderRadius: "var(--r-sm)", display: "flex", alignItems: "center", cursor: "pointer" }}>
+              Contact Us
+            </LinkBtn>
+          )}
           {!user ? (
             <div style={{ paddingTop: 14 }}>
               <Btn variant="accent" full onClick={() => setScreen("login")}>Start practising for free</Btn>
@@ -4986,6 +5380,9 @@ function App() {
   const [freeUnlockPrompt, setFreeUnlockPrompt] = useState(null);
   const [freeUnlockBusy, setFreeUnlockBusy] = useState(false);
   const [paywall, setPaywall] = useState(null);
+  // Contact Us / feedback dialog — available from the shared NavBar on both the
+  // public landing pages and the authenticated app.
+  const [contactOpen, setContactOpen] = useState(false);
   const [checkoutBusy, setCheckoutBusy] = useState(null);
   const [entitlementFlash, setEntitlementFlash] = useState("");
   // Phase 40: the post-Stripe-Checkout confirmation banner. null, or
@@ -5030,6 +5427,10 @@ function App() {
   const [applications, setApplications] = useState([]);
   const [perf, setPerf] = useState(null); // { strengths, weaknesses, competency_history:{key:[scores]}, style_notes, common_issues }
   const [answerInput, setAnswerInput] = useState("");
+  // Voice input (Web Speech API) for interview answers — one recognition
+  // lifecycle shared across the adaptive / async / Challenge Me answer
+  // surfaces (only one is ever mounted at a time). See useSpeechToText.
+  const speech = useSpeechToText();
   const [report, setReport] = useState(null);
   const bottomRef = useRef(null);
   const busyRef = useRef(false);
@@ -5158,6 +5559,24 @@ function App() {
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [interview?.transcript?.length]);
   useEffect(() => { window.scrollTo(0, 0); }, [screen]);
+
+  // Voice input cleanup: stop recognition and clear any interim/error state
+  // whenever the answering context changes — a new interview question, moving
+  // to a different answer surface, or leaving the interview entirely. Combined
+  // with useSpeechToText's own unmount teardown, this guarantees the mic never
+  // keeps running in the background. (Submit handlers also call speech.stop()
+  // for an immediate stop the instant an answer is sent.)
+  const voiceAnswerContextKey = [
+    screen,
+    interview?.currentQuestion?.dbId ?? "",
+    interview?.currentIndex ?? "",
+    challenge?.questionDbId ?? "",
+  ].join("|");
+  useEffect(() => {
+    speech.stop();
+    speech.reset();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [voiceAnswerContextKey]);
 
   // Phase 40: returning from Stripe Checkout. `create-checkout` builds the return
   // URL as ?checkout=success|cancel (&product=...). We never tell the user their
@@ -6686,6 +7105,7 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
   // narrative interview_report call — see this section's own docstring above.
   async function submitChallengeAnswer() {
     if (!challenge || !challengeAnswerInput.trim() || challengeBusyRef.current) return;
+    speech.stop(); // never leave the mic running once an answer is sent
     challengeBusyRef.current = true;
     setError("");
     const cleanAnswer = sanitizeText(challengeAnswerInput);
@@ -7329,6 +7749,7 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
   // re-running Call 1, re-inserting the answer, or touching a question counter.
   async function submitAnswer() {
     if (!answerInput.trim() || !interview || !profile) return;
+    speech.stop(); // never leave the mic running once an answer is sent
     // Structural guard (Phase 4B §3, unchanged): interview_turn must be UNREACHABLE for an
     // independent_batch interview, not merely discouraged by a prompt. This check exists
     // so that even a future accidental wiring of a button/handler to submitAnswer() cannot
@@ -7761,6 +8182,7 @@ Rules: scores computed honestly from the transcript's evaluations. Never fabrica
     if (!interview || interview.config?.pipeline !== "independent_batch") return;
     const q = interview.questions[interview.currentIndex];
     if (!q) return;
+    speech.stop(); // never leave the mic running once an answer is sent
     setError("");
     const cleanAnswer = sanitizeText(answerInput || "");
     try {
@@ -8148,7 +8570,11 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
   return (
     <div style={{ fontFamily: "var(--font)", background: "var(--bg)", minHeight: "100%", color: "var(--text)" }}>
       <style>{TOKENS}</style>
-      {showNav && <NavBar screen={screen} setScreen={setScreen} user={user} classroomNeedsWorkCount={classroomNeedsWorkCount} onSignOut={() => guarded(handleSignOut)} />}
+      {showNav && <NavBar screen={screen} setScreen={setScreen} user={user} classroomNeedsWorkCount={classroomNeedsWorkCount} onSignOut={() => guarded(handleSignOut)} onContact={() => setContactOpen(true)} />}
+
+      {contactOpen && (
+        <ContactDialog user={user} onClose={() => setContactOpen(false)} onSubmit={dbSubmitContactMessage} />
+      )}
 
       {/* ---------------- PHASE 40: post-checkout confirmation banner ---------------- */}
       {user && checkoutStatus && checkoutStatus.phase === "confirming" && (
@@ -9397,7 +9823,10 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
             className="jr-input jr-textarea" style={{ height: 200, fontSize: 15 }} />
           {error && <div role="alert" style={{ color: "var(--bad)", fontSize: 13, marginTop: 10 }}>{error}</div>}
           <div className="flex justify-between items-center mt-4" style={{ flexWrap: "wrap", gap: 10 }}>
-            <span style={{ fontSize: 12, color: "var(--text-faint)" }}>{challengeAnswerInput.trim().split(/\s+/).filter(Boolean).length} words</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 12, color: "var(--text-faint)" }}>{challengeAnswerInput.trim().split(/\s+/).filter(Boolean).length} words</span>
+              <VoiceAnswerControl speech={speech} onFinalChunk={(chunk) => setChallengeAnswerInput((prev) => appendSpokenChunk(prev, chunk))} />
+            </div>
             <Btn variant="accent" onClick={() => guarded(submitChallengeAnswer)} disabled={!challengeAnswerInput.trim()}>Submit <ChevronRight size={16} /></Btn>
           </div>
         </div>
@@ -10127,7 +10556,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
               <div className="flex justify-between items-center mt-4">
                 <div className="flex items-center gap-3">
                   <span style={{ fontSize: 12, color: "var(--text-faint)" }}>{answerInput.trim().split(/\s+/).filter(Boolean).length} words</span>
-                  <span style={{ fontSize: 12, color: "var(--text-faint)", display: "flex", alignItems: "center", gap: 4 }}><Mic size={12} /> Voice — coming soon</span>
+                  <VoiceAnswerControl speech={speech} onFinalChunk={(chunk) => setAnswerInput((prev) => appendSpokenChunk(prev, chunk))} />
                 </div>
                 <Btn variant="accent" onClick={() => guarded(submitAnswer)} disabled={!answerInput.trim()}>Submit answer <ChevronRight size={16} /></Btn>
               </div>
@@ -10195,8 +10624,11 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                   <textarea aria-label="Your answer" value={answerInput} onChange={(e) => setAnswerInput(e.target.value)} placeholder="Type your answer..."
                     style={{ width: "100%", height: 220, padding: 16, border: "1.5px solid rgba(255,255,255,0.22)", borderRadius: "var(--radius)", fontSize: 15, lineHeight: 1.55, fontFamily: "var(--font)", background: "rgba(255,255,255,0.07)", color: "#fff" }} />
                   {error && <div style={{ color: "#FF9B9B", fontSize: 13, marginTop: 10 }}>{error}</div>}
-                  <div className="flex justify-between items-center mt-4">
-                    <span style={{ fontSize: 12, color: "rgba(255,255,255,0.5)" }}>{answerInput.trim().split(/\s+/).filter(Boolean).length} words</span>
+                  <div className="flex justify-between items-center mt-4" style={{ flexWrap: "wrap", gap: 10 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 12, color: "rgba(255,255,255,0.5)" }}>{answerInput.trim().split(/\s+/).filter(Boolean).length} words</span>
+                      <VoiceAnswerControl speech={speech} dark onFinalChunk={(chunk) => setAnswerInput((prev) => appendSpokenChunk(prev, chunk))} />
+                    </div>
                     <Btn variant="accent" onClick={() => guarded(() => submitAsyncAnswer(false))}>
                       {qNum >= total ? "Submit final answer" : "Submit & continue"} <ChevronRight size={16} />
                     </Btn>
@@ -10680,9 +11112,9 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
         </div>
       )}
 
-      {screen === "classroom_generating" && <LoadingScreen messages={["Reviewing what went wrong...", "Checking the facts you'll need...", "Building your lesson...", "Writing a quick check..."]} />}
+      {screen === "classroom_generating" && <LoadingScreen messages={["Reviewing what went wrong...", "Checking the facts you'll need...", "Building your lesson...", "Writing a quick check..."]} note={CLASSROOM_RESOURCE_LOADING_NOTE} />}
 
-      {screen === "dev_module_generating" && <LoadingScreen progress={genProgress} messages={["Reviewing the diagnosis...", "Building your learning guide...", "Writing flashcards...", "Preparing a written quiz..."]} />}
+      {screen === "dev_module_generating" && <LoadingScreen progress={genProgress} note={CLASSROOM_RESOURCE_LOADING_NOTE} messages={["Reviewing the diagnosis...", "Building your learning guide...", "Writing flashcards...", "Preparing a written quiz..."]} />}
 
       {/* ---------------- PHASE 14: DEVELOPMENT MODULE ---------------- */}
       {screen === "dev_module" && devModule && devTopic && (() => {

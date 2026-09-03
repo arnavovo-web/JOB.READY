@@ -44,10 +44,19 @@ describe("Phase 40 — entitlement migration", () => {
     expect(/baseline/i.test(PRICING_MIG_NAME)).toBe(false);
   });
 
-  it("is timestamped AFTER every other repo migration (monotonic apply order)", () => {
-    const others = migFiles.filter((f) => f !== PRICING_MIG_NAME).map((f) => f.slice(0, 14));
+  it("is timestamped after every migration that predates it (monotonic apply order; a later additive migration is fine)", () => {
     const mine = PRICING_MIG_NAME.slice(0, 14);
-    for (const ts of others) expect(mine > ts, `${mine} must sort after ${ts}`).toBe(true);
+    // The migrations that existed when this one was authored — it must apply
+    // strictly after all of them. Migrations added *later* (e.g. the Contact Us
+    // contact_messages table) legitimately sort after this one and are not a
+    // monotonicity violation.
+    const predecessors = [
+      "20260828120000", // baseline_schema
+      "20260828135856", // development_modules
+      "20260901220000", // phase37_application_checklist
+      "20260902200000", // profiles_reference_code (already in the live ledger)
+    ];
+    for (const ts of predecessors) expect(mine > ts, `${mine} must sort after ${ts}`).toBe(true);
     // specifically: after the reference-code migration that is already in the live ledger
     expect(mine > "20260902200000").toBe(true);
   });
