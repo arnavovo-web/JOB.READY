@@ -49,7 +49,10 @@ const PRODUCTS: Record<ProductId, {
   recurring?: { interval: "month" };
 }> = {
   last_minute_saver: {
-    name: "JOB.READY — Last-Minute Saver",
+    // Display string only (Stripe uses inline price_data — there is no persisted
+    // Stripe Product/Price). Matches the pricing page's "Single Application".
+    // The product id key `last_minute_saver` and `amount` are unchanged.
+    name: "JOB.READY — Single Application",
     description: "One application unlock credit",
     amount: 299,
     mode: "payment",

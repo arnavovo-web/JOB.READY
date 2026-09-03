@@ -5,9 +5,13 @@
  * applicationSchedule.js — no AI call, no web search, no database access,
  * never throws). It is the single source of truth for:
  *
- *   - the four published plans (Free / Last-Minute Saver / Student Pack /
+ *   - the four published plans (Free / Single Application / Student Pack /
  *     Job Search Pass) and their prices, shared by the pricing page, the
- *     paywall and the Stripe Checkout call;
+ *     paywall and the Stripe Checkout call. NOTE: `id` (last_minute_saver /
+ *     student_pack / job_search_pass), `amount` and `unlocks` are the
+ *     functional keys and never change; `name` / `headline` / `summary` /
+ *     `features` / `badge` / `perUnit` / `savingNote` / `positioning` /
+ *     `ctaLabel` are display-only copy;
  *   - deciding, from a user's entitlement snapshot, whether a specific
  *     application may be prepared for right now, and if not, how it could
  *     be unlocked (free unlock / a purchased credit / a subscription);
@@ -46,30 +50,32 @@ export const PRICING_PLANS = [
     unlocks: 1,
     headline: "1 application unlock",
     summary:
-      "Every new account can unlock one application for free. Once unlocked, you get unlimited access to every JOB.READY preparation tool for that application.",
+      "1 application unlock, then unlimited access to every JOB.READY preparation tool for that application. Nothing is ever charged automatically.",
     features: [
-      "Unlock 1 application",
-      "Unlimited mock interviews, Classroom, Assessment Centre and reports for that application",
-      "You confirm before it's used — nothing is spent automatically",
+      "1 application unlock",
+      "Unlimited AI mock interviews, Classroom, Assessment Centre and reports for that application",
+      "Nothing is charged automatically — you confirm before it's used",
     ],
   },
   {
+    // id / amount / unlocks are functional keys — unchanged. Display name only.
     id: "last_minute_saver",
     kind: "one_time",
-    name: "Last-Minute Saver",
+    name: "Single Application",
     emoji: "⚡",
     amount: 299,
     priceLabel: "£2.99",
     cadence: "one-off",
     unlocks: 1,
     headline: "1 application unlock",
-    summary:
-      "A one-time payment that adds a single application unlock credit to your account. Spend it whenever you choose.",
+    perUnit: "£2.99 per application",
+    summary: "Perfect if you're preparing for one specific role.",
     features: [
-      "Adds 1 unlock credit",
-      "One-time payment — no subscription",
-      "Unlimited preparation for the application you spend it on",
+      "Unlimited preparation for one application",
+      "No subscription",
+      "Use the unlock whenever you choose",
     ],
+    ctaLabel: "Buy 1 Unlock",
   },
   {
     id: "student_pack",
@@ -81,13 +87,17 @@ export const PRICING_PLANS = [
     cadence: "one-off",
     unlocks: 5,
     headline: "5 application unlocks",
-    summary:
-      "A one-time payment that adds five application unlock credits. Spend them one at a time — you don't have to choose all five applications now.",
+    badge: "⭐ BEST VALUE", // ⭐ — display only
+    perUnit: "Just £1 per application",
+    // 5 × £2.99 = £14.95 individually vs £4.99 → (14.95 − 4.99) / 14.95 ≈ 66.6%.
+    savingNote: "Save over 65% compared with buying individually",
+    summary: "Perfect for students applying to multiple roles.",
     features: [
-      "Adds 5 unlock credits",
-      "One-time payment — no subscription",
-      "Spend credits one application at a time",
+      "5 application unlocks",
+      "Use them one application at a time",
+      "No subscription",
     ],
+    ctaLabel: "Buy 5 Unlocks",
   },
   {
     id: "job_search_pass",
@@ -98,14 +108,15 @@ export const PRICING_PLANS = [
     priceLabel: "£7.99",
     cadence: "per month",
     unlocks: Infinity,
-    headline: "Unlimited applications",
-    summary:
-      "While the subscription is active you have unlimited access to preparation resources for any number of applications.",
+    headline: "Unlimited application unlocks",
+    positioning: "Best for multiple applications",
+    summary: "For active job seekers applying to multiple roles.",
     features: [
       "Unlimited application unlocks while active",
-      "Unlimited mock interviews, Classroom, Assessment Centre and reports",
+      "Unlimited AI mock interviews, Classroom, Assessment Centre and reports",
       "Cancel anytime — access lasts until the end of the paid period",
     ],
+    ctaLabel: "Start Unlimited",
   },
 ];
 

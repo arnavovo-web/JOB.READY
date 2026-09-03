@@ -20,10 +20,14 @@ import {
 
 /* ------------------------------ the plans ------------------------------ */
 describe("PRICING_PLANS — the four published plans", () => {
-  it("has exactly Free / Last-Minute Saver / Student Pack / Job Search Pass", () => {
+  it("has exactly the four plans in order — ids are the stable functional keys (display name is separate)", () => {
     expect(PRICING_PLANS.map((p) => p.id)).toEqual([
       "free", "last_minute_saver", "student_pack", "job_search_pass",
     ]);
+    // the £2.99 one-time plan's id never changes even though its display name is "Single Application"
+    expect(planById("last_minute_saver").name).toBe("Single Application");
+    expect(planById("student_pack").name).toBe("Student Pack");
+    expect(planById("job_search_pass").name).toBe("Job Search Pass");
   });
 
   it("prices match the final pricing model (pence + label)", () => {

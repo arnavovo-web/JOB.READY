@@ -2749,29 +2749,54 @@ function PricingPlans({ onChoosePlan, checkoutBusy, entitlements, compact = fals
         const isSub = plan.kind === "subscription";
         const isFree = plan.kind === "free";
         const active = isSub && e.hasActiveSubscription;
-        const feature = highlightAccess &&
+        // Context-specific highlight (paywall): steer the user toward the plan
+        // that unlocks their current application. Unchanged behaviour.
+        const contextHighlight = highlightAccess &&
           ((highlightAccess === "unlockable_credit" && plan.id === "student_pack") ||
            (highlightAccess === "locked" && plan.id === "last_minute_saver"));
+        // Best-value plan (Student Pack, via its display-only `badge`) is always
+        // visually featured on the full pricing page; the paywall keeps its own
+        // context highlight instead.
+        const featured = contextHighlight || (!compact && !!plan.badge);
         return (
           <Card key={plan.id} hover={false} style={{
+            position: "relative",
             padding: compact ? 16 : 20,
             display: "flex", flexDirection: "column", gap: 10,
-            border: feature ? "1px solid var(--blue)" : "1px solid var(--border)",
-            boxShadow: feature ? "var(--focus-ring)" : undefined,
+            border: featured ? "1.5px solid var(--blue)" : "1px solid var(--border)",
+            boxShadow: featured ? "var(--focus-ring)" : undefined,
           }}>
-            <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center justify-between gap-2" style={{ flexWrap: "wrap" }}>
               <span style={{ fontSize: 14, fontWeight: 800, color: "var(--navy)" }}>
                 <span aria-hidden="true" style={{ marginRight: 7 }}>{plan.emoji}</span>{plan.name}
               </span>
+              {plan.badge && (
+                <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: "0.04em", color: "#fff", background: "var(--blue)", borderRadius: 999, padding: "3px 9px", whiteSpace: "nowrap" }}>
+                  <span aria-hidden="true">⭐ </span>BEST VALUE
+                </span>
+              )}
               {active && <StatusBadge variant="success" dot>Active</StatusBadge>}
               {isFree && <StatusBadge variant="neutral">Included</StatusBadge>}
             </div>
-            <div className="flex items-baseline" style={{ gap: 5 }}>
-              <span style={{ fontSize: 26, fontWeight: 800, color: "var(--navy)" }}>{plan.priceLabel}</span>
-              {plan.cadence && <span style={{ fontSize: 12.5, color: "var(--text-faint)", fontWeight: 600 }}>{plan.cadence}</span>}
+            <div>
+              <div className="flex items-baseline" style={{ gap: 5 }}>
+                <span style={{ fontSize: 26, fontWeight: 800, color: "var(--navy)" }}>{plan.priceLabel}</span>
+                {plan.cadence && <span style={{ fontSize: 12.5, color: "var(--text-faint)", fontWeight: 600 }}>{plan.cadence}</span>}
+              </div>
+              {plan.perUnit && (
+                <div style={{ fontSize: 12, fontWeight: 700, color: "var(--blue-dark)", marginTop: 2 }}>{plan.perUnit}</div>
+              )}
             </div>
             <div style={{ fontSize: 13, fontWeight: 700, color: "var(--blue-dark)" }}>{plan.headline}</div>
-            {!compact && <div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.55 }}>{plan.summary}</div>}
+            {/* savingNote + positioning are full-page only — the compact paywall
+                keeps just the badge + per-application price + headline + features. */}
+            {!compact && plan.savingNote && (
+              <div className="flex items-center gap-2" style={{ fontSize: 12, fontWeight: 700, color: "var(--good)" }}>
+                <CheckCircle2 size={13} aria-hidden="true" style={{ flexShrink: 0 }} />
+                <span>{plan.savingNote}</span>
+              </div>
+            )}
+            {!compact && plan.summary && <div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.55 }}>{plan.summary}</div>}
             <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 6, flex: 1 }}>
               {plan.features.map((f) => (
                 <li key={f} className="flex items-start gap-2" style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.5 }}>
@@ -2780,13 +2805,16 @@ function PricingPlans({ onChoosePlan, checkoutBusy, entitlements, compact = fals
                 </li>
               ))}
             </ul>
+            {!compact && plan.positioning && (
+              <div style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-faint)" }}>{plan.positioning}</div>
+            )}
             {isFree ? (
               <div style={{ fontSize: 12, color: "var(--text-faint)", fontWeight: 600, paddingTop: 2 }}>
                 {e.freeUnlockUsed ? "Your free unlock has been used" : "Confirm to use — nothing is spent automatically"}
               </div>
             ) : (
               <Btn
-                variant={feature ? "accent" : "secondary"}
+                variant={featured ? "accent" : "secondary"}
                 full
                 disabled={!!checkoutBusy || active}
                 onClick={() => onChoosePlan(plan.id)}
@@ -2794,6 +2822,7 @@ function PricingPlans({ onChoosePlan, checkoutBusy, entitlements, compact = fals
               >
                 {active ? "Current plan"
                   : checkoutBusy === plan.id ? "Redirecting to checkout…"
+                  : plan.ctaLabel ? plan.ctaLabel
                   : isSub ? "Subscribe" : "Buy"}
               </Btn>
             )}
@@ -8775,10 +8804,21 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
       {screen === "pricing" && (
         <div className="jr-fade jr-page" style={{ maxWidth: 900, margin: "0 auto", padding: "40px 24px 12px" }}>
           <Btn variant="ghost" onClick={() => setScreen(user ? "dashboard" : "landing")} style={{ marginBottom: 16, padding: "6px 4px" }}><ArrowLeft size={14} /> Back</Btn>
-          <h2 style={{ fontSize: 28, fontWeight: 800, color: "var(--navy)", marginBottom: 8 }}>Pricing</h2>
-          <p style={{ fontSize: 14.5, color: "var(--text-dim)", lineHeight: 1.6, maxWidth: 620, marginBottom: 20 }}>
-            You can always create and save applications for free. You only pay to <strong>unlock preparation tools</strong> for an application — and once an application is unlocked you get unlimited access to every mock interview, Classroom lesson and Assessment Centre exercise for it.
+          <h2 style={{ fontSize: 28, fontWeight: 800, color: "var(--navy)", marginBottom: 8 }}>Choose how you want to prepare</h2>
+          <p style={{ fontSize: 14.5, color: "var(--text-dim)", lineHeight: 1.6, maxWidth: 640, marginBottom: 16 }}>
+            Each <strong>application unlock</strong> gives you unlimited access to JOB.READY's preparation tools for one job application. You can always create and save applications for free — you only pay to unlock the tools.
           </p>
+          <Card hover={false} style={{ padding: "12px 16px", marginBottom: 22, background: "var(--surface-sunken)", border: "1px solid var(--border)" }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>Every application unlock includes</div>
+            <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "6px 18px" }}>
+              {["Unlimited AI mock interviews", "Personalised Classroom resources", "Assessment Centre practice", "Detailed performance reports"].map((item) => (
+                <li key={item} className="flex items-start gap-2" style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.45 }}>
+                  <CheckCircle2 size={14} color="var(--good)" aria-hidden="true" style={{ flexShrink: 0, marginTop: 2 }} />
+                  <span>{item}</span>
+                </li>
+              ))}
+            </ul>
+          </Card>
 
           {user && (() => {
             const s = remainingUnlocksSummary(entitlements);
@@ -8805,7 +8845,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
             {[
               ["Creating applications is always free", "Add as many companies and roles as you like. Nothing is charged for saving an application."],
               ["Your free unlock", "Every account can unlock one application for free. The first time you open a preparation tool for a locked application we ask you to confirm — the free unlock is spent only when you click “Unlock & start preparing”, never automatically."],
-              ["Unlock credits", "Last-Minute Saver and Student Pack add credits to your account. You spend them one application at a time, whenever you choose."],
+              ["Unlock credits", "Single Application and Student Pack add credits to your account. You spend them one application at a time, whenever you choose."],
               ["Job Search Pass", "While the monthly subscription is active, every application is unlocked. Cancel anytime — access lasts until the end of the paid period."],
             ].map(([q, a]) => (
               <div key={q} style={{ padding: "10px 0", borderTop: "1px solid var(--border)" }}>
