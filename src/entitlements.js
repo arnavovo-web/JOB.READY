@@ -254,3 +254,31 @@ export function paywallCopy(access) {
     body: "Unlock this application to get unlimited access to all JOB.READY preparation resources.",
   };
 }
+
+/* --------------------- checkout-return confirmation --------------------- */
+
+// After returning from Stripe Checkout the browser must NOT claim the purchase
+// landed until a fresh entitlement snapshot actually shows it. Given the
+// snapshot captured just before checkout (`baseline`) and a freshly-loaded
+// snapshot (`current`), has the EXPECTED new entitlement appeared yet?
+//   expect === "subscription" -> the Job Search Pass went from inactive to active
+//   otherwise (one-time)       -> unlock_credits increased vs the baseline
+// A missing `product` param falls back to "any positive change".
+export function checkoutConfirmed({ expect, baseline, current }) {
+  const b = normalizeEntitlements(baseline);
+  const c = normalizeEntitlements(current);
+  const gainedSub = c.hasActiveSubscription && !b.hasActiveSubscription;
+  const gainedCredit = c.unlockCredits > b.unlockCredits;
+  if (expect === "subscription") return gainedSub;
+  if (expect === "credits") return gainedCredit;
+  return gainedSub || gainedCredit;
+}
+
+// Increasing (but short) backoff between entitlement re-checks after a
+// checkout return, in milliseconds. First check is immediate; these are the
+// waits BETWEEN subsequent checks. ~13s total across 6 checks.
+export const CHECKOUT_POLL_BACKOFF_MS = [1200, 1800, 2600, 3600, 4000];
+
+export const CHECKOUT_CONFIRMING_MESSAGE = "Payment received — we're confirming your purchase…";
+export const CHECKOUT_PENDING_MESSAGE =
+  "Your payment was received and may still be processing. Refresh your account in a moment to check your unlocks.";

@@ -15,6 +15,7 @@ import {
   normalizeEntitlements, entitlementsFromRows,
   ACCESS, evaluateApplicationAccess, applicationIsUnlocked, accessNeedsPrompt,
   remainingUnlocksSummary, freeUnlockPromptCopy, paywallCopy,
+  checkoutConfirmed, CHECKOUT_POLL_BACKOFF_MS, CHECKOUT_CONFIRMING_MESSAGE, CHECKOUT_PENDING_MESSAGE,
 } from "./entitlements.js";
 
 /* ------------------------------ the plans ------------------------------ */
@@ -283,5 +284,79 @@ describe("paywallCopy", () => {
 
   it("accepts either a status string or the full access object", () => {
     expect(paywallCopy(ACCESS.LOCKED).title).toBe(paywallCopy({ status: ACCESS.LOCKED }).title);
+  });
+});
+
+/* --------------------- checkout-return confirmation --------------------- */
+describe("checkoutConfirmed — only true once the NEW entitlement is actually observed", () => {
+  const zero = normalizeEntitlements({});
+  const twoCredits = normalizeEntitlements({ freeUnlockUsed: true, unlockCredits: 2 });
+  const withSub = normalizeEntitlements({ hasActiveSubscription: true, freeUnlockUsed: true });
+
+  it("credits: false until unlock_credits rises above the pre-checkout baseline", () => {
+    // immediate return, webhook not processed yet -> current == baseline
+    expect(checkoutConfirmed({ expect: "credits", baseline: zero, current: zero })).toBe(false);
+    // still processing (a stale/partial refresh) -> still equal
+    expect(checkoutConfirmed({ expect: "credits", baseline: twoCredits, current: twoCredits })).toBe(false);
+    // credits appeared during polling
+    expect(checkoutConfirmed({ expect: "credits", baseline: zero, current: normalizeEntitlements({ unlockCredits: 5 }) })).toBe(true);
+    // a SECOND pack while already holding 2 -> only true when it goes ABOVE 2, not merely > 0
+    expect(checkoutConfirmed({ expect: "credits", baseline: twoCredits, current: twoCredits })).toBe(false);
+    expect(checkoutConfirmed({ expect: "credits", baseline: twoCredits, current: normalizeEntitlements({ freeUnlockUsed: true, unlockCredits: 7 }) })).toBe(true);
+  });
+
+  it("subscription: false until an INACTIVE→ACTIVE transition vs the baseline", () => {
+    expect(checkoutConfirmed({ expect: "subscription", baseline: zero, current: zero })).toBe(false);
+    expect(checkoutConfirmed({ expect: "subscription", baseline: zero, current: withSub })).toBe(true);
+    // already had an active sub in the baseline -> not a new gain
+    expect(checkoutConfirmed({ expect: "subscription", baseline: withSub, current: withSub })).toBe(false);
+    // a credit arriving does NOT confirm a subscription purchase
+    expect(checkoutConfirmed({ expect: "subscription", baseline: zero, current: normalizeEntitlements({ unlockCredits: 5 }) })).toBe(false);
+  });
+
+  it("unknown product ('any'): confirmed on any positive change (credit OR new subscription)", () => {
+    expect(checkoutConfirmed({ expect: "any", baseline: zero, current: zero })).toBe(false);
+    expect(checkoutConfirmed({ expect: "any", baseline: zero, current: normalizeEntitlements({ unlockCredits: 1 }) })).toBe(true);
+    expect(checkoutConfirmed({ expect: "any", baseline: zero, current: withSub })).toBe(true);
+  });
+
+  it("garbage / missing snapshots are safe (normalised, never throws)", () => {
+    expect(checkoutConfirmed({ expect: "credits", baseline: null, current: undefined })).toBe(false);
+    expect(checkoutConfirmed({ expect: "credits", baseline: undefined, current: { unlockCredits: 3 } })).toBe(true);
+  });
+
+  it("models the full poll lifecycle: absent → absent → present", () => {
+    const baseline = normalizeEntitlements({ freeUnlockUsed: true, unlockCredits: 1 });
+    const polls = [
+      normalizeEntitlements({ freeUnlockUsed: true, unlockCredits: 1 }), // t0: not yet
+      normalizeEntitlements({ freeUnlockUsed: true, unlockCredits: 1 }), // t1: not yet
+      normalizeEntitlements({ freeUnlockUsed: true, unlockCredits: 6 }), // t2: webhook done
+    ];
+    const results = polls.map((current) => checkoutConfirmed({ expect: "credits", baseline, current }));
+    expect(results).toEqual([false, false, true]);
+  });
+});
+
+describe("checkout-return copy + backoff constants", () => {
+  it("the confirming message never claims the purchase is already available", () => {
+    expect(CHECKOUT_CONFIRMING_MESSAGE).toBe("Payment received — we're confirming your purchase…");
+    expect(CHECKOUT_CONFIRMING_MESSAGE).not.toMatch(/on your account|available|unlocked|added/i);
+  });
+  it("the pending message is truthful (may still be processing) and points to Refresh", () => {
+    expect(CHECKOUT_PENDING_MESSAGE).toBe(
+      "Your payment was received and may still be processing. Refresh your account in a moment to check your unlocks.",
+    );
+    expect(CHECKOUT_PENDING_MESSAGE).not.toMatch(/\bfailed\b|\bsuccess\b|is now on your account/i);
+  });
+  it("backoff is a short increasing series of positive waits", () => {
+    expect(Array.isArray(CHECKOUT_POLL_BACKOFF_MS)).toBe(true);
+    expect(CHECKOUT_POLL_BACKOFF_MS.length).toBeGreaterThanOrEqual(3);
+    for (const ms of CHECKOUT_POLL_BACKOFF_MS) expect(ms).toBeGreaterThan(0);
+    for (let i = 1; i < CHECKOUT_POLL_BACKOFF_MS.length; i++) {
+      expect(CHECKOUT_POLL_BACKOFF_MS[i]).toBeGreaterThanOrEqual(CHECKOUT_POLL_BACKOFF_MS[i - 1]);
+    }
+    const total = CHECKOUT_POLL_BACKOFF_MS.reduce((a, b) => a + b, 0);
+    expect(total).toBeGreaterThan(4000);   // gives the webhook a real chance
+    expect(total).toBeLessThan(30000);     // still "short"
   });
 });

@@ -155,6 +155,7 @@ import {
   PRICING_PLANS, planById, PURCHASABLE_PRODUCT_IDS,
   entitlementsFromRows, normalizeEntitlements, evaluateApplicationAccess,
   remainingUnlocksSummary, freeUnlockPromptCopy, paywallCopy, ACCESS,
+  checkoutConfirmed, CHECKOUT_POLL_BACKOFF_MS, CHECKOUT_CONFIRMING_MESSAGE, CHECKOUT_PENDING_MESSAGE,
 } from "./entitlements";
 
 /* ================================================================== *
@@ -4987,6 +4988,14 @@ function App() {
   const [paywall, setPaywall] = useState(null);
   const [checkoutBusy, setCheckoutBusy] = useState(null);
   const [entitlementFlash, setEntitlementFlash] = useState("");
+  // Phase 40: the post-Stripe-Checkout confirmation banner. null, or
+  //   { phase: "confirming" | "pending", productName, expect, baseline, busy }
+  // "confirming" = polling refreshEntitlements() for the new entitlement to
+  // appear; "pending" = it hasn't within the polling window (never a false
+  // success) — shows a Refresh button. Cleared once the entitlement is
+  // actually observed (then a normal entitlementFlash success is shown).
+  const [checkoutStatus, setCheckoutStatus] = useState(null);
+  const checkoutHandledRef = useRef(false);
   // Phase 7: Interview Invitation Scanner — a second INPUT METHOD into this SAME wizard, never
   // a parallel one. buildMethod tracks which entry the candidate took ("jdcv" is the default/
   // existing behaviour, applied even for entry points that skip the choice screen entirely —
@@ -5151,31 +5160,58 @@ function App() {
   useEffect(() => { window.scrollTo(0, 0); }, [screen]);
 
   // Phase 40: returning from Stripe Checkout. `create-checkout` builds the return
-  // URL as ?checkout=success|cancel (&product=...). Refresh the entitlement
-  // snapshot so a just-completed purchase shows immediately, surface a short
-  // confirmation, and scrub the query params so a refresh doesn't replay it.
+  // URL as ?checkout=success|cancel (&product=...). We never tell the user their
+  // unlock/credits/subscription are ready until a fresh entitlement snapshot
+  // actually shows the new entitlement — Stripe's webhook + the DB are the sole
+  // source of truth (the browser grants nothing). On success we show a truthful
+  // "confirming" banner and poll refreshEntitlements() with a short backoff;
+  // once the new entitlement appears we show a confirmed success; if it hasn't
+  // within the window we show a "may still be processing" banner with a Refresh
+  // button — never a false success. Query params are scrubbed so a reload can't
+  // replay this.
   useEffect(() => {
-    if (typeof window === "undefined" || !user) return;
+    if (typeof window === "undefined" || !user || checkoutHandledRef.current) return;
     const params = new URLSearchParams(window.location.search);
     const outcome = params.get("checkout");
     if (!outcome) return;
+    checkoutHandledRef.current = true;
     const plan = planById(params.get("product"));
     if (window.history?.replaceState) window.history.replaceState(null, "", window.location.pathname);
-    if (outcome === "success") {
-      setPaywall(null); setFreeUnlockPrompt(null);
-      setEntitlementFlash(plan ? `Payment received — ${plan.name} is now on your account.` : "Payment received — your account has been updated.");
-      (async () => {
-        // The webhook grant can land a beat after the browser redirect back —
-        // re-check a few times before giving up.
-        for (let i = 0; i < 4; i++) {
-          const fresh = await refreshEntitlements();
-          if (fresh.hasActiveSubscription || fresh.unlockCredits > 0) break;
-          await new Promise((r) => setTimeout(r, 1500));
-        }
-      })();
-    } else if (outcome === "cancel") {
+
+    if (outcome === "cancel") {
       setEntitlementFlash("Checkout cancelled — no payment was taken.");
+      return;
     }
+    if (outcome !== "success") return;
+
+    setPaywall(null); setFreeUnlockPrompt(null);
+    // Snapshot the entitlement state as it was BEFORE checkout so we can detect
+    // the specific new entitlement, not just "has any credits/subscription".
+    const baseline = normalizeEntitlements(entitlementsRef.current);
+    const expect = plan?.kind === "subscription" ? "subscription"
+      : plan?.kind === "one_time" ? "credits"
+      : "any";
+    const productName = plan?.name || null;
+    setCheckoutStatus({ phase: "confirming", productName, expect, baseline, busy: false });
+
+    (async () => {
+      // First check immediately, then wait between subsequent checks (backoff).
+      for (let i = 0; i <= CHECKOUT_POLL_BACKOFF_MS.length; i++) {
+        const fresh = await refreshEntitlements();
+        if (checkoutConfirmed({ expect, baseline, current: fresh })) {
+          setCheckoutStatus(null);
+          setEntitlementFlash(productName
+            ? `${productName} confirmed — it's on your account now.`
+            : "Purchase confirmed — your account has been updated.");
+          return;
+        }
+        if (i < CHECKOUT_POLL_BACKOFF_MS.length) {
+          await new Promise((r) => setTimeout(r, CHECKOUT_POLL_BACKOFF_MS[i]));
+        }
+      }
+      // Timed out — the webhook may still be in flight. Never claim success.
+      setCheckoutStatus((s) => (s && s.phase === "confirming" ? { ...s, phase: "pending", busy: false } : s));
+    })();
   }, [user]);
 
   // Phase 40: auto-dismiss the transient entitlement confirmation banner.
@@ -5375,6 +5411,7 @@ function App() {
     // Phase 40: entitlement state is per-user — clear it on sign-out (same
     // shared/kiosk-browser hygiene reasoning as the fields above).
     applyEntitlements({}); setFreeUnlockPrompt(null); setPaywall(null); setCheckoutBusy(null); setEntitlementFlash("");
+    setCheckoutStatus(null); checkoutHandledRef.current = false;
     // Phase 7: same ownership-hygiene reasoning — a signed-out session must never leave a
     // previous user's pasted invitation email (which may contain personal information — §17)
     // sitting in memory.
@@ -6412,6 +6449,25 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
       return applyEntitlements(await dbLoadEntitlements(user.id));
     } catch (e) {
       return entitlementsRef.current;
+    }
+  }
+
+  // Phase 40: the "Refresh" button on the post-checkout "may still be processing"
+  // banner. Reloads the entitlement snapshot from the DB and, if the expected
+  // new entitlement has now landed, swaps the banner for a confirmed success.
+  // Otherwise it stays on the pending banner (never a false success).
+  async function retryCheckoutConfirmation() {
+    const s = checkoutStatus;
+    if (!s || s.busy) return;
+    setCheckoutStatus({ ...s, busy: true });
+    const fresh = await refreshEntitlements();
+    if (checkoutConfirmed({ expect: s.expect, baseline: s.baseline, current: fresh })) {
+      setCheckoutStatus(null);
+      setEntitlementFlash(s.productName
+        ? `${s.productName} confirmed — it's on your account now.`
+        : "Purchase confirmed — your account has been updated.");
+    } else {
+      setCheckoutStatus({ ...s, phase: "pending", busy: false });
     }
   }
 
@@ -8093,6 +8149,29 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
     <div style={{ fontFamily: "var(--font)", background: "var(--bg)", minHeight: "100%", color: "var(--text)" }}>
       <style>{TOKENS}</style>
       {showNav && <NavBar screen={screen} setScreen={setScreen} user={user} classroomNeedsWorkCount={classroomNeedsWorkCount} onSignOut={() => guarded(handleSignOut)} />}
+
+      {/* ---------------- PHASE 40: post-checkout confirmation banner ---------------- */}
+      {user && checkoutStatus && checkoutStatus.phase === "confirming" && (
+        <div role="status" aria-live="polite" style={{ maxWidth: 1080, margin: "0 auto", padding: "10px 24px 0" }}>
+          <div className="flex items-center gap-3" style={{ background: "var(--tint-info)", color: "var(--tint-info-fg)", border: "1px solid var(--blue)", borderRadius: "var(--r-sm)", padding: "10px 14px", fontSize: 13, fontWeight: 600 }}>
+            <Loader2 className="animate-spin" size={15} aria-hidden="true" />
+            <span>{CHECKOUT_CONFIRMING_MESSAGE}</span>
+          </div>
+        </div>
+      )}
+      {user && checkoutStatus && checkoutStatus.phase === "pending" && (
+        <div role="status" aria-live="polite" style={{ maxWidth: 1080, margin: "0 auto", padding: "10px 24px 0" }}>
+          <div className="flex items-center justify-between gap-3" style={{ background: "var(--tint-warning)", color: "var(--tint-warning-fg)", border: "1px solid var(--warn)", borderRadius: "var(--r-sm)", padding: "10px 14px", fontSize: 13, fontWeight: 600 }}>
+            <span className="flex items-center gap-2"><Clock size={15} aria-hidden="true" /> {CHECKOUT_PENDING_MESSAGE}</span>
+            <span className="flex items-center gap-2" style={{ flexShrink: 0 }}>
+              <Btn variant="secondary" onClick={retryCheckoutConfirmation} disabled={checkoutStatus.busy} style={{ padding: "5px 12px", fontSize: 12.5 }}>
+                {checkoutStatus.busy ? "Refreshing…" : "Refresh"}
+              </Btn>
+              <button aria-label="Dismiss" onClick={() => setCheckoutStatus(null)} style={{ background: "none", border: "none", cursor: "pointer", color: "inherit", display: "flex", padding: 2 }}><X size={15} /></button>
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* ---------------- PHASE 40: entitlement confirmation banner ---------------- */}
       {entitlementFlash && (
