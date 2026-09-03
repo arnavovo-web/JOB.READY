@@ -52,14 +52,14 @@ describe("normalizeAnthropicResponse — passthrough shape (unchanged from pre-P
 describe("normalizeDeepSeekResponse — OpenAI-shaped response mapped into the SAME normalized shape", () => {
   it("normal text / valid JSON content", () => {
     const n = normalizeDeepSeekResponse({
-      model: "deepseek-chat",
+      model: "deepseek-v4-flash",
       choices: [{ message: { content: '{"questions":[]}' }, finish_reason: "stop" }],
       usage: { prompt_tokens: 120, completion_tokens: 40 },
     });
     expect(n.content).toEqual([{ type: "text", text: '{"questions":[]}' }]);
     expect(n.stop_reason).toBe("end_turn"); // OpenAI "stop" -> the Anthropic-shaped vocabulary callClaude() expects
     expect(n.usage).toEqual({ input_tokens: 120, output_tokens: 40 });
-    expect(n.model).toBe("deepseek-chat");
+    expect(n.model).toBe("deepseek-v4-flash"); // whatever the API echoes back passes straight through
   });
   it("finish_reason 'length' maps to 'max_tokens' — callClaude()'s truncation check (`stop_reason === 'max_tokens'`) fires identically regardless of provider", () => {
     const n = normalizeDeepSeekResponse({ choices: [{ message: { content: "..." }, finish_reason: "length" }] });
@@ -76,6 +76,32 @@ describe("normalizeDeepSeekResponse — OpenAI-shaped response mapped into the S
   it("an unrecognised finish_reason passes through unmapped rather than being coerced — only 'stop'/'length' are given special meaning", () => {
     const n = normalizeDeepSeekResponse({ choices: [{ message: { content: "x" }, finish_reason: "content_filter" }] });
     expect(n.stop_reason).toBe("content_filter");
+  });
+});
+
+/* ============================== DEEPSEEK_MODEL — API compatibility (Phase 41A) ============================== */
+describe("DEEPSEEK_MODEL is a currently-valid DeepSeek model id, not a retired pre-V4 alias", () => {
+  // Verified against the official DeepSeek API reference on 2026-09-03:
+  //   https://api-docs.deepseek.com/api/create-chat-completion  — accepted `model` values
+  //   https://api-docs.deepseek.com/updates  — `deepseek-chat`/`deepseek-reasoner` discontinued 2026-07-24
+  const CURRENT_DEEPSEEK_MODEL_IDS = ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"];
+
+  it("is one of the model ids the official chat-completions API currently accepts", () => {
+    expect(CURRENT_DEEPSEEK_MODEL_IDS).toContain(DEEPSEEK_MODEL);
+  });
+  it("is never the discontinued `deepseek-chat` / `deepseek-reasoner` alias", () => {
+    expect(DEEPSEEK_MODEL).not.toBe("deepseek-chat");
+    expect(DEEPSEEK_MODEL).not.toBe("deepseek-reasoner");
+  });
+  it("is the cost-efficient `deepseek-v4-flash` default (not the ~3x-priced pro tier or the vision-experimental variant)", () => {
+    expect(DEEPSEEK_MODEL).toBe("deepseek-v4-flash");
+  });
+  it("callDeepSeekProvider sends exactly that model id in the request body", async () => {
+    const fetchImpl = fakeFetch(200, { choices: [{ message: { content: "{}" }, finish_reason: "stop" }] });
+    await callDeepSeekProvider("k", { system: "s", userText: "u", maxTokens: 100, useWebSearch: false }, fetchImpl);
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body.model).toBe(DEEPSEEK_MODEL);
+    expect(body.model).toBe("deepseek-v4-flash");
   });
 });
 

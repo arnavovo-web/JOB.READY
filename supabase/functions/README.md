@@ -104,25 +104,40 @@ Both are covered by `supabase/migrations/20260828120000_baseline_schema.sql`.
 A fresh project that has run the migrations already has them. **No migration
 was added for Phase 36** — `ai_usage.model` (a pre-existing free-text column)
 now stores `"<provider>:<model id>"` (e.g. `"anthropic:claude-sonnet-4-6"` or
-`"deepseek:deepseek-chat"`) instead of a bare model name, so provider is
+`"deepseek:deepseek-v4-flash"`) instead of a bare model name, so provider is
 observable per-row without a schema change. Older rows keep their bare name;
 both are just text in an unconstrained column.
 
 ### Model
 `ANTHROPIC_MODEL` / `DEEPSEEK_MODEL` constants at the top of `providers.ts`
-(currently `claude-sonnet-4-6` / `deepseek-chat`) — one model per provider,
-used for every request type routed to it. Changing either is a function edit
-+ redeploy, not a client change. **The DeepSeek model ID and endpoint could
-not be verified against official DeepSeek documentation** — see the comment
-at the top of `providers.ts` and the Phase 36 report's "DeepSeek integration
-research" section before deploying with `AI_PROVIDER=deepseek` or (Phase 37)
-letting hybrid mode reach DeepSeek at all. Phase 37 deliberately does **not**
-introduce a second, faster/cheaper DeepSeek tier ("Flash"/"Pro") — no such
-model ID has been verified, and the phase's instructions are explicit that
-inventing one is unacceptable. `REQUEST_TYPE_ROUTING_POLICY`'s value type
-(`providers.ts`) is structured so a verified second tier can be added later
-without changing `callAIProvider`'s contract or this file's routing table
-shape — see that constant's own comment.
+(currently `claude-sonnet-4-6` / `deepseek-v4-flash`) — one model per
+provider, used for every request type routed to it. Changing either is a
+function edit + redeploy, not a client change.
+
+**Phase 41A (2026-09-03): the DeepSeek endpoint, request/response shape and
+model ID were verified against the official DeepSeek API documentation**
+(`api-docs.deepseek.com`). The endpoint (`https://api.deepseek.com/chat/completions`)
+and OpenAI-compatible shape were already correct. The model ID was updated
+from `deepseek-chat` — a pre-V4 alias the official changelog (2026-04-24)
+announced for discontinuation on 2026-07-24, and which no longer appears in
+the API reference's accepted `model` values — to `deepseek-v4-flash`, the
+cost-efficient current model (`deepseek-v4-pro` is ~3x the per-token price;
+`deepseek-v4-flash-vision-exp` is an experimental vision variant). This
+change does not activate DeepSeek: it is still only reached when
+`AI_PROVIDER` routes a request there, and production remains Anthropic-only
+until `AI_PROVIDER` is explicitly changed.
+
+JSON mode (`response_format: { "type": "json_object" }`) is officially
+supported on the V4 models but is still deliberately **not** enabled — the
+existing system prompts already require strict JSON, `callClaude()` already
+tolerates fenced/non-strict output, and DeepSeek documents an occasional
+"empty content" failure mode in JSON mode. Benchmark it in Phase 41B before
+enabling.
+
+`REQUEST_TYPE_ROUTING_POLICY`'s value type (`providers.ts`) is still
+structured so a second DeepSeek tier (e.g. routing some request types to
+`deepseek-v4-pro`) can be added later without changing `callAIProvider`'s
+contract or this file's routing table shape — see that constant's own comment.
 
 ## Fallback behaviour
 

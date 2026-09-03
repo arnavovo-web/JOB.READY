@@ -199,7 +199,7 @@ Deno.serve(async (req: Request) => {
   }
 
   // Phase 36: model is recorded as "<provider>:<model id>" (e.g.
-  // "anthropic:claude-sonnet-4-6", "deepseek:deepseek-chat") — reuses the
+  // "anthropic:claude-sonnet-4-6", "deepseek:deepseek-v4-flash") — reuses the
   // EXISTING free-text ai_usage.model column (no schema change) while making
   // provider observable per Step 11. Legacy rows keep their bare model name;
   // both are just text, so no migration is needed and no reader breaks.

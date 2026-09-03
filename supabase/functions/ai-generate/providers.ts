@@ -27,26 +27,30 @@ export const ANTHROPIC_MODEL = "claude-sonnet-4-6";
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 
 // ---- DeepSeek ----
-// IMPORTANT — see the Phase 36 report ("DeepSeek integration research"): the
-// official DeepSeek documentation domains (api-docs.deepseek.com,
-// platform.deepseek.com, www.deepseek.com) were unreachable from the sandbox
-// this integration was built in (network egress to those domains is blocked
-// at the proxy level — confirmed, not a guess). The values below were
-// cross-referenced from multiple independent secondary sources (SDK wrapper
-// repos, tutorials mirroring the official quickstart) rather than the
-// official docs directly, because the task instructions are explicit that
-// guessing endpoints/models is unacceptable and fabricating "verified"
-// status is worse than stating the gap plainly.
+// Phase 41A — verified against the official DeepSeek API documentation
+// (https://api-docs.deepseek.com, checked 2026-09-03):
 //   - Base URL: https://api.deepseek.com (OpenAI-compatible surface)
 //   - Auth: `Authorization: Bearer <DEEPSEEK_API_KEY>` (OpenAI-style, NOT
 //     Anthropic's `x-api-key` header)
 //   - Chat completions endpoint: POST /chat/completions (OpenAI-compatible
 //     request/response shape: messages[], choices[0].message.content,
 //     usage.prompt_tokens / completion_tokens, choices[0].finish_reason)
-// DO NOT deploy against this without first confirming the exact model ID,
-// endpoint path, and current pricing directly against
-// https://api-docs.deepseek.com from an environment that can reach it.
-export const DEEPSEEK_MODEL = "deepseek-chat"; // UNVERIFIED against official docs — see above
+//   - Model IDs the `model` parameter currently accepts (official API
+//     reference, /api/create-chat-completion): `deepseek-v4-flash`,
+//     `deepseek-v4-pro`, `deepseek-v4-flash-vision-exp`. The pre-V4 aliases
+//     `deepseek-chat` / `deepseek-reasoner` were announced for discontinuation
+//     on 2026-07-24 (official changelog dated 2026-04-24) and no longer appear
+//     on the models or pricing pages — `deepseek-chat` is NOT a valid id.
+//   - `deepseek-v4-flash` is chosen here as the cost-efficient default:
+//     `deepseek-v4-pro` is ~3x the per-token price and `-vision-exp` is an
+//     experimental vision variant JOB.READY has no use for.
+// This model id is ONLY read inside callDeepSeekProvider below, which is only
+// reached when AI_PROVIDER routing selects "deepseek" for a request — while
+// AI_PROVIDER is unset/"anthropic" (today's production), this path is dormant.
+// JSON mode (`response_format: { type: "json_object" }`) is officially
+// supported on the V4 models but is deliberately still NOT enabled here — see
+// the note inside callDeepSeekProvider.
+export const DEEPSEEK_MODEL = "deepseek-v4-flash";
 const DEEPSEEK_URL = "https://api.deepseek.com/chat/completions";
 
 export class ProviderCapabilityError extends Error {
