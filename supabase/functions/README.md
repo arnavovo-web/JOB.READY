@@ -104,25 +104,40 @@ Both are covered by `supabase/migrations/20260828120000_baseline_schema.sql`.
 A fresh project that has run the migrations already has them. **No migration
 was added for Phase 36** — `ai_usage.model` (a pre-existing free-text column)
 now stores `"<provider>:<model id>"` (e.g. `"anthropic:claude-sonnet-4-6"` or
-`"deepseek:deepseek-chat"`) instead of a bare model name, so provider is
+`"deepseek:deepseek-v4-flash"`) instead of a bare model name, so provider is
 observable per-row without a schema change. Older rows keep their bare name;
 both are just text in an unconstrained column.
 
 ### Model
 `ANTHROPIC_MODEL` / `DEEPSEEK_MODEL` constants at the top of `providers.ts`
-(currently `claude-sonnet-4-6` / `deepseek-chat`) — one model per provider,
-used for every request type routed to it. Changing either is a function edit
-+ redeploy, not a client change. **The DeepSeek model ID and endpoint could
-not be verified against official DeepSeek documentation** — see the comment
-at the top of `providers.ts` and the Phase 36 report's "DeepSeek integration
-research" section before deploying with `AI_PROVIDER=deepseek` or (Phase 37)
-letting hybrid mode reach DeepSeek at all. Phase 37 deliberately does **not**
-introduce a second, faster/cheaper DeepSeek tier ("Flash"/"Pro") — no such
-model ID has been verified, and the phase's instructions are explicit that
-inventing one is unacceptable. `REQUEST_TYPE_ROUTING_POLICY`'s value type
-(`providers.ts`) is structured so a verified second tier can be added later
-without changing `callAIProvider`'s contract or this file's routing table
-shape — see that constant's own comment.
+(currently `claude-sonnet-4-6` / `deepseek-v4-flash`) — one model per
+provider, used for every request type routed to it. Changing either is a
+function edit + redeploy, not a client change.
+
+**Phase 41A (2026-09-03): the DeepSeek endpoint, request/response shape and
+model ID were verified against the official DeepSeek API documentation**
+(`api-docs.deepseek.com`). The endpoint (`https://api.deepseek.com/chat/completions`)
+and OpenAI-compatible shape were already correct. The model ID was updated
+from `deepseek-chat` — a pre-V4 alias the official changelog (2026-04-24)
+announced for discontinuation on 2026-07-24, and which no longer appears in
+the API reference's accepted `model` values — to `deepseek-v4-flash`, the
+cost-efficient current model (`deepseek-v4-pro` is ~3x the per-token price;
+`deepseek-v4-flash-vision-exp` is an experimental vision variant). This
+change does not activate DeepSeek: it is still only reached when
+`AI_PROVIDER` routes a request there, and production remains Anthropic-only
+until `AI_PROVIDER` is explicitly changed.
+
+JSON mode (`response_format: { "type": "json_object" }`) is officially
+supported on the V4 models but is still deliberately **not** enabled — the
+existing system prompts already require strict JSON, `callClaude()` already
+tolerates fenced/non-strict output, and DeepSeek documents an occasional
+"empty content" failure mode in JSON mode. Benchmark it in Phase 41B before
+enabling.
+
+`REQUEST_TYPE_ROUTING_POLICY`'s value type (`providers.ts`) is still
+structured so a second DeepSeek tier (e.g. routing some request types to
+`deepseek-v4-pro`) can be added later without changing `callAIProvider`'s
+contract or this file's routing table shape — see that constant's own comment.
 
 ## Fallback behaviour
 
@@ -231,3 +246,68 @@ If `ai-generate` is deleted or the project is recreated:
    "Emergency rollback" above).
 3. `supabase functions deploy ai-generate` from this repo.
 The product is fully restored — no other server-side artifact exists.
+
+---
+
+## Phase 40 — pricing / payments / paywall (NOT YET DEPLOYED)
+
+Two new functions + an added check in `ai-generate`.
+
+| Slug | Deploy setting | Purpose |
+|---|---|---|
+| `create-checkout` | `verify_jwt = true` (default) | Authenticated. Builds a Stripe Checkout Session for Last-Minute Saver / Student Pack / Job Search Pass (inline `price_data` — £2.99 / £4.99 / £7.99·mo, **no Stripe dashboard Product/Price setup needed**) and returns its hosted-checkout URL. Grants nothing. |
+| `stripe-webhook` | **`--no-verify-jwt`** | Stripe cannot send a Supabase JWT. Authenticity = Stripe signature verification against `STRIPE_WEBHOOK_SECRET` (an unsigned/wrong request is `400`ed before any write). Writes with the **service-role key** (RLS bypassed). One-time purchases grant credits via the `public.apply_purchase_credits` RPC — see below. Subscription events upsert `public.subscriptions` on `stripe_subscription_id`. Handles `checkout.session.completed` + `customer.subscription.created|updated|deleted`. |
+
+**One-time credit grants are atomic + idempotent.** `stripe-webhook` calls
+`public.apply_purchase_credits(p_checkout_id, p_user_id, p_product, p_credits, …)`
+(SECURITY DEFINER, `search_path=public`, **granted to `service_role` only** — an
+end-user JWT cannot call it). In **one transaction** it (1) `INSERT INTO
+public.payments … ON CONFLICT (provider_checkout_id) DO NOTHING` (the UNIQUE
+idempotency claim), (2) if `row_count = 0` returns `{ already_processed: true }`
+and stops, (3) otherwise `INSERT INTO public.user_entitlements … ON CONFLICT
+(user_id) DO UPDATE SET unlock_credits = unlock_credits + p_credits` — a single
+atomic relative increment. Result: a Stripe redelivery is a no-op; two different
+concurrent purchases each add their credits (no lost update); and a
+mid-transaction failure rolls back both writes, so a payment can never be marked
+processed without its credits (a `500` just makes Stripe retry safely).
+
+`ai-generate` (Phase 40 addition): for application-scoped request types
+(`interview_*`, `classroom_lesson`, `development_module`,
+`assessment_centre_scenario`) that carry an `applicationId`, it now calls the
+`has_application_access` SECURITY DEFINER RPC and returns **HTTP 402**
+`{ error, code: "application_locked" }` if the caller has neither an
+`application_unlocks` row for that application nor an active subscription
+(`has_active_subscription` — active/trialing **and** a concrete, still-valid
+`current_period_end`). Not gated: `invitation_extraction` (pre-application) and
+stand-alone `assessment_centre`. The Phase 36/37 provider abstraction, hybrid
+routing, rate limiting and usage logging are unchanged — the check is a
+pre-flight that 402s or falls through.
+
+### Secrets (set once, Supabase → Project Settings → Edge Functions → Secrets)
+| Name | Used by | Notes |
+|---|---|---|
+| `STRIPE_SECRET_KEY` | `create-checkout`, `stripe-webhook` | Stripe secret key (`sk_live_…` / `sk_test_…`). Never in the repo or the browser bundle. |
+| `STRIPE_WEBHOOK_SECRET` | `stripe-webhook` | The signing secret Stripe shows when you create the webhook endpoint (`whsec_…`). |
+| `PUBLIC_SITE_URL` | `create-checkout` (optional) | Canonical site origin for the Checkout return URL, e.g. `https://job-ready.vercel.app`. If unset, the request's Origin is used when it is `localhost` or `*.vercel.app`. |
+| `SUPABASE_SERVICE_ROLE_KEY` | `stripe-webhook` | **Auto-injected by Supabase.** Do not set manually. |
+
+### Deploy
+
+```bash
+supabase secrets set STRIPE_SECRET_KEY=sk_live_...      --project-ref dcltfxnzzfqjtctixlxe
+supabase secrets set STRIPE_WEBHOOK_SECRET=whsec_...    --project-ref dcltfxnzzfqjtctixlxe
+# optional: supabase secrets set PUBLIC_SITE_URL=https://job-ready.vercel.app --project-ref dcltfxnzzfqjtctixlxe
+
+supabase functions deploy create-checkout                --project-ref dcltfxnzzfqjtctixlxe   # verify_jwt defaults true — keep it
+supabase functions deploy stripe-webhook --no-verify-jwt --project-ref dcltfxnzzfqjtctixlxe   # Stripe can't send a Supabase JWT
+supabase functions deploy ai-generate                    --project-ref dcltfxnzzfqjtctixlxe   # redeploy for the Phase 40 gate (this also ships the pending Phase 36/37 provider work — review that first)
+```
+
+Then in Stripe Dashboard → Developers → Webhooks add an endpoint at
+`https://dcltfxnzzfqjtctixlxe.functions.supabase.co/stripe-webhook` subscribed
+to `checkout.session.completed`, `customer.subscription.created`,
+`customer.subscription.updated`, `customer.subscription.deleted`; copy its
+signing secret into `STRIPE_WEBHOOK_SECRET`.
+
+Requires `supabase/migrations/20260903090000_pricing_entitlements.sql` applied
+first (it creates `has_application_access` + the four entitlement tables).

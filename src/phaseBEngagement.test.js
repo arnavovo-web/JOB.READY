@@ -69,14 +69,24 @@ describe("Quick Practice", () => {
     expect(START_QUICK).toMatch(/analyseAndPlan\(\);/);
     expect(START_QUICK).not.toMatch(/callClaude/);
   });
-  it("the override is additive and self-clearing — every existing (non-Quick-Practice) call to analyseAndPlan is completely unaffected", () => {
+  it("the Quick Practice count override is additive and self-clearing — it sits inside its own guard and clears the flag", () => {
     expect(ANALYSE_AND_PLAN).toMatch(/if \(quickPracticeQuestionCount\) \{/);
     expect(ANALYSE_AND_PLAN).toMatch(/setQuickPracticeQuestionCount\(null\);/);
-    // the override sits INSIDE the guard — every existing path (flag null) leaves ivConfig
-    // exactly as resolveInterviewConfig produced it, byte for byte
+    // the override sits INSIDE the guard, after resolveInterviewConfig — a normal
+    // build (flag null) never enters this branch.
     const guardIdx = ANALYSE_AND_PLAN.indexOf("if (quickPracticeQuestionCount) {");
     const resolveIdx = ANALYSE_AND_PLAN.indexOf("const ivConfig = resolveInterviewConfig(interviewStage, interviewFormat);");
     expect(guardIdx).toBeGreaterThan(resolveIdx);
+  });
+  it("Quick Practice's fixed smaller count is preserved — the normal-build Length wiring for the batch pipeline explicitly excludes session_kind \"quick_practice\"", () => {
+    // A normal batch build now takes its exact question_count from the wizard
+    // Length (= max_questions). Quick Practice forces the batch pipeline too, so
+    // that wiring MUST skip it or a 3/5-question session would balloon to 8.
+    expect(ANALYSE_AND_PLAN).toMatch(/if \(ivConfig\.pipeline === "independent_batch" && ivConfig\.session_kind !== "quick_practice"\) \{\s*\n\s*ivConfig\.question_count = length;/);
+    // and it runs AFTER the Quick Practice guard, so session_kind is already set when it checks
+    const qpGuardIdx = ANALYSE_AND_PLAN.indexOf("if (quickPracticeQuestionCount) {");
+    const lengthWireIdx = ANALYSE_AND_PLAN.indexOf('if (ivConfig.pipeline === "independent_batch" && ivConfig.session_kind !== "quick_practice")');
+    expect(lengthWireIdx).toBeGreaterThan(qpGuardIdx);
   });
   it("is clearly distinguishable from a full interview — session_kind is persisted and the Interviews list labels it", () => {
     expect(START_QUICK).toMatch(/ivConfig\.session_kind = "quick_practice";|setQuickPracticeQuestionCount\(questionCount\);/); // set via analyseAndPlan's own override branch

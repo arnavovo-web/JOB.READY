@@ -56,6 +56,70 @@ JOB.READY takes a user from an interview opportunity to measurable improvement:
 
 ## Recently done
 
+- **Phase 40** — **pricing, payments & paywall**. A **Pricing** page (public nav)
+  showing the four plans: Free (£0, 1 unlock — **explicit confirm, never
+  auto-spent**), Last-Minute Saver (£2.99, +1 credit), Student Pack (£4.99, +5
+  credits), Job Search Pass (£7.99/mo, unlimited *while the subscription is
+  genuinely active*). Applications stay **always creatable/saveable** — access is
+  checked only when a *preparation resource* for an application is opened.
+  - **Free-unlock — explicit confirmation, never auto-spent.** First access to a
+    locked application with the free unlock available opens `FreeUnlockDialog`
+    ("You're about to unlock your application at {Company}" / *1 free application
+    unlock remaining* / **Not now** · **Unlock & start preparing**). The
+    `consume_free_unlock` RPC is called from exactly one place — the dialog's
+    confirm handler. Not now / Escape / backdrop / navigating away spend nothing.
+    Otherwise a paywall offers a credit spend + the four plans.
+  - **Entitlement model.** One unlock permanently unlocks one specific
+    application (an `application_unlocks` row); that application then has
+    unlimited access to every application-scoped resource. Student Pack's 5
+    credits unlock 5 different applications, one at a time; the credit spend is
+    `SELECT … FOR UPDATE` row-locked so a credit can't be double-spent. An active
+    subscription grants access **only while active** — `has_active_subscription`
+    is checked live and **no permanent unlock row is written for a subscriber**
+    (so subscription access cannot be converted into a permanent unlock, even via
+    a direct RPC call).
+  - New migration `20260903090000_pricing_entitlements.sql` (timestamped after
+    the reference-code migration; additive/idempotent): tables `user_entitlements`,
+    `application_unlocks`, `payments`, `subscriptions` (RLS = SELECT-own only,
+    **no write policy**); `SECURITY DEFINER` RPCs (search_path pinned)
+    `consume_free_unlock` / `consume_unlock_credit` (authenticated),
+    `has_application_access` (authenticated), `has_active_subscription` (internal,
+    **fails closed** — needs a concrete, still-valid `current_period_end`),
+    `apply_purchase_credits` (**service_role only**); `handle_new_user` seed; a
+    one-shot grandfather backfill so every application existing at migration time
+    stays unlocked (future applications are not grandfathered).
+  - New Edge Functions `create-checkout` (authed; builds a Stripe Checkout
+    Session with inline `price_data`) and `stripe-webhook` (`--no-verify-jwt`;
+    Stripe-signature verified; service-role). `stripe-webhook` grants one-time
+    credits via **`apply_purchase_credits`**, which claims the checkout session
+    (`payments.provider_checkout_id` UNIQUE) **and** increments
+    `unlock_credits = unlock_credits + n` in **one atomic transaction** — a
+    redelivery is a no-op, two concurrent purchases both accumulate with no lost
+    update, and a mid-transaction failure can never leave a payment marked
+    processed without its credits. Subscriptions upsert on
+    `stripe_subscription_id`. `ai-generate` also refuses application-scoped AI for
+    a locked application (HTTP 402 `application_locked`) via `has_application_access`
+    — its Phase 36/37 provider abstraction / hybrid routing / usage logging are
+    untouched.
+  - **Checkout-return UX.** On returning with `?checkout=success` the browser
+    never claims the purchase landed until a fresh entitlement snapshot actually
+    shows the new entitlement (webhook + DB are the sole source of truth). It
+    shows a truthful "Payment received — we're confirming your purchase…" banner
+    and polls `refreshEntitlements()` with a short increasing backoff (~13s over
+    6 checks). On confirmation → a success banner; on timeout → "Your payment was
+    received and may still be processing. Refresh your account in a moment to
+    check your unlocks." with a **Refresh** button that only re-reads/reconciles.
+  - New pure module `src/entitlements.js`. Tests: `entitlements.test.js` (44),
+    `phase40PricingPaywall.test.js` (42), `phase40WebhookIdempotency.test.js`
+    (21), `phase40CheckoutReturn.test.js` (17),
+    `phase40SubscriptionUnlockSecurity.test.js` (13). Added `.gitattributes`
+    (`text=auto eol=lf`) so the structural test suite is deterministic on fresh
+    checkouts. No new npm dependency, no new `callAI`/`callClaude` request type.
+  - **Pending manual steps:** apply the migration, set `STRIPE_SECRET_KEY` /
+    `STRIPE_WEBHOOK_SECRET` (+ optional `PUBLIC_SITE_URL`), deploy the three Edge
+    Functions, register the Stripe webhook endpoint. See `docs/PRICING.md` and
+    `supabase/functions/README.md`.
+
 - **Phase 16B** — **core performance & loading optimisation** (no feature
   change, no new AI call — still 17 `callClaude` sites, same 11 request types):
   - **Reopening an existing Development Module is instant** — served straight

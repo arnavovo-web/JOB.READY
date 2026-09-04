@@ -1,11 +1,11 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import {
   ChevronRight, Loader2, TrendingDown, CheckCircle2, ArrowLeft, ArrowRight, Sparkles,
-  Target, BarChart3, AlertCircle, Upload, Mic, Menu, X,
+  Target, BarChart3, AlertCircle, Upload, Mic, MicOff, Menu, X,
   GraduationCap, BookOpen, Globe, HelpCircle, XCircle,
   Users, Briefcase, Mail, FileText, History, Clock, Plus, CalendarClock,
-  Eye, EyeOff,
+  Eye, EyeOff, Lock,
   // Phase 32 — landing-page product showcase icons (lucide-react is already a
   // dependency; these are additional names from the same package, no new dep).
   MessageSquare, ListChecks, Layers, LineChart, Presentation, Inbox, NotebookPen,
@@ -135,7 +135,13 @@ import { reconstructInterviewState, sortResumableInterviews, summariseResumable,
 // data flows; central contact/metadata config with clearly-marked placeholders.
 import { PRIVACY_POLICY } from "./legal/privacyPolicy";
 import { TERMS_OF_SERVICE } from "./legal/termsOfService";
-import { formatLegalDate } from "./legal/legalContact";
+import { formatLegalDate, LEGAL_CONTACT } from "./legal/legalContact";
+// Speech-to-text (voice interview answers) — pure helpers only; the browser
+// Web Speech API wrapper hook `useSpeechToText` lives in this file.
+import {
+  SPEECH_LANG, VOICE_UNSUPPORTED_MESSAGE, getSpeechRecognition,
+  appendSpokenChunk, speechErrorMessage, readRecognitionEvent,
+} from "./speech";
 // Phase 23: pure auth-form helpers — show/hide-password type+label mapping,
 // new-password + reset-email validation, the password-reset redirect-URL
 // strategy (origin-based, no hardcoded host), and recovery-link
@@ -146,6 +152,17 @@ import {
   classifyAuthRedirect, isRecoveryErrorRedirect, suppressLandingRedirectOnSignedOut,
   resetEmailSentMessage, expiredLinkMessage, friendlyAuthError,
 } from "./authForms";
+// Phase 40: pricing / payments / paywall. Pure entitlement logic — the four
+// plans, the "can this application be prepared for right now" decision, the
+// free-unlock confirmation copy, and the "N unlocks remaining" copy. No AI, no
+// DB, no enforcement (that is server-side: RLS + SECURITY DEFINER RPCs + the
+// Stripe webhook Edge Function + an ai-generate access check).
+import {
+  PRICING_PLANS, planById, PURCHASABLE_PRODUCT_IDS,
+  entitlementsFromRows, normalizeEntitlements, evaluateApplicationAccess,
+  remainingUnlocksSummary, freeUnlockPromptCopy, paywallCopy, ACCESS,
+  checkoutConfirmed, CHECKOUT_POLL_BACKOFF_MS, CHECKOUT_CONFIRMING_MESSAGE, CHECKOUT_PENDING_MESSAGE,
+} from "./entitlements";
 
 /* ================================================================== *
  * JOB.READY — DESIGN SYSTEM (unchanged from previous build)
@@ -1482,7 +1499,7 @@ async function dbSelect(table, build) {
 async function loadFullUserState(userId) {
   const supabase = await getSupabase();
 
-  const [{ data: profile }, { data: dna }, apps, interviewsRaw, competencyRows, classroomTopicsRaw, memoryRows, comparisonRows, acAttemptsRaw, claimRows, devModulesRaw, moduleProgressRaw, inProgressRaw] = await Promise.all([
+  const [{ data: profile }, { data: dna }, apps, interviewsRaw, competencyRows, classroomTopicsRaw, memoryRows, comparisonRows, acAttemptsRaw, claimRows, devModulesRaw, moduleProgressRaw, inProgressRaw, entitlements] = await Promise.all([
     supabase.from("profiles").select("*").eq("id", userId).maybeSingle(),
     supabase.from("candidate_dna").select("*").eq("user_id", userId).maybeSingle(),
     dbSelect("applications", (q) => q.eq("user_id", userId).order("created_at", { ascending: false })),
@@ -1505,6 +1522,10 @@ async function loadFullUserState(userId) {
     // and for the common case (no unfinished interviews) the follow-up count
     // queries below are skipped entirely.
     dbSelect("interviews", (q) => q.eq("user_id", userId).eq("status", "in_progress").order("created_at", { ascending: false })),
+    // Phase 40: entitlement snapshot (free unlock / purchased credits / unlocked
+    // applications / active Job Search Pass). Never throws — a failure degrades
+    // to "no entitlements", which shows the paywall rather than granting access.
+    dbLoadEntitlements(userId),
   ]);
 
   // Phase 18: cheap per-interview progress counts for the "Continue your
@@ -1642,6 +1663,7 @@ async function loadFullUserState(userId) {
     candidateClaims: claimRows, candidateIntelligence,
     developmentModules: Array.isArray(devModulesRaw) ? devModulesRaw : [],
     moduleProgress: Array.isArray(moduleProgressRaw) ? moduleProgressRaw : [],
+    entitlements,
     resumableInterviews,
   };
 }
@@ -1711,6 +1733,121 @@ async function dbGetApplicationDocuments(userId, applicationId) {
   const { data, error } = await supabase.from("documents").select("document_type, extracted_text, created_at").eq("user_id", userId).eq("application_id", applicationId).order("created_at", { ascending: false });
   if (error) { console.error("documents select failed:", error.message); return []; }
   return data || [];
+}
+
+/* ---------------- PHASE 40: PRICING / PAYMENTS / PAYWALL ---------------- */
+
+// Read the caller's entitlement snapshot: the one user_entitlements row (free
+// unlock + purchased credits), every application_unlocks row (which specific
+// applications are unlocked), and every subscriptions row (Job Search Pass).
+// All three are RLS-scoped to the current user and SELECT-only from the browser
+// — the browser can read this but can never write it. Returns the canonical
+// shape from entitlements.js; never throws (a load failure degrades to "no
+// entitlements", which shows the paywall rather than silently granting access).
+async function dbLoadEntitlements(userId) {
+  const supabase = await getSupabase();
+  const [entRes, unlockRes, subRes] = await Promise.all([
+    supabase.from("user_entitlements").select("free_unlock_used, unlock_credits").eq("user_id", userId).maybeSingle(),
+    // created_at is needed to count subscription unlocks within the current Stripe
+    // billing period (Job Search Pass = 10 / period). current_period_start comes
+    // from the pricing-model-v2 migration.
+    supabase.from("application_unlocks").select("application_id, source, created_at").eq("user_id", userId),
+    supabase.from("subscriptions").select("status, current_period_end, current_period_start, cancel_at_period_end").eq("user_id", userId),
+  ]);
+  if (entRes.error) console.error("user_entitlements select failed:", entRes.error.message);
+  if (unlockRes.error) console.error("application_unlocks select failed:", unlockRes.error.message);
+  if (subRes.error) console.error("subscriptions select failed:", subRes.error.message);
+  return entitlementsFromRows({
+    entitlementRow: entRes.data || null,
+    unlockRows: unlockRes.data || [],
+    subscriptionRows: subRes.data || [],
+  });
+}
+
+// Contact Us / feedback: one INSERT into public.contact_messages (the cheapest
+// sensible sink — direct Supabase write, no Edge Function, no third-party SaaS).
+// RLS on that table is INSERT-only (write-only via the API), so the browser can
+// submit but can never read messages back. Works for logged-out visitors too
+// (anon key). Throws on failure so the dialog shows an honest error and never
+// claims the message was sent. NOTE: requires the 20260903120000 migration to
+// be applied to the live database — until then this insert fails cleanly.
+async function dbSubmitContactMessage({ name, email, message }) {
+  const supabase = await getSupabase();
+  let userId = null;
+  try {
+    const { data: sessionData } = await supabase.auth.getSession();
+    userId = sessionData?.session?.user?.id || null;
+  } catch { /* logged-out visitor — userId stays null */ }
+  const { error } = await supabase.from("contact_messages").insert({
+    user_id: userId,
+    name: name || null,
+    email,
+    message,
+    page: typeof window !== "undefined" && window.location ? window.location.pathname : null,
+    user_agent: typeof navigator !== "undefined" ? String(navigator.userAgent || "").slice(0, 400) : null,
+  });
+  if (error) throw new Error(error.message || "Couldn't send your message. Please try again.");
+}
+
+// Spend the one free unlock on an application. SECURITY DEFINER RPC — it
+// validates ownership + the "only once" invariant in the database. Returns the
+// parsed jsonb result ({ ok, source?, reason?, ... }) or { ok:false } on error.
+async function rpcConsumeFreeUnlock(applicationId) {
+  const supabase = await getSupabase();
+  const { data, error } = await supabase.rpc("consume_free_unlock", { p_application_id: applicationId });
+  if (error) { console.error("consume_free_unlock failed:", error.message); return { ok: false, reason: "error" }; }
+  return data || { ok: false, reason: "empty" };
+}
+
+// Spend one purchased unlock credit on an application. SECURITY DEFINER RPC.
+async function rpcConsumeUnlockCredit(applicationId) {
+  const supabase = await getSupabase();
+  const { data, error } = await supabase.rpc("consume_unlock_credit", { p_application_id: applicationId });
+  if (error) { console.error("consume_unlock_credit failed:", error.message); return { ok: false, reason: "error" }; }
+  return data || { ok: false, reason: "empty" };
+}
+
+// Spend one of the Job Search Pass monthly application unlocks (10 per Stripe
+// billing period). SECURITY DEFINER RPC — the cap is enforced + serialised in
+// the database (consume_subscription_unlock). Returns
+// { ok:true, source:'subscription', used, limit, remaining } or
+// { ok:false, reason:'monthly_unlock_limit_reached' | 'no_subscription' | ... }.
+async function rpcConsumeSubscriptionUnlock(applicationId) {
+  const supabase = await getSupabase();
+  const { data, error } = await supabase.rpc("consume_subscription_unlock", { p_application_id: applicationId });
+  if (error) { console.error("consume_subscription_unlock failed:", error.message); return { ok: false, reason: "error" }; }
+  return data || { ok: false, reason: "empty" };
+}
+
+// Create a Stripe Checkout Session via the authenticated `create-checkout` Edge
+// Function and return its hosted-checkout URL. The browser never handles card
+// details or a Stripe secret — it only redirects to this URL.
+async function startStripeCheckout(product, applicationId) {
+  const supabase = await getSupabase();
+  const { data: sessionData } = await supabase.auth.getSession();
+  if (!sessionData?.session) throw new Error("Your session has expired. Please sign in again.");
+  let res;
+  try {
+    res = await supabase.functions.invoke("create-checkout", {
+      body: {
+        product,
+        applicationId: applicationId || null,
+        returnPath: (typeof window !== "undefined" && window.location?.pathname) || "/",
+      },
+    });
+  } catch (e) {
+    throw new Error("Couldn't reach the payments service. Check your connection and try again.");
+  }
+  if (res.error) {
+    let msg = "Couldn't start checkout. Please try again.";
+    try {
+      const ctx = res.error.context;
+      if (ctx && typeof ctx.json === "function") { const b = await ctx.json(); if (b?.error) msg = b.error; }
+    } catch (e) { /* generic message */ }
+    throw new Error(msg);
+  }
+  if (!res.data?.url) throw new Error("Couldn't start checkout. Please try again.");
+  return res.data.url;
 }
 
 // Phase 37: ground truth of which question CATEGORIES were actually asked across this
@@ -2615,6 +2752,465 @@ function ConfirmDialog({ title, body, confirmLabel, onCancel, onConfirm, busy, i
   );
 }
 
+/* PHASE 40 — PRICING PLANS + FREE-UNLOCK DIALOG. Placed with the other shared
+ * UI components (not near the landing components below — those are span-tested
+ * as "presentation-only"). PricingPlans is itself presentation-only;
+ * FreeUnlockDialog is a small portalled confirmation, like ConfirmDialog. */
+// Phase 40 (pricing model v2): one shared explanation of what a single application
+// unlock buys, surfaced via the InfoTooltip next to every plan's allowance and in
+// the pricing-screen "what's included" card. Product allowances live in
+// entitlements.js (MAX_MOCK_INTERVIEWS_PER_APPLICATION / MAX_AC_SCENARIOS_PER_APPLICATION).
+const APPLICATION_UNLOCK_TOOLTIP =
+  "Each application you unlock includes up to 5 personalised mock interviews, with detailed feedback and analysis after each completed interview, plus up to 5 personalised assessment-centre scenarios. Unlimited Classroom access is included with every plan.";
+
+function PricingPlans({ onChoosePlan, checkoutBusy, entitlements, compact = false, highlightAccess = null }) {
+  const e = normalizeEntitlements(entitlements);
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-4" style={{ alignItems: "stretch" }}>
+      {PRICING_PLANS.map((plan) => {
+        const isSub = plan.kind === "subscription";
+        const isFree = plan.kind === "free";
+        const active = isSub && e.hasActiveSubscription;
+        // Context-specific highlight (paywall): steer the user toward the plan
+        // that unlocks their current application. Unchanged behaviour.
+        const contextHighlight = highlightAccess &&
+          ((highlightAccess === "unlockable_credit" && plan.id === "student_pack") ||
+           (highlightAccess === "locked" && plan.id === "last_minute_saver"));
+        // Best-value plan (Application Pack, via its display-only `badge`) is
+        // always visually featured on the full pricing page; the paywall keeps
+        // its own context highlight instead.
+        const featured = contextHighlight || (!compact && !!plan.badge);
+        return (
+          <Card key={plan.id} hover={false} style={{
+            position: "relative",
+            padding: compact ? 16 : 20,
+            display: "flex", flexDirection: "column", gap: 10,
+            border: featured ? "1.5px solid var(--blue)" : "1px solid var(--border)",
+            boxShadow: featured ? "var(--focus-ring)" : undefined,
+          }}>
+            <div className="flex items-center justify-between gap-2" style={{ flexWrap: "wrap" }}>
+              <span style={{ fontSize: 14, fontWeight: 800, color: "var(--navy)" }}>
+                <span aria-hidden="true" style={{ marginRight: 7 }}>{plan.emoji}</span>{plan.name}
+              </span>
+              {plan.badge && (
+                <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: "0.04em", color: "#fff", background: "var(--blue)", borderRadius: 999, padding: "3px 9px", whiteSpace: "nowrap" }}>
+                  <span aria-hidden="true">⭐ </span>BEST VALUE
+                </span>
+              )}
+              {active && <StatusBadge variant="success" dot>Active</StatusBadge>}
+              {isFree && <StatusBadge variant="neutral">Included</StatusBadge>}
+            </div>
+            <div>
+              <div className="flex items-baseline" style={{ gap: 5 }}>
+                <span style={{ fontSize: 26, fontWeight: 800, color: "var(--navy)" }}>{plan.priceLabel}</span>
+                {plan.cadence && <span style={{ fontSize: 12.5, color: "var(--text-faint)", fontWeight: 600 }}>{plan.cadence}</span>}
+              </div>
+              {plan.perUnit && (
+                <div style={{ fontSize: 12, fontWeight: 700, color: "var(--blue-dark)", marginTop: 2 }}>{plan.perUnit}</div>
+              )}
+            </div>
+            <div className="flex items-center" style={{ gap: 4, fontSize: 13, fontWeight: 700, color: "var(--blue-dark)" }}>
+              <span>{plan.headline}</span>
+              {!isFree && <InfoTooltip label="What's included with an application unlock?" text={APPLICATION_UNLOCK_TOOLTIP} />}
+            </div>
+            {/* savingNote + positioning are full-page only — the compact paywall
+                keeps just the badge + per-application price + headline + features. */}
+            {!compact && plan.savingNote && (
+              <div className="flex items-center gap-2" style={{ fontSize: 12, fontWeight: 700, color: "var(--good)" }}>
+                <CheckCircle2 size={13} aria-hidden="true" style={{ flexShrink: 0 }} />
+                <span>{plan.savingNote}</span>
+              </div>
+            )}
+            {!compact && plan.summary && <div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.55 }}>{plan.summary}</div>}
+            <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 6, flex: 1 }}>
+              {plan.features.map((f) => (
+                <li key={f} className="flex items-start gap-2" style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.5 }}>
+                  <CheckCircle2 size={14} color="var(--good)" aria-hidden="true" style={{ flexShrink: 0, marginTop: 2 }} />
+                  <span>{f}</span>
+                </li>
+              ))}
+            </ul>
+            {!compact && plan.positioning && (
+              <div style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-faint)" }}>{plan.positioning}</div>
+            )}
+            {isFree ? (
+              <div style={{ fontSize: 12, color: "var(--text-faint)", fontWeight: 600, paddingTop: 2 }}>
+                {e.freeUnlockUsed ? "Your free unlock has been used" : "Confirm to use — nothing is spent automatically"}
+              </div>
+            ) : (
+              <Btn
+                variant={featured ? "accent" : "secondary"}
+                full
+                disabled={!!checkoutBusy || active}
+                onClick={() => onChoosePlan(plan.id)}
+                style={{ marginTop: 2 }}
+              >
+                {active ? "Current plan"
+                  : checkoutBusy === plan.id ? "Redirecting to checkout…"
+                  : plan.ctaLabel ? plan.ctaLabel
+                  : isSub ? "Subscribe" : "Buy"}
+              </Btn>
+            )}
+          </Card>
+        );
+      })}
+    </div>
+  );
+}
+
+// Phase 40: the explicit free-unlock confirmation. Own portalled dialog (not
+// ConfirmDialog — that one's exact signature is pinned by phaseBEngagement's
+// tests). "Not now" / Escape / backdrop click all close it and spend nothing.
+function FreeUnlockDialog({ company, busy, onCancel, onConfirm }) {
+  const copy = freeUnlockPromptCopy(company);
+  useEffect(() => {
+    function onKey(e) { if (e.key === "Escape") onCancel(); }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return createPortal(
+    <div role="presentation" onClick={onCancel}
+      style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200, padding: 20 }}>
+      <div role="dialog" aria-modal="true" aria-labelledby="jr-freeunlock-title" onClick={(e) => e.stopPropagation()}
+        style={{ background: "var(--card)", borderRadius: "var(--radius)", boxShadow: "var(--shadow-lg)", padding: 24, maxWidth: 440, width: "100%" }}>
+        <div className="flex items-center gap-2" style={{ marginBottom: 10 }}>
+          <Sparkles size={18} color="var(--blue)" aria-hidden="true" />
+          <div id="jr-freeunlock-title" style={{ fontSize: 17, fontWeight: 800, color: "var(--navy)" }}>{copy.title}</div>
+        </div>
+        <div style={{ fontSize: 13.5, color: "var(--text-dim)", lineHeight: 1.55, marginBottom: 12 }}>{copy.body}</div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "var(--navy)", background: "var(--surface-sunken)", borderRadius: "var(--r-sm)", padding: "9px 12px", marginBottom: 20 }}>{copy.note}</div>
+        <div className="flex gap-3 flex-wrap">
+          <Btn variant="secondary" onClick={onCancel}>{copy.cancelLabel}</Btn>
+          <Btn variant="accent" onClick={onConfirm} disabled={busy}>{busy ? "Unlocking…" : copy.confirmLabel}</Btn>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+/* ================================================================== *
+ * CONTACT US / FEEDBACK — portalled dialog
+ * ------------------------------------------------------------------
+ * Opened from the shared NavBar on both the public landing pages and the
+ * authenticated app. Same portalled-overlay pattern as ConfirmDialog /
+ * FreeUnlockDialog. Submits one row to `public.contact_messages` via
+ * `onSubmit` (Supabase insert, cheapest sensible sink — no Edge Function,
+ * no third-party SaaS). Never claims success unless the write actually
+ * succeeded; a failed write shows an honest error and keeps the form.
+ * ================================================================== */
+// The direct support email is the single source of truth in
+// src/legal/legalContact.js. It is `null` pre-launch (no official address
+// exists in the repo yet) — when null we show a clearly-identified
+// placeholder instead of inventing one. Set LEGAL_CONTACT.supportContactEmail
+// to light this up everywhere at once.
+const SUPPORT_CONTACT_EMAIL = LEGAL_CONTACT.supportContactEmail || null;
+
+function isPlausibleEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || "").trim());
+}
+
+function ContactDialog({ user, onClose, onSubmit }) {
+  const [name, setName] = useState(
+    user ? [user.first_name, user.last_name].filter(Boolean).join(" ") : ""
+  );
+  const [email, setEmail] = useState(user?.email || "");
+  const [message, setMessage] = useState("");
+  const [touched, setTouched] = useState(false);
+  const [status, setStatus] = useState("idle"); // idle | sending | sent | error
+  const [errorText, setErrorText] = useState("");
+  const busyRef = useRef(false);
+
+  useEffect(() => {
+    function onKey(e) { if (e.key === "Escape") onClose(); }
+    window.addEventListener("keydown", onKey);
+    document.getElementById("jr-contact-message")?.focus();
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const emailOk = isPlausibleEmail(email);
+  const messageOk = message.trim().length >= 5;
+  const canSubmit = emailOk && messageOk && status !== "sending";
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setTouched(true);
+    if (!emailOk || !messageOk) return;
+    if (busyRef.current) return; // prevent a double-submit while in flight
+    busyRef.current = true;
+    setStatus("sending");
+    setErrorText("");
+    try {
+      await onSubmit({ name: name.trim(), email: email.trim(), message: message.trim() });
+      setStatus("sent");
+    } catch (err) {
+      setStatus("error");
+      setErrorText(
+        (err && err.message) ||
+          "We couldn't send your message just now. Please try again in a moment."
+      );
+    } finally {
+      busyRef.current = false;
+    }
+  }
+
+  const labelStyle = { fontSize: 12.5, fontWeight: 700, color: "var(--navy)" };
+  const fieldWrap = { display: "flex", flexDirection: "column", gap: 6, marginBottom: 14 };
+
+  return createPortal(
+    <div role="presentation" onClick={onClose}
+      style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200, padding: 20, overflowY: "auto" }}>
+      <div role="dialog" aria-modal="true" aria-labelledby="jr-contact-title" onClick={(e) => e.stopPropagation()}
+        style={{ background: "var(--card)", borderRadius: "var(--radius)", boxShadow: "var(--shadow-lg)", padding: 24, maxWidth: 460, width: "100%" }}>
+        <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
+          <div className="flex items-center gap-2">
+            <Mail size={18} color="var(--blue)" aria-hidden="true" />
+            <div id="jr-contact-title" style={{ fontSize: 17, fontWeight: 800, color: "var(--navy)" }}>How can we help?</div>
+          </div>
+          <button type="button" aria-label="Close" onClick={onClose}
+            style={{ background: "none", border: "none", cursor: "pointer", padding: 4, display: "flex", color: "var(--text-faint)" }}>
+            <X size={18} />
+          </button>
+        </div>
+
+        {status === "sent" ? (
+          <div>
+            <div className="jr-alert jr-alert-success" role="status" style={{ marginBottom: 16 }}>
+              <span className="jr-alert-icon" aria-hidden="true"><CheckCircle2 size={16} /></span>
+              <div>Thanks for getting in touch! We'll get back to you as soon as we can.</div>
+            </div>
+            <div className="flex justify-end">
+              <Btn variant="secondary" onClick={onClose}>Close</Btn>
+            </div>
+          </div>
+        ) : (
+          <form onSubmit={handleSubmit} noValidate>
+            <div style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.55, marginBottom: 16 }}>
+              Have feedback, a question, or a query? We'd love to hear from you.
+            </div>
+
+            <div style={fieldWrap}>
+              <label htmlFor="jr-contact-name" style={labelStyle}>Name <span style={{ fontWeight: 500, color: "var(--text-faint)" }}>(optional)</span></label>
+              <input id="jr-contact-name" className="jr-input" type="text" value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" />
+            </div>
+
+            <div style={fieldWrap}>
+              <label htmlFor="jr-contact-email" style={labelStyle}>Email</label>
+              <input id="jr-contact-email" className="jr-input" type="email" inputMode="email" autoComplete="email"
+                value={email} onChange={(e) => setEmail(e.target.value)} aria-invalid={touched && !emailOk}
+                aria-describedby={touched && !emailOk ? "jr-contact-email-err" : undefined} />
+              {touched && !emailOk && (
+                <span id="jr-contact-email-err" style={{ fontSize: 12, color: "var(--bad)" }}>Enter an email address we can reply to.</span>
+              )}
+            </div>
+
+            <div style={fieldWrap}>
+              <label htmlFor="jr-contact-message" style={labelStyle}>Message</label>
+              <textarea id="jr-contact-message" className="jr-input jr-textarea" rows={5}
+                placeholder="Tell us about your feedback, question, or query..."
+                value={message} onChange={(e) => setMessage(e.target.value)} aria-invalid={touched && !messageOk}
+                aria-describedby={touched && !messageOk ? "jr-contact-message-err" : undefined}
+                style={{ minHeight: 120, fontSize: 14 }} />
+              {touched && !messageOk && (
+                <span id="jr-contact-message-err" style={{ fontSize: 12, color: "var(--bad)" }}>Please add a short message.</span>
+              )}
+            </div>
+
+            {status === "error" && (
+              <div className="jr-alert jr-alert-error" role="alert" style={{ marginBottom: 14 }}>
+                <span className="jr-alert-icon" aria-hidden="true"><AlertCircle size={16} /></span>
+                <div>{errorText}</div>
+              </div>
+            )}
+
+            <div className="flex justify-end" style={{ marginBottom: 14 }}>
+              <Btn id="jr-contact-submit" variant="accent" onClick={handleSubmit} disabled={!canSubmit}>
+                {status === "sending" ? "Sending…" : "Send message"}
+              </Btn>
+            </div>
+
+            <div style={{ borderTop: "1px solid var(--border)", paddingTop: 12, fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.55 }}>
+              {SUPPORT_CONTACT_EMAIL ? (
+                <>Or feel free to contact us directly at{" "}
+                  <a href={`mailto:${SUPPORT_CONTACT_EMAIL}`} style={{ color: "var(--blue)", fontWeight: 600 }}>{SUPPORT_CONTACT_EMAIL}</a>.
+                </>
+              ) : (
+                // TODO(config): set LEGAL_CONTACT.supportContactEmail in
+                // src/legal/legalContact.js — this line becomes the real
+                // "contact us directly at …" address once it is provided.
+                <>A direct support email address will be published here shortly.</>
+              )}
+            </div>
+          </form>
+        )}
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+/* ================================================================== *
+ * SPEECH-TO-TEXT — voice input for interview answers
+ * ------------------------------------------------------------------
+ * Wraps the browser's built-in Web Speech API. Zero direct API cost —
+ * recognition runs in the user's browser, nothing is uploaded or stored.
+ * Typing is always the fallback and always fully functional; this only
+ * ADDS a mic control next to the existing answer <textarea>.
+ *
+ * `useSpeechToText()` owns the whole recognition lifecycle for the ONE
+ * live answer surface at a time. Final (committed) chunks are handed to
+ * the caller's `onFinal` callback, which appends them to the existing
+ * answer state via `appendSpokenChunk` (never overwriting typed text).
+ * Interim (not-yet-final) text is exposed separately as a live preview
+ * and is never written to the answer, so it can't double-count.
+ * ================================================================== */
+function useSpeechToText() {
+  const Rec = getSpeechRecognition();
+  const supported = !!Rec;
+  const [listening, setListening] = useState(false);
+  const [interim, setInterim] = useState("");
+  const [error, setError] = useState(null); // { code, message } | null
+  const recRef = useRef(null);
+  const onFinalRef = useRef(null);
+
+  // Fully tear down the current recognition instance and its listeners.
+  const teardown = useCallback((silent) => {
+    const r = recRef.current;
+    recRef.current = null;
+    if (r) {
+      try {
+        r.onresult = null; r.onerror = null; r.onend = null; r.onnomatch = null;
+        r.abort();
+      } catch { /* already stopped */ }
+    }
+    if (silent) { setListening(false); setInterim(""); }
+  }, []);
+
+  const stop = useCallback(() => {
+    const r = recRef.current;
+    if (r) { try { r.stop(); } catch { teardown(true); } }
+    else { setListening(false); setInterim(""); }
+  }, [teardown]);
+
+  const reset = useCallback(() => { setError(null); setInterim(""); }, []);
+
+  const start = useCallback((onFinal) => {
+    if (!supported) {
+      setError({ code: "unsupported", message: VOICE_UNSUPPORTED_MESSAGE });
+      return;
+    }
+    setError(null);
+    setInterim("");
+    onFinalRef.current = typeof onFinal === "function" ? onFinal : null;
+    teardown(false); // drop any previous instance first
+
+    let rec;
+    try { rec = new Rec(); } catch {
+      setError({ code: "start-failed", message: "Couldn't start voice input. You can still type your answer." });
+      return;
+    }
+    rec.lang = SPEECH_LANG;
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.onresult = (e) => {
+      const { final, interim: iv } = readRecognitionEvent(e);
+      if (final && onFinalRef.current) onFinalRef.current(final);
+      setInterim(iv);
+    };
+    rec.onerror = (e) => {
+      const msg = speechErrorMessage(e && e.error);
+      if (msg) setError({ code: (e && e.error) || "error", message: msg });
+      setListening(false);
+      setInterim("");
+    };
+    rec.onend = () => {
+      recRef.current = null;
+      setListening(false);
+      setInterim("");
+    };
+    recRef.current = rec;
+    try {
+      rec.start();
+      setListening(true);
+    } catch {
+      // e.g. start() called while already started — recover, don't get stuck.
+      teardown(true);
+      setError({ code: "start-failed", message: "Couldn't start voice input. You can still type your answer." });
+    }
+  }, [supported, Rec, teardown]);
+
+  // Hard cleanup: if this component ever unmounts mid-recognition, the mic
+  // must not keep running in the background.
+  useEffect(() => () => teardown(true), [teardown]);
+
+  return { supported, listening, interim, error, start, stop, reset };
+}
+
+/* Compact mic control shown beside an interview answer <textarea>. When the
+ * browser has no Web Speech API it renders a plain, non-blocking notice
+ * instead of a button — typing is unaffected either way. `dark` adapts the
+ * palette for the async interview's dark answer panel. */
+function VoiceAnswerControl({ speech, onFinalChunk, dark = false }) {
+  const mutedColor = dark ? "rgba(255,255,255,0.6)" : "var(--text-faint)";
+  const errorColor = dark ? "#FF9B9B" : "var(--bad)";
+
+  if (!speech.supported) {
+    return (
+      <span style={{ fontSize: 12, color: mutedColor, display: "inline-flex", alignItems: "center", gap: 5 }}>
+        <MicOff size={12} aria-hidden="true" /> {VOICE_UNSUPPORTED_MESSAGE}
+      </span>
+    );
+  }
+
+  const { listening, interim, error } = speech;
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+      <button
+        type="button"
+        onClick={() => (listening ? speech.stop() : speech.start(onFinalChunk))}
+        aria-pressed={listening}
+        aria-label={listening ? "Stop voice input" : "Speak your answer"}
+        style={{
+          display: "inline-flex", alignItems: "center", gap: 6,
+          fontSize: 12, fontWeight: 600, lineHeight: 1,
+          padding: "6px 11px", borderRadius: 999, cursor: "pointer",
+          border: `1px solid ${listening ? "var(--bad)" : dark ? "rgba(255,255,255,0.28)" : "var(--border)"}`,
+          background: listening ? "rgba(239,68,68,0.12)" : "transparent",
+          color: listening ? "var(--bad)" : dark ? "#fff" : "var(--text-dim)",
+          fontFamily: "var(--font)",
+        }}
+      >
+        {listening ? (
+          <>
+            <span aria-hidden="true" style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--bad)", display: "inline-block" }} />
+            Listening…
+          </>
+        ) : (
+          <>
+            <Mic size={13} aria-hidden="true" /> Speak your answer
+          </>
+        )}
+      </button>
+
+      {/* Screen-reader status — not colour-dependent, always announced politely. */}
+      <span role="status" aria-live="polite" style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0,0,0,0)" }}>
+        {error ? error.message : listening ? "Listening. Speak your answer — the words will appear in the answer box, and you can still type or edit." : ""}
+      </span>
+
+      {listening && interim && (
+        <span style={{ fontSize: 12, color: mutedColor, fontStyle: "italic", maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          “{interim}”
+        </span>
+      )}
+      {error && (
+        <span style={{ fontSize: 12, color: errorColor }}>{error.message}</span>
+      )}
+    </span>
+  );
+}
+
 function Card({ children, style, hover = true, onClick, variant, className }) {
   // Phase 26: presentation-only additions — an optional `variant`
   // ("elevated" | "sunken") and `className` pass-through, plus the shared
@@ -2652,6 +3248,50 @@ function LinkBtn({ children, onClick, style, ariaCurrent }) {
 
 function Pill({ children, color = "var(--blue)", bg = "var(--highlight)" }) {
   return <span style={{ fontFamily: "var(--font)", fontSize: 12, fontWeight: 600, color, background: bg, padding: "4px 11px", borderRadius: 999, display: "inline-block" }}>{children}</span>;
+}
+
+// A small, reusable "info" icon + tooltip. No such component existed before —
+// the app's only prior hover-hint precedent was the native `title` attribute,
+// which most touch browsers never surface and which isn't associated with
+// its icon for screen readers. Opens on hover OR keyboard focus OR click/tap
+// (so it works on touch devices, where hover never fires), and closes on
+// Escape, blur, or a click outside — the same disclosure shape already
+// proven in this app's "How it works" nav dropdown, scaled down to icon
+// size. `label` is the icon button's own accessible name (what a screen
+// reader announces); `text` is the tooltip's content.
+function InfoTooltip({ label, text }) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef(null);
+  const idRef = useRef("jr-tooltip-" + Math.random().toString(36).slice(2));
+
+  useEffect(() => {
+    if (!open) return;
+    function onDocClick(e) { if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false); }
+    function onKey(e) { if (e.key === "Escape") setOpen(false); }
+    document.addEventListener("mousedown", onDocClick);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", onDocClick); document.removeEventListener("keydown", onKey); };
+  }, [open]);
+
+  return (
+    <span ref={wrapRef} style={{ position: "relative", display: "inline-flex", verticalAlign: "middle" }}
+      onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
+      <button type="button" aria-label={label} aria-describedby={open ? idRef.current : undefined}
+        onClick={() => setOpen((v) => !v)} onFocus={() => setOpen(true)} onBlur={() => setOpen(false)}
+        style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 16, height: 16, padding: 0, border: "none", background: "none", cursor: "pointer", color: "var(--text-faint)" }}>
+        <HelpCircle size={14} aria-hidden="true" />
+      </button>
+      {open && (
+        // Anchored to the icon's own left edge (not centred) so it can't
+        // overflow the narrow auth card regardless of where the icon sits
+        // in its label row.
+        <span id={idRef.current} role="tooltip"
+          style={{ position: "absolute", bottom: "calc(100% + 8px)", left: 0, width: 230, padding: "9px 11px", borderRadius: "var(--radius-sm)", background: "var(--navy)", color: "#fff", fontSize: 12, fontWeight: 500, lineHeight: 1.45, boxShadow: "var(--shadow-md)", zIndex: 20 }}>
+          {text}
+        </span>
+      )}
+    </span>
+  );
 }
 
 // Phase 31: the shared Beginner / Intermediate / Advanced control. One small,
@@ -3221,13 +3861,31 @@ function AcScorecardBody({ result, onOpenClassroom }) {
 // Two modes:
 //  - legacy: <LoadingScreen messages={[...]} /> — gentle message rotation on a
 //    timer. Still used by screens outside Phase 16B's audited flows.
-//  - staged (Phase 16B): <LoadingScreen progress={{ title, subtitle, steps, stage }} />
+//  - staged (Phase 16B): <LoadingScreen progress={{ title, subtitle, steps, stage, note }} />
 //    — NO timer. `steps` is a real checklist; `stage` is the index of the step
 //    currently in progress, advanced by the calling flow only when a genuine
 //    milestone (an awaited call) has actually completed. Earlier steps show a
 //    tick, the current step spins, later steps are dimmed. This is honest
-//    progress, not a fake animation.
-function LoadingScreen({ messages, progress }) {
+//    progress, not a fake animation. `note` (optional, `{ small, main }`) is
+//    static reassurance copy rendered below the checklist — currently only
+//    the interview-creation flows set it; every other caller of the staged
+//    mode omits it and renders exactly as before.
+//  - `note` (optional, `{ small, main }`, passed as a PROP): the same static
+//    reassurance block, but usable on screens that don't drive a staged
+//    `progress` object — currently the Classroom lesson / development-module
+//    generation screens. Rendered in BOTH modes; a `progress.note` (set inside
+//    a staged progress object) always takes precedence over this prop.
+
+// Reassurance shown while a Classroom learning resource (a lesson or a
+// development module) is being generated. Honest by construction: no
+// percentage, countdown or time estimate — just a calm "this is worth the
+// wait" note alongside the existing animation / step checklist.
+const CLASSROOM_RESOURCE_LOADING_NOTE = {
+  small: "This may take a minute…",
+  main: "We're creating personalised learning resources to help you ace this interview.",
+};
+
+function LoadingScreen({ messages, progress, note }) {
   const [idx, setIdx] = useState(0);
   const staged = progress && Array.isArray(progress.steps) && progress.steps.length > 0;
   useEffect(() => {
@@ -3258,6 +3916,28 @@ function LoadingScreen({ messages, progress }) {
             );
           })}
         </div>
+        {/* Reassurance copy — set only by the interview-creation flows (see
+            startCreateFlow's generation call and startPractiseAgain) via an
+            optional `note` on the progress object; every other staged screen
+            (Application Intelligence, Development Modules, …) leaves it unset
+            and renders exactly as before. No progress bar, percentage or time
+            estimate — just honest, on-brand reassurance while the real
+            checklist above keeps advancing on genuine milestones. */}
+        {progress.note && (
+          <div style={{ marginTop: 22, paddingTop: 16, borderTop: "1px solid var(--border)", textAlign: "center", maxWidth: 280 }}>
+            {progress.note.small && <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-faint)", marginBottom: 3 }}>{progress.note.small}</div>}
+            {progress.note.main && <div style={{ fontSize: 14, fontWeight: 700, color: "var(--navy)" }}>{progress.note.main}</div>}
+          </div>
+        )}
+        {/* Fallback for callers that pass `note` as a prop rather than on the
+            staged progress object (Classroom resource generation). Only shown
+            when the staged object didn't set its own note. */}
+        {!progress.note && note && (
+          <div style={{ marginTop: 22, paddingTop: 16, borderTop: "1px solid var(--border)", textAlign: "center", maxWidth: 280 }}>
+            {note.small && <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-faint)", marginBottom: 3 }}>{note.small}</div>}
+            {note.main && <div style={{ fontSize: 14, fontWeight: 700, color: "var(--navy)" }}>{note.main}</div>}
+          </div>
+        )}
       </div>
     );
   }
@@ -3268,6 +3948,12 @@ function LoadingScreen({ messages, progress }) {
         <Loader2 className="animate-spin" size={24} color="#fff" />
       </div>
       <div className="jr-fade" key={idx} style={{ fontSize: 17, fontWeight: 600, color: "var(--navy)" }}>{messages ? messages[idx] : ""}</div>
+      {note && (
+        <div style={{ marginTop: 22, paddingTop: 16, borderTop: "1px solid var(--border)", textAlign: "center", maxWidth: 300 }}>
+          {note.small && <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-faint)", marginBottom: 3 }}>{note.small}</div>}
+          {note.main && <div style={{ fontSize: 14, fontWeight: 700, color: "var(--navy)" }}>{note.main}</div>}
+        </div>
+      )}
     </div>
   );
 }
@@ -3857,7 +4543,7 @@ function HowItWorksPage({ onStart, onBack }) {
   );
 }
 
-function NavBar({ screen, setScreen, user, classroomNeedsWorkCount, onSignOut }) {
+function NavBar({ screen, setScreen, user, classroomNeedsWorkCount, onSignOut, onContact }) {
   const [isMobile, setIsMobile] = useState(typeof window !== "undefined" ? window.innerWidth < 768 : false);
   const [menuOpen, setMenuOpen] = useState(false);
   useEffect(() => {
@@ -3869,7 +4555,7 @@ function NavBar({ screen, setScreen, user, classroomNeedsWorkCount, onSignOut })
 
   const links = user
     ? [{ label: "Dashboard", to: "dashboard" }, { label: "Applications", to: "applications" }, { label: "Classroom", to: "classroom" }, { label: "Assessment Centre", to: "ac_home" }, { label: "Progress", to: "progress" }]
-    : [{ label: "How it works", to: "how" }, { label: "For universities", to: "universities" }];
+    : [{ label: "How it works", to: "how" }, { label: "For universities", to: "universities" }, { label: "Pricing", to: "pricing" }];
 
   return (
     <div style={{ position: "sticky", top: 0, zIndex: 40, background: "rgba(248,250,252,0.95)", backdropFilter: "blur(8px)", borderBottom: "1px solid var(--border)" }}>
@@ -3897,6 +4583,12 @@ function NavBar({ screen, setScreen, user, classroomNeedsWorkCount, onSignOut })
                 </LinkBtn>
               );
             })}
+            {onContact && (
+              <LinkBtn onClick={onContact}
+                style={{ fontSize: 13.5, fontWeight: 500, cursor: "pointer", display: "flex", alignItems: "center", gap: 6, padding: "7px 11px", borderRadius: "var(--r-sm)", color: "var(--text-dim)", background: "transparent", transition: "background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease)" }}>
+                Contact Us
+              </LinkBtn>
+            )}
             {!user && (
               <>
                 <LinkBtn onClick={() => setScreen("login")} style={{ fontSize: 14, fontWeight: 500, color: "var(--text-dim)", cursor: "pointer", padding: "7px 11px" }}>Log in</LinkBtn>
@@ -3933,6 +4625,12 @@ function NavBar({ screen, setScreen, user, classroomNeedsWorkCount, onSignOut })
             </LinkBtn>
             );
           })}
+          {onContact && (
+            <LinkBtn onClick={onContact}
+              style={{ width: "100%", padding: "13px 10px", fontSize: 15, fontWeight: 500, color: "var(--text-dim)", background: "transparent", borderRadius: "var(--r-sm)", display: "flex", alignItems: "center", cursor: "pointer" }}>
+              Contact Us
+            </LinkBtn>
+          )}
           {!user ? (
             <div style={{ paddingTop: 14 }}>
               <Btn variant="accent" full onClick={() => setScreen("login")}>Start practising for free</Btn>
@@ -4634,6 +5332,19 @@ function App() {
   const [emailInput, setEmailInput] = useState("");
   const [passwordInput, setPasswordInput] = useState("");
   const [confirmPasswordInput, setConfirmPasswordInput] = useState("");
+  // Optional affiliate-partner reference code, sign-up only — see handleSignUp
+  // and onAuthed below. Infrastructure only: this just stores the code on the
+  // profile for a later phase to build on; no partner-crediting, checking, or
+  // reward logic exists yet.
+  const [referenceCodeInput, setReferenceCodeInput] = useState("");
+  // Optional education info, collected at sign-up. "" = not answered,
+  // "university" = attends/attended, "not_university" = explicitly does not.
+  // Stored once on the profile (attends_university / university / degree) purely
+  // so anonymised "which universities do our users attend" stats are possible
+  // later — never required, never gates anything. See handleSignUp + onAuthed.
+  const [educationStatus, setEducationStatus] = useState("");
+  const [universityInput, setUniversityInput] = useState("");
+  const [degreeInput, setDegreeInput] = useState("");
   const [authNotice, setAuthNotice] = useState(""); // e.g. "check your email to confirm"
   const [authBusy, setAuthBusy] = useState(false); // Phase 23: in-flight auth request — disables submit buttons, blocks duplicate submits
   const [resetEmailSent, setResetEmailSent] = useState(false); // Phase 23: forgot-password success state
@@ -4654,7 +5365,7 @@ function App() {
   const [interviewDateInput, setInterviewDateInput] = useState("");
   const [interviewStage, setInterviewStage] = useState("first_round"); // recruiter_screen | first_round | technical | final_round
   const [interviewFormat, setInterviewFormat] = useState(null); // null = use the stage's default format; only meaningful when the stage allows a choice
-  const [length, setLength] = useState(12);
+  const [length, setLength] = useState(8); // wizard "Length": Short 5 | Medium 8 (default) | Long 10 — the exact adaptive question target (ivConfig.max_questions)
   // Phase 11: the user's explicit Question Mix. Starts EMPTY — never pre-selected,
   // never inferred from stage/role/JD. The user must pick >=1 before building.
   const [questionMix, setQuestionMix] = useState({ technical: false, behavioural: false, motivational: false });
@@ -4717,6 +5428,33 @@ function App() {
   // interview surfaced by the pre-generation duplicate check.
   const [resumableInterviews, setResumableInterviews] = useState([]);
   const [resumeChoice, setResumeChoice] = useState(null);
+  // Phase 40: pricing / payments / paywall.
+  //  - entitlements: canonical snapshot from entitlements.js (free unlock,
+  //    purchased credits, unlocked application ids, active subscription). Loaded
+  //    at auth; refreshed after a checkout return and after any unlock.
+  //  - freeUnlockPrompt: null, or { applicationId, company, role, onProceed } —
+  //    the explicit "You're about to unlock..." confirmation modal. The free
+  //    unlock is spent ONLY when the user confirms it there.
+  //  - paywall: null, or { applicationId, company, role, onProceed } — the
+  //    locked-application pricing modal (free unlock already used).
+  //  - onProceed is a zero-arg callback re-run once the application is unlocked.
+  const [entitlements, setEntitlements] = useState(() => normalizeEntitlements({}));
+  const [freeUnlockPrompt, setFreeUnlockPrompt] = useState(null);
+  const [freeUnlockBusy, setFreeUnlockBusy] = useState(false);
+  const [paywall, setPaywall] = useState(null);
+  // Contact Us / feedback dialog — available from the shared NavBar on both the
+  // public landing pages and the authenticated app.
+  const [contactOpen, setContactOpen] = useState(false);
+  const [checkoutBusy, setCheckoutBusy] = useState(null);
+  const [entitlementFlash, setEntitlementFlash] = useState("");
+  // Phase 40: the post-Stripe-Checkout confirmation banner. null, or
+  //   { phase: "confirming" | "pending", productName, expect, baseline, busy }
+  // "confirming" = polling refreshEntitlements() for the new entitlement to
+  // appear; "pending" = it hasn't within the polling window (never a false
+  // success) — shows a Refresh button. Cleared once the entitlement is
+  // actually observed (then a normal entitlementFlash success is shown).
+  const [checkoutStatus, setCheckoutStatus] = useState(null);
+  const checkoutHandledRef = useRef(false);
   // Phase 7: Interview Invitation Scanner — a second INPUT METHOD into this SAME wizard, never
   // a parallel one. buildMethod tracks which entry the candidate took ("jdcv" is the default/
   // existing behaviour, applied even for entry points that skip the choice screen entirely —
@@ -4751,6 +5489,10 @@ function App() {
   const [applications, setApplications] = useState([]);
   const [perf, setPerf] = useState(null); // { strengths, weaknesses, competency_history:{key:[scores]}, style_notes, common_issues }
   const [answerInput, setAnswerInput] = useState("");
+  // Voice input (Web Speech API) for interview answers — one recognition
+  // lifecycle shared across the adaptive / async / Challenge Me answer
+  // surfaces (only one is ever mounted at a time). See useSpeechToText.
+  const speech = useSpeechToText();
   const [report, setReport] = useState(null);
   const bottomRef = useRef(null);
   const busyRef = useRef(false);
@@ -4760,6 +5502,17 @@ function App() {
   // not navigate the user off that screen. Cleared on any explicit auth-view switch
   // (goAuth) and on a successful sign-in (onAuthed).
   const recoveryErrorRef = useRef(false);
+  // Phase 40: the entitlement snapshot, also mirrored into a ref so the paywall
+  // gate reads the LATEST value synchronously — a modal's "onProceed" callback
+  // re-runs its entry point within the same render, before setEntitlements has
+  // flushed, so it must not re-evaluate access against the stale state.
+  const entitlementsRef = useRef(entitlements);
+  function applyEntitlements(next) {
+    const norm = normalizeEntitlements(next);
+    entitlementsRef.current = norm;
+    setEntitlements(norm);
+    return norm;
+  }
   async function guarded(fn) {
     if (busyRef.current) return;
     busyRef.current = true;
@@ -4868,6 +5621,86 @@ function App() {
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [interview?.transcript?.length]);
   useEffect(() => { window.scrollTo(0, 0); }, [screen]);
+
+  // Voice input cleanup: stop recognition and clear any interim/error state
+  // whenever the answering context changes — a new interview question, moving
+  // to a different answer surface, or leaving the interview entirely. Combined
+  // with useSpeechToText's own unmount teardown, this guarantees the mic never
+  // keeps running in the background. (Submit handlers also call speech.stop()
+  // for an immediate stop the instant an answer is sent.)
+  const voiceAnswerContextKey = [
+    screen,
+    interview?.currentQuestion?.dbId ?? "",
+    interview?.currentIndex ?? "",
+    challenge?.questionDbId ?? "",
+  ].join("|");
+  useEffect(() => {
+    speech.stop();
+    speech.reset();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [voiceAnswerContextKey]);
+
+  // Phase 40: returning from Stripe Checkout. `create-checkout` builds the return
+  // URL as ?checkout=success|cancel (&product=...). We never tell the user their
+  // unlock/credits/subscription are ready until a fresh entitlement snapshot
+  // actually shows the new entitlement — Stripe's webhook + the DB are the sole
+  // source of truth (the browser grants nothing). On success we show a truthful
+  // "confirming" banner and poll refreshEntitlements() with a short backoff;
+  // once the new entitlement appears we show a confirmed success; if it hasn't
+  // within the window we show a "may still be processing" banner with a Refresh
+  // button — never a false success. Query params are scrubbed so a reload can't
+  // replay this.
+  useEffect(() => {
+    if (typeof window === "undefined" || !user || checkoutHandledRef.current) return;
+    const params = new URLSearchParams(window.location.search);
+    const outcome = params.get("checkout");
+    if (!outcome) return;
+    checkoutHandledRef.current = true;
+    const plan = planById(params.get("product"));
+    if (window.history?.replaceState) window.history.replaceState(null, "", window.location.pathname);
+
+    if (outcome === "cancel") {
+      setEntitlementFlash("Checkout cancelled — no payment was taken.");
+      return;
+    }
+    if (outcome !== "success") return;
+
+    setPaywall(null); setFreeUnlockPrompt(null);
+    // Snapshot the entitlement state as it was BEFORE checkout so we can detect
+    // the specific new entitlement, not just "has any credits/subscription".
+    const baseline = normalizeEntitlements(entitlementsRef.current);
+    const expect = plan?.kind === "subscription" ? "subscription"
+      : plan?.kind === "one_time" ? "credits"
+      : "any";
+    const productName = plan?.name || null;
+    setCheckoutStatus({ phase: "confirming", productName, expect, baseline, busy: false });
+
+    (async () => {
+      // First check immediately, then wait between subsequent checks (backoff).
+      for (let i = 0; i <= CHECKOUT_POLL_BACKOFF_MS.length; i++) {
+        const fresh = await refreshEntitlements();
+        if (checkoutConfirmed({ expect, baseline, current: fresh })) {
+          setCheckoutStatus(null);
+          setEntitlementFlash(productName
+            ? `${productName} confirmed — it's on your account now.`
+            : "Purchase confirmed — your account has been updated.");
+          return;
+        }
+        if (i < CHECKOUT_POLL_BACKOFF_MS.length) {
+          await new Promise((r) => setTimeout(r, CHECKOUT_POLL_BACKOFF_MS[i]));
+        }
+      }
+      // Timed out — the webhook may still be in flight. Never claim success.
+      setCheckoutStatus((s) => (s && s.phase === "confirming" ? { ...s, phase: "pending", busy: false } : s));
+    })();
+  }, [user]);
+
+  // Phase 40: auto-dismiss the transient entitlement confirmation banner.
+  useEffect(() => {
+    if (!entitlementFlash) return;
+    const t = setTimeout(() => setEntitlementFlash(""), 6000);
+    return () => clearTimeout(t);
+  }, [entitlementFlash]);
 
   // Reset the prep/answer cycle whenever a new async question comes into view.
   useEffect(() => {
@@ -4995,12 +5828,32 @@ function App() {
     try {
       const state = await loadFullUserState(authUser.id);
       let p = state.profile;
-      // Backfill name from signup metadata if the profile row doesn't have it yet
-      // (handles both instant-session and email-confirmation-required signup flows).
+      // Backfill name (+ optional reference code) from signup metadata if the
+      // profile row doesn't have them yet (handles both instant-session and
+      // email-confirmation-required signup flows). reference_code is written
+      // once, at this first backfill, and never overwritten afterward — same
+      // "set at signup, read later" shape as first/last name.
       const metaFirst = authUser.user_metadata?.first_name, metaLast = authUser.user_metadata?.last_name;
-      if ((!p?.first_name || !p?.last_name) && (metaFirst || metaLast)) {
+      const metaReferenceCode = authUser.user_metadata?.reference_code;
+      // Optional education info — same write-once backfill as reference_code:
+      // only written when the profile doesn't have it yet, never overwritten.
+      const metaAttendsUniversity = authUser.user_metadata?.attends_university;
+      const metaUniversity = authUser.user_metadata?.university;
+      const metaDegree = authUser.user_metadata?.degree;
+      const educationBackfill = {
+        ...(p?.attends_university == null && metaAttendsUniversity != null ? { attends_university: metaAttendsUniversity } : {}),
+        ...(!p?.university && metaUniversity ? { university: metaUniversity } : {}),
+        ...(!p?.degree && metaDegree ? { degree: metaDegree } : {}),
+      };
+      const needsNameOrRef = !p?.first_name || !p?.last_name || (!p?.reference_code && metaReferenceCode);
+      const hasSignupMeta = metaFirst || metaLast || metaReferenceCode || metaAttendsUniversity != null || metaUniversity || metaDegree;
+      if ((needsNameOrRef || Object.keys(educationBackfill).length > 0) && hasSignupMeta) {
         const supabase = await getSupabase();
-        const { data: updated } = await supabase.from("profiles").update({ first_name: metaFirst || p?.first_name || "", last_name: metaLast || p?.last_name || "" }).eq("id", authUser.id).select().maybeSingle();
+        const { data: updated } = await supabase.from("profiles").update({
+          first_name: metaFirst || p?.first_name || "", last_name: metaLast || p?.last_name || "",
+          ...(!p?.reference_code && metaReferenceCode ? { reference_code: metaReferenceCode } : {}),
+          ...educationBackfill,
+        }).eq("id", authUser.id).select().maybeSingle();
         if (updated) p = updated;
       }
       setUser({ id: authUser.id, email: authUser.email, first_name: p?.first_name || "", last_name: p?.last_name || "" });
@@ -5016,6 +5869,7 @@ function App() {
       setDevelopmentModules(state.developmentModules || []);
       setModuleProgress(state.moduleProgress || []);
       setResumableInterviews(state.resumableInterviews || []);
+      applyEntitlements(state.entitlements);
       setScreen((s) => (["landing", "how", "universities", "login"].includes(s) ? "dashboard" : s));
     } catch (e) {
       setError("Signed in, but couldn't load your data. Please refresh.");
@@ -5048,6 +5902,10 @@ function App() {
     setDevelopmentModules([]); setModuleProgress([]); setPendingReportSave(null); setPendingModuleSave(null);
     setAppView(null); setAppForm(null); setGenProgress(null);
     setResumableInterviews([]); setResumeChoice(null);
+    // Phase 40: entitlement state is per-user — clear it on sign-out (same
+    // shared/kiosk-browser hygiene reasoning as the fields above).
+    applyEntitlements({}); setFreeUnlockPrompt(null); setPaywall(null); setCheckoutBusy(null); setEntitlementFlash("");
+    setCheckoutStatus(null); checkoutHandledRef.current = false;
     // Phase 7: same ownership-hygiene reasoning — a signed-out session must never leave a
     // previous user's pasted invitation email (which may contain personal information — §17)
     // sitting in memory.
@@ -5065,9 +5923,29 @@ function App() {
     setAuthBusy(true);
     try {
       const supabase = await getSupabase();
+      // Optional reference code — same signup-metadata pattern as first/last name
+      // above (see onAuthed's backfill below), capped at a sane length purely to
+      // prevent abuse. It's optional free text with no checking, crediting, or
+      // reward behaviour behind it yet — just storage for a later phase.
+      const cleanReferenceCode = sanitizeText(referenceCodeInput.trim()).slice(0, 40);
+      // Optional education info — same "store on the profile at signup for a
+      // later phase" shape as the reference code. Never required; a user who
+      // picks "I don't attend university" or leaves it blank signs up normally.
+      const attendsUniversity =
+        educationStatus === "university" ? true
+        : educationStatus === "not_university" ? false
+        : null;
+      const cleanUniversity = attendsUniversity === true ? sanitizeText(universityInput.trim()).slice(0, 200) : "";
+      const cleanDegree = attendsUniversity === true ? sanitizeText(degreeInput.trim()).slice(0, 200) : "";
       const { data, error: signUpErr } = await supabase.auth.signUp({
         email: sanitizeText(emailInput.trim().toLowerCase()), password: passwordInput,
-        options: { data: { first_name: sanitizeText(firstNameInput.trim()), last_name: sanitizeText(lastNameInput.trim()) } },
+        options: { data: {
+          first_name: sanitizeText(firstNameInput.trim()), last_name: sanitizeText(lastNameInput.trim()),
+          ...(cleanReferenceCode ? { reference_code: cleanReferenceCode } : {}),
+          ...(attendsUniversity !== null ? { attends_university: attendsUniversity } : {}),
+          ...(cleanUniversity ? { university: cleanUniversity } : {}),
+          ...(cleanDegree ? { degree: cleanDegree } : {}),
+        } },
       });
       if (signUpErr) { setError(friendlyAuthError(signUpErr.message, "Couldn't create your account. Please try again.")); return; }
       if (data?.session) { await onAuthed(data.session); }
@@ -5309,6 +6187,10 @@ function App() {
   }
 
   async function openLesson(topic) {
+    // Phase 40: a Classroom lesson tied to an application is a preparation
+    // resource for it. Global/legacy topics (no applicationId) are never gated.
+    const lessonGateApp = topic?.applicationId ? applications.find((a) => a.id === topic.applicationId) : null;
+    if (lessonGateApp && !(await ensureApplicationAccess(lessonGateApp, { onProceed: () => openLesson(topic) }))) return;
     setClassroomTopic(topic); setQuizAnswers({}); setError("");
     const savedQuiz = await dbGetQuizResult(topic.id, user.id);
     if (savedQuiz?.answers) setQuizAnswers(savedQuiz.answers);
@@ -5405,6 +6287,8 @@ Rules: mini study guide, not an essay. core_knowledge 3-5 points, key_points 3-5
   // company-specific context never crosses applications.
   async function startLearningFromRecommendation(rec, app) {
     if (!rec || !rec.label || !user || !app) return;
+    // Phase 40: starting a development area for an application is a preparation resource.
+    if (!(await ensureApplicationAccess(app, { onProceed: () => startLearningFromRecommendation(rec, app) }))) return;
     const m = normalizeTopic(rec.label);
     const existing = classroom.find((t) => {
       if (t.applicationId && t.applicationId !== app.id) return false; // never reuse another application's topic
@@ -5452,6 +6336,10 @@ Rules: mini study guide, not an essay. core_knowledge 3-5 points, key_points 3-5
   // below entirely instead of issuing a network round-trip whose answer is already known.
   async function openDevelopmentModule(topic, opts = {}) {
     if (!topic || !user || devGenRef.current) return;
+    // Phase 40: a development module tied to an application is a preparation
+    // resource for it (whether it is generated now or replayed from cache).
+    const moduleGateApp = topic?.applicationId ? applications.find((a) => a.id === topic.applicationId) : null;
+    if (moduleGateApp && !(await ensureApplicationAccess(moduleGateApp, { onProceed: () => openDevelopmentModule(topic, opts) }))) return;
     setDevTopic(topic); setDevView("hub");
     setFlashIdx(0); setFlashRevealed(false);
     setQuizIdx(0); setQuizDraft(""); setQuizResults([]); setRedoDraft(""); setRedoResult(null); setError("");
@@ -5782,6 +6670,8 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
   // the candidate simply re-pastes it, same as starting fresh.
   async function continueApplication(app) {
     setError("");
+    // Phase 40: continuing setup opens preparation for this application.
+    if (!(await ensureApplicationAccess(app, { onProceed: () => continueApplication(app) }))) return;
     setCompany(app.company); setRole(app.role); setApplicationId(app.id); setBuildMethod("jdcv");
     setFocusWeaknesses(false); setTargetTopic(null);
     setJdText(app.jobDescription || ""); setCvText("");
@@ -5843,6 +6733,9 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
   // (never blocking more than that one read; a miss just leaves cvText empty, same as today).
   async function startPractiseAgain(app) {
     if (!app || !user) return;
+    // Phase 40: backstop — an application with a completed interview is already
+    // unlocked, so this normally passes instantly.
+    if (!(await ensureApplicationAccess(app, { onProceed: () => startPractiseAgain(app) }))) return;
     const config = practiseAgainConfigFor(app);
     setError("");
     setCompany(app.company || ""); setRole(app.role || ""); setApplicationId(app.id); setBuildMethod("jdcv");
@@ -5871,6 +6764,9 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
       title: "Creating your new interview",
       subtitle: `Using your previous settings for ${[app.company, app.role].filter(Boolean).join(" · ")}`,
       steps: ["Restoring your details", "Creating your personalised questions"],
+      // Reassurance copy, interview-creation screens only (see LoadingScreen)
+      // — no fake progress, just an honest "this takes a moment" note.
+      note: { small: "This may take a moment", main: "We're creating the perfect interview for you." },
       stage: 0,
     });
     setScreen("analyzing");
@@ -5886,7 +6782,7 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
       motivational: config.question_mix.includes("motivational"),
     });
     setTechnicalDifficulty(config.technical_difficulty ? resolveTechnicalDifficulty(config.technical_difficulty) : DEFAULT_TECHNICAL_DIFFICULTY);
-    setLength(typeof config.max_questions === "number" ? config.max_questions : 12);
+    setLength(typeof config.max_questions === "number" ? config.max_questions : 8);
     setPractiseAgainActive(true);
     analyseAndPlan(); // same duplicate-generation guard as every other caller (Phase 18) — see there
   }
@@ -5976,6 +6872,8 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
   async function analyseApplicationOnly(app) {
     if (!app || !user) return;
     setError("");
+    // Phase 40: Application analysis is an AI-backed preparation resource.
+    if (!(await ensureApplicationAccess(app, { onProceed: () => analyseApplicationOnly(app) }))) return;
     const cleanCompany = sanitizeText(app.company);
     const cleanRole = sanitizeText(app.role);
     const cleanJd = sanitizeText(app.jobDescription || "");
@@ -6047,6 +6945,162 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
     }
   }
 
+  /* ---------------- PHASE 40: PAYWALL GATE ---------------- */
+
+  // Re-read the entitlement snapshot from the database (after a checkout return,
+  // or after spending an unlock). Returns the fresh snapshot; never throws.
+  async function refreshEntitlements() {
+    if (!user) return entitlementsRef.current;
+    try {
+      return applyEntitlements(await dbLoadEntitlements(user.id));
+    } catch (e) {
+      return entitlementsRef.current;
+    }
+  }
+
+  // Phase 40: the "Refresh" button on the post-checkout "may still be processing"
+  // banner. Reloads the entitlement snapshot from the DB and, if the expected
+  // new entitlement has now landed, swaps the banner for a confirmed success.
+  // Otherwise it stays on the pending banner (never a false success).
+  async function retryCheckoutConfirmation() {
+    const s = checkoutStatus;
+    if (!s || s.busy) return;
+    setCheckoutStatus({ ...s, busy: true });
+    const fresh = await refreshEntitlements();
+    if (checkoutConfirmed({ expect: s.expect, baseline: s.baseline, current: fresh })) {
+      setCheckoutStatus(null);
+      setEntitlementFlash(s.productName
+        ? `${s.productName} confirmed — it's on your account now.`
+        : "Purchase confirmed — your account has been updated.");
+    } else {
+      setCheckoutStatus({ ...s, phase: "pending", busy: false });
+    }
+  }
+
+  // THE access chokepoint. Call before opening any preparation resource for a
+  // specific application (interview build/generation, Application analysis,
+  // Classroom lesson / development module, Assessment Centre scenario).
+  //   true  -> the application is unlocked; proceed.
+  //   false -> a modal is on screen (free-unlock confirmation, or the paywall),
+  //            or there is no application; the caller must abort. `onProceed`
+  //            re-runs the caller once the application becomes unlocked.
+  // Applications stay fully creatable/saveable regardless — this is only ever
+  // called at the point of accessing a preparation resource, never at save.
+  // The one free unlock is NEVER spent here — only after the user confirms it in
+  // the modal (confirmFreeUnlock).
+  async function ensureApplicationAccess(app, { onProceed } = {}) {
+    const applicationId = typeof app === "string" ? app : app?.id;
+    if (!applicationId) return true; // not application-scoped (e.g. stand-alone Assessment Centre)
+
+    const found = applications.find((a) => a.id === applicationId) || (typeof app === "object" ? app : null);
+    const company = found?.company || "";
+    const role = found?.role || "";
+    const proceed = typeof onProceed === "function" ? onProceed : null;
+
+    const access = evaluateApplicationAccess({ applicationId, entitlements: entitlementsRef.current });
+    if (access.status === ACCESS.UNLOCKED) return true;
+
+    setError("");
+    if (access.status === ACCESS.FREE) {
+      // Free unlock available — ask first, spend only on explicit confirmation.
+      setFreeUnlockPrompt({ applicationId, company, role, onProceed: proceed });
+    } else {
+      // ACCESS.SUBSCRIPTION (spend one of the 10 monthly Job Search Pass
+      // unlocks), ACCESS.CREDIT (spend a purchased credit) or ACCESS.LOCKED
+      // (nothing available) — the paywall renders the right option for each.
+      setPaywall({ applicationId, company, role, onProceed: proceed });
+    }
+    return false;
+  }
+
+  // From the free-unlock confirmation modal ("Unlock & start preparing").
+  async function confirmFreeUnlock() {
+    const prompt = freeUnlockPrompt;
+    if (!prompt?.applicationId || freeUnlockBusy) return;
+    setFreeUnlockBusy(true);
+    setError("");
+    const result = await rpcConsumeFreeUnlock(prompt.applicationId);
+    setFreeUnlockBusy(false);
+    const fresh = await refreshEntitlements();
+    const nowUnlocked = evaluateApplicationAccess({ applicationId: prompt.applicationId, entitlements: fresh }).status === ACCESS.UNLOCKED;
+
+    if (result?.ok || nowUnlocked) {
+      const onProceed = prompt.onProceed;
+      setFreeUnlockPrompt(null);
+      setEntitlementFlash(prompt.company
+        ? `${prompt.company} unlocked — unlimited preparation for it from here on.`
+        : "Application unlocked.");
+      if (onProceed) { try { await onProceed(); } catch (e) { /* caller surfaces its own errors */ } }
+      return;
+    }
+
+    // Couldn't unlock — the free unlock was already spent on another application,
+    // or a transient error. Move the user to the paywall.
+    setFreeUnlockPrompt(null);
+    setError(result?.reason === "free_unlock_used"
+      ? "Your free unlock has already been used on another application."
+      : "Couldn't unlock this application. Please try again.");
+    setPaywall({ applicationId: prompt.applicationId, company: prompt.company, role: prompt.role, onProceed: prompt.onProceed });
+  }
+
+  // From the paywall: spend one purchased unlock credit on the pending application.
+  async function spendUnlockCreditFromPaywall() {
+    if (!paywall?.applicationId) return;
+    setError("");
+    const result = await rpcConsumeUnlockCredit(paywall.applicationId);
+    if (!result?.ok) {
+      setError(result?.reason === "no_credits"
+        ? "You have no unlock credits left. Choose a plan below."
+        : "Couldn't unlock this application. Please try again.");
+      await refreshEntitlements();
+      return;
+    }
+    await refreshEntitlements();
+    const { onProceed, company } = paywall;
+    setPaywall(null);
+    setEntitlementFlash(company ? `${company} unlocked.` : "Application unlocked.");
+    if (onProceed) { try { await onProceed(); } catch (e) { /* caller surfaces its own errors */ } }
+  }
+
+  // From the paywall: spend one of the 10 monthly Job Search Pass unlocks. The
+  // cap is enforced server-side (consume_subscription_unlock); this just reads
+  // the structured result and shows a clear message when the month is used up.
+  async function spendSubscriptionUnlockFromPaywall() {
+    if (!paywall?.applicationId) return;
+    setError("");
+    const result = await rpcConsumeSubscriptionUnlock(paywall.applicationId);
+    if (!result?.ok) {
+      setError(result?.reason === "monthly_unlock_limit_reached"
+        ? "You've used all 10 of your Job Search Pass application unlocks this month. Your allowance resets at the start of the next billing period — or use a free/purchased unlock below."
+        : result?.reason === "no_subscription"
+        ? "Your Job Search Pass isn't active. Choose an option below."
+        : "Couldn't unlock this application. Please try again.");
+      await refreshEntitlements();
+      return;
+    }
+    await refreshEntitlements();
+    const { onProceed, company } = paywall;
+    setPaywall(null);
+    const left = typeof result.remaining === "number" ? ` ${result.remaining} left this month.` : "";
+    setEntitlementFlash((company ? `${company} unlocked.` : "Application unlocked.") + left);
+    if (onProceed) { try { await onProceed(); } catch (e) { /* caller surfaces its own errors */ } }
+  }
+
+  // From the paywall or the pricing page: hand off to Stripe Checkout.
+  async function beginCheckout(product, applicationId) {
+    if (checkoutBusy) return;
+    if (!PURCHASABLE_PRODUCT_IDS.includes(product)) return;
+    setError("");
+    setCheckoutBusy(product);
+    try {
+      const url = await startStripeCheckout(product, applicationId || paywall?.applicationId || null);
+      window.location.assign(url);
+    } catch (e) {
+      setError(e.message || "Couldn't start checkout. Please try again.");
+      setCheckoutBusy(null);
+    }
+  }
+
   // Phase 20: ENTRY-POINT duplicate-generation guard. If this application already
   // has a resumable unfinished interview, surface the resume/start-new choice
   // NOW — before the setup wizard — so resuming is never buried behind a full
@@ -6066,9 +7120,11 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
   // Build an interview from inside an Application — carry the stored context so
   // the user never re-types it. Question Mix stays a MANUAL choice at wizard
   // step 4 (Phase 11 / §9): reset it here so nothing is silently pre-selected.
-  function buildInterviewFromApplication(app) {
+  async function buildInterviewFromApplication(app) {
     if (!app) return;
     setError("");
+    // Phase 40: building an interview is a preparation resource for this application.
+    if (!(await ensureApplicationAccess(app, { onProceed: () => buildInterviewFromApplication(app) }))) return;
     setCompany(app.company || ""); setRole(app.role || ""); setApplicationId(app.id); setBuildMethod("jdcv");
     setFocusWeaknesses(false); setTargetTopic(null);
     setJdText(app.jobDescription || ""); setCvText("");
@@ -6087,9 +7143,11 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
   // all three types: Quick Practice is meant to be frictionless, never a second config form.
   // Reuses analyseAndPlan's own existing duplicate-generation guard (resumable-interview
   // check) — never a parallel one.
-  function startQuickPractice(app, questionCount) {
+  async function startQuickPractice(app, questionCount) {
     if (!app) return;
     setError("");
+    // Phase 40: Quick Practice generates an interview — a preparation resource.
+    if (!(await ensureApplicationAccess(app, { onProceed: () => startQuickPractice(app, questionCount) }))) return;
     setCompany(app.company || ""); setRole(app.role || ""); setApplicationId(app.id); setBuildMethod("jdcv");
     setFocusWeaknesses(false); setTargetTopic(null);
     setJdText(app.jobDescription || ""); setCvText("");
@@ -6113,6 +7171,8 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
   async function startChallengeMe(app) {
     if (!app || !user) return;
     setError(""); setChallenge(null); setChallengeAnswerInput("");
+    // Phase 40: Challenge Me generates an AI question for this application.
+    if (!(await ensureApplicationAccess(app, { onProceed: () => startChallengeMe(app) }))) return;
     setScreen("challenge_generating");
     try {
       const cleanCompany = sanitizeText(app.company || ""), cleanRole = sanitizeText(app.role || ""), cleanJd = sanitizeText(app.jobDescription || "");
@@ -6158,6 +7218,7 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
   // narrative interview_report call — see this section's own docstring above.
   async function submitChallengeAnswer() {
     if (!challenge || !challengeAnswerInput.trim() || challengeBusyRef.current) return;
+    speech.stop(); // never leave the mic running once an answer is sent
     challengeBusyRef.current = true;
     setError("");
     const cleanAnswer = sanitizeText(challengeAnswerInput);
@@ -6446,6 +7507,12 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
   /* ---------------- STEP 1: JD + CV ANALYSIS -> PROFILE ---------------- */
   async function analyseAndPlan() {
     setError("");
+    // Phase 40 — paywall backstop. Generating an interview is a paid preparation
+    // resource for this application. Every UI entry point already gates this;
+    // this covers the from-scratch wizard path (the draft application exists by
+    // now, applicationId is committed). Applications stay saved regardless — only
+    // generation is blocked.
+    if (applicationId && !(await ensureApplicationAccess(applicationId, { onProceed: () => analyseAndPlan() }))) return;
     // Phase 38 — Practise again: a ONE-SHOT flag consumed here, on every single invocation of
     // analyseAndPlan (including the early "resume_choice" return below), so it can never leak
     // into a later, unrelated call. Read once into a local const; only ever changes the loading
@@ -6481,6 +7548,9 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
       steps: batchPipeline
         ? ["Creating your personalised questions", "Preparing every question", "Finalising your interview"]
         : ["Creating your personalised questions", "Finalising your interview"],
+      // Reassurance copy, interview-creation screens only (see LoadingScreen)
+      // — no fake progress, just an honest "this takes a moment" note.
+      note: { small: "This may take a moment", main: "We're creating the perfect interview for you." },
       stage: 0,
     });
     setScreen("analyzing");
@@ -6628,7 +7698,7 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
       //  - profile: the interview_profile + candidate_profile the adaptive turn
       //    engine and BOTH report paths need — currently held only in React
       //    `profile` state, with no reload path.
-      //  - max_questions: the adaptive completion target (wizard "Length"),
+      //  - max_questions: the wizard "Length" — the exact question target,
       //    otherwise lost with the `length` state on reload.
       // Additive keys; nothing in the live flow reads config.profile /
       // config.max_questions except the Phase 18 reconstruction layer.
@@ -6638,6 +7708,18 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
         opening_question: result.opening_question,
       };
       ivConfig.max_questions = length;
+      // The wizard "Length" (Short 5 / Medium 8 / Long 10) is the EXACT question
+      // count for every normal build, both pipelines. The adaptive engine reads it
+      // via max_questions above (isInterviewComplete); the independent/batch
+      // generator counts by question_count, so mirror the user's choice there too —
+      // otherwise a batch interview would silently use the per-format default from
+      // resolveInterviewConfig and ignore the selector. Quick Practice keeps the
+      // fixed smaller count it set in the guard above (session_kind
+      // "quick_practice"); Challenge Me builds its own ivConfig and never reaches
+      // here.
+      if (ivConfig.pipeline === "independent_batch" && ivConfig.session_kind !== "quick_practice") {
+        ivConfig.question_count = length;
+      }
 
       // Phase 16B: these two writes touch DIFFERENT tables with independent data —
       // the `applications` row (analysed JD profile + Application Intelligence that
@@ -6792,6 +7874,7 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
   // re-running Call 1, re-inserting the answer, or touching a question counter.
   async function submitAnswer() {
     if (!answerInput.trim() || !interview || !profile) return;
+    speech.stop(); // never leave the mic running once an answer is sent
     // Structural guard (Phase 4B §3, unchanged): interview_turn must be UNREACHABLE for an
     // independent_batch interview, not merely discouraged by a prompt. This check exists
     // so that even a future accidental wiring of a button/handler to submitAnswer() cannot
@@ -7224,6 +8307,7 @@ Rules: scores computed honestly from the transcript's evaluations. Never fabrica
     if (!interview || interview.config?.pipeline !== "independent_batch") return;
     const q = interview.questions[interview.currentIndex];
     if (!q) return;
+    speech.stop(); // never leave the mic running once an answer is sent
     setError("");
     const cleanAnswer = sanitizeText(answerInput || "");
     try {
@@ -7269,7 +8353,7 @@ Rules: scores computed honestly from the transcript's evaluations. Never fabrica
   }
 
   function resetForNewInterview() {
-    setCompany(""); setRole(""); setJdText(""); setCvText(""); setInterviewStage("first_round"); setInterviewFormat(null); setLength(12);
+    setCompany(""); setRole(""); setJdText(""); setCvText(""); setInterviewStage("first_round"); setInterviewFormat(null); setLength(8);
     setQuestionMix({ technical: false, behavioural: false, motivational: false }); // Phase 11: always an explicit choice
     setTechnicalDifficulty(DEFAULT_TECHNICAL_DIFFICULTY); // Phase 31: back to the Intermediate default
     setProfile(null); setInterview(null); setReport(null); setError(""); setFocusWeaknesses(false); setWizardStep(1); setApplicationId(null);
@@ -7315,6 +8399,15 @@ Rules: scores computed honestly from the transcript's evaluations. Never fabrica
   }
 
   async function generateAcScenario(type) {
+    // Phase 40: an Assessment Centre exercise only counts as a preparation
+    // resource for an application when it is genuinely tied to one — the same
+    // acAppMatches heuristic submitAcResponse uses to tag the saved attempt.
+    // A stand-alone exercise (free-typed company/role) is never gated.
+    const acScopedApplicationId = applicationId && company === acCompany && role === acRole ? applicationId : null;
+    if (acScopedApplicationId) {
+      const acGateApp = applications.find((a) => a.id === acScopedApplicationId);
+      if (acGateApp && !(await ensureApplicationAccess(acGateApp, { onProceed: () => generateAcScenario(type) }))) return;
+    }
     setScreen("ac_generating");
     try {
       const cfg = EXERCISE_TYPES.find((t) => t.key === type);
@@ -7333,7 +8426,7 @@ Rules: scores computed honestly from the transcript's evaluations. Never fabrica
 { "title": "", "brief": "", "objective": "", "materials": [""], "suggested_time_minutes": 15 }
 Rules: ground it in the specific company and role given, for a "${cfg.label}" exercise. materials should be short concrete bullets (documents, data points, or — for an inbox exercise — the individual inbox items themselves, each one bullet with sender/subject/gist and no explicit urgency label, since judging urgency is the point of the exercise). Calibrate difficulty${priorAvg !== null ? ` — the candidate averaged ${priorAvg}/100 on this exercise type before, so ${priorAvg >= 75 ? "raise the difficulty a notch" : priorAvg < 50 ? "keep it approachable" : "keep it moderately challenging"}` : " for a first attempt: realistic but approachable"}.${technicalDifficultyBlock}`;
       const userText = `Exercise type: ${cfg.label}\nCompany: ${sanitizeText(acCompany)}\nRole: ${sanitizeText(acRole)}\nCandidate level: ${candidateLevel()}\nKnown weaknesses to weave in naturally where relevant: ${(perf?.weaknesses || []).join("; ") || "none yet"}`;
-      const result = validateAcScenario(await callClaude(system, userText, 1400, false, { requestType: "assessment_centre_scenario", applicationId }));
+      const result = validateAcScenario(await callClaude(system, userText, 1400, false, { requestType: "assessment_centre_scenario", applicationId: acScopedApplicationId }));
       // Carry the chosen level on the scenario object so it is persisted with the attempt
       // (assessment_attempts.scenario jsonb — no schema change) and visible on the scorecard.
       if (acLevel) result.technical_difficulty = acLevel;
@@ -7388,7 +8481,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
   }
 
   /* ---------------- DERIVED VALUES ---------------- */
-  const showNav = ["landing", "how", "universities", "login", "privacy", "terms", "dashboard", "applications", "application", "application_form", "create", "create_choose", "resume_choice", "invitation_paste", "invitation_review", "preview", "progress", "report", "report_view", "classroom", "lesson", "ac_home", "ac_exercise", "ac_scorecard", "ac_attempt_view",
+  const showNav = ["landing", "how", "universities", "pricing", "login", "privacy", "terms", "dashboard", "applications", "application", "application_form", "create", "create_choose", "resume_choice", "invitation_paste", "invitation_review", "preview", "progress", "report", "report_view", "classroom", "lesson", "ac_home", "ac_exercise", "ac_scorecard", "ac_attempt_view",
     // Phase B — engagement features
     "quick_practice_setup", "challenge_question", "challenge_feedback"].includes(screen);
 
@@ -7602,7 +8695,132 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
   return (
     <div style={{ fontFamily: "var(--font)", background: "var(--bg)", minHeight: "100%", color: "var(--text)" }}>
       <style>{TOKENS}</style>
-      {showNav && <NavBar screen={screen} setScreen={setScreen} user={user} classroomNeedsWorkCount={classroomNeedsWorkCount} onSignOut={() => guarded(handleSignOut)} />}
+      {showNav && <NavBar screen={screen} setScreen={setScreen} user={user} classroomNeedsWorkCount={classroomNeedsWorkCount} onSignOut={() => guarded(handleSignOut)} onContact={() => setContactOpen(true)} />}
+
+      {contactOpen && (
+        <ContactDialog user={user} onClose={() => setContactOpen(false)} onSubmit={dbSubmitContactMessage} />
+      )}
+
+      {/* ---------------- PHASE 40: post-checkout confirmation banner ---------------- */}
+      {user && checkoutStatus && checkoutStatus.phase === "confirming" && (
+        <div role="status" aria-live="polite" style={{ maxWidth: 1080, margin: "0 auto", padding: "10px 24px 0" }}>
+          <div className="flex items-center gap-3" style={{ background: "var(--tint-info)", color: "var(--tint-info-fg)", border: "1px solid var(--blue)", borderRadius: "var(--r-sm)", padding: "10px 14px", fontSize: 13, fontWeight: 600 }}>
+            <Loader2 className="animate-spin" size={15} aria-hidden="true" />
+            <span>{CHECKOUT_CONFIRMING_MESSAGE}</span>
+          </div>
+        </div>
+      )}
+      {user && checkoutStatus && checkoutStatus.phase === "pending" && (
+        <div role="status" aria-live="polite" style={{ maxWidth: 1080, margin: "0 auto", padding: "10px 24px 0" }}>
+          <div className="flex items-center justify-between gap-3" style={{ background: "var(--tint-warning)", color: "var(--tint-warning-fg)", border: "1px solid var(--warn)", borderRadius: "var(--r-sm)", padding: "10px 14px", fontSize: 13, fontWeight: 600 }}>
+            <span className="flex items-center gap-2"><Clock size={15} aria-hidden="true" /> {CHECKOUT_PENDING_MESSAGE}</span>
+            <span className="flex items-center gap-2" style={{ flexShrink: 0 }}>
+              <Btn variant="secondary" onClick={retryCheckoutConfirmation} disabled={checkoutStatus.busy} style={{ padding: "5px 12px", fontSize: 12.5 }}>
+                {checkoutStatus.busy ? "Refreshing…" : "Refresh"}
+              </Btn>
+              <button aria-label="Dismiss" onClick={() => setCheckoutStatus(null)} style={{ background: "none", border: "none", cursor: "pointer", color: "inherit", display: "flex", padding: 2 }}><X size={15} /></button>
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* ---------------- PHASE 40: entitlement confirmation banner ---------------- */}
+      {entitlementFlash && (
+        <div role="status" style={{ maxWidth: 1080, margin: "0 auto", padding: "10px 24px 0" }}>
+          <div className="flex items-center justify-between gap-3" style={{ background: "var(--tint-success)", color: "var(--tint-success-fg)", border: "1px solid var(--good)", borderRadius: "var(--r-sm)", padding: "10px 14px", fontSize: 13, fontWeight: 600 }}>
+            <span className="flex items-center gap-2"><CheckCircle2 size={15} aria-hidden="true" /> {entitlementFlash}</span>
+            <button aria-label="Dismiss" onClick={() => setEntitlementFlash("")} style={{ background: "none", border: "none", cursor: "pointer", color: "inherit", display: "flex", padding: 2 }}><X size={15} /></button>
+          </div>
+        </div>
+      )}
+
+      {/* ---------------- PHASE 40: free-unlock confirmation ---------------- */}
+      {freeUnlockPrompt && (
+        <FreeUnlockDialog
+          company={freeUnlockPrompt.company}
+          busy={freeUnlockBusy}
+          onCancel={() => { if (!freeUnlockBusy) setFreeUnlockPrompt(null); }}
+          onConfirm={() => guarded(confirmFreeUnlock)}
+        />
+      )}
+
+      {/* ---------------- PHASE 40: locked-application paywall ---------------- */}
+      {paywall && (() => {
+        const access = evaluateApplicationAccess({ applicationId: paywall.applicationId, entitlements });
+        const copy = paywallCopy(access);
+        const canSpendCredit = access.status === ACCESS.CREDIT;
+        const canSpendSubscription = access.status === ACCESS.SUBSCRIPTION;
+        const subLeft = access.subscriptionUnlocksRemaining; // number | null
+        return createPortal(
+          <div role="presentation" onClick={() => setPaywall(null)}
+            style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.55)", display: "flex", alignItems: "flex-start", justifyContent: "center", zIndex: 200, overflowY: "auto", padding: "6vh 16px 40px" }}>
+            <div role="dialog" aria-modal="true" aria-label="Unlock this application" onClick={(e) => e.stopPropagation()}
+              style={{ background: "var(--card)", borderRadius: "var(--r-lg)", boxShadow: "var(--shadow-lg)", width: "100%", maxWidth: 620, padding: 24 }}>
+              <div className="flex items-start justify-between gap-3" style={{ marginBottom: 6 }}>
+                <span className="jr-icon-badge jr-ib-blue"><Lock size={16} aria-hidden="true" /></span>
+                <button aria-label="Close" onClick={() => setPaywall(null)} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-faint)", display: "flex", padding: 2 }}><X size={18} /></button>
+              </div>
+              <h2 style={{ fontSize: 20, fontWeight: 800, color: "var(--navy)", marginBottom: 6 }}>{copy.title}</h2>
+              {(paywall.company || paywall.role) && (
+                <div style={{ fontSize: 13, color: "var(--text-dim)", fontWeight: 600, marginBottom: 6 }}>
+                  {[paywall.company, paywall.role].filter(Boolean).join(" · ")}
+                </div>
+              )}
+              <p style={{ fontSize: 13.5, color: "var(--text-dim)", lineHeight: 1.6, marginBottom: 16 }}>{copy.body}</p>
+
+              {error && (
+                <Card style={{ padding: 10, marginBottom: 14, borderLeft: "4px solid var(--bad)", background: "#FEF2F2", fontSize: 12.5, color: "var(--bad)" }}>{error}</Card>
+              )}
+
+              {canSpendSubscription && (
+                <Card hover={false} style={{ padding: 14, marginBottom: 16, border: "1px solid var(--blue)", background: "var(--tint-info)" }}>
+                  <div style={{ fontSize: 13.5, fontWeight: 700, color: "var(--blue-dark)" }}>Use a Job Search Pass unlock</div>
+                  <div style={{ fontSize: 12.5, color: "var(--text-dim)", margin: "3px 0 10px" }}>
+                    {typeof subLeft === "number"
+                      ? `${subLeft} of your 10 monthly application unlock${subLeft === 1 ? "" : "s"} remaining this billing period.`
+                      : "Included with your Job Search Pass — up to 10 application unlocks this billing period."}
+                  </div>
+                  <Btn variant="accent" full onClick={() => guarded(spendSubscriptionUnlockFromPaywall)}>
+                    Unlock this application <ArrowRight size={15} />
+                  </Btn>
+                </Card>
+              )}
+
+              {canSpendCredit && (
+                <Card hover={false} style={{ padding: 14, marginBottom: 16, border: "1px solid var(--blue)", background: "var(--tint-info)" }}>
+                  <div style={{ fontSize: 13.5, fontWeight: 700, color: "var(--blue-dark)" }}>Use one of your unlock credits</div>
+                  <div style={{ fontSize: 12.5, color: "var(--text-dim)", margin: "3px 0 10px" }}>
+                    {access.creditsRemaining} unlock credit{access.creditsRemaining === 1 ? "" : "s"} available.
+                  </div>
+                  <Btn variant="accent" full onClick={() => guarded(spendUnlockCreditFromPaywall)}>
+                    Unlock this application <ArrowRight size={15} />
+                  </Btn>
+                </Card>
+              )}
+
+              <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 10 }}>
+                {canSpendSubscription || canSpendCredit ? "Or top up" : "Choose an option"}
+              </div>
+              <PricingPlans
+                entitlements={entitlements}
+                checkoutBusy={checkoutBusy}
+                compact
+                highlightAccess={access.status}
+                onChoosePlan={(id) => beginCheckout(id, paywall.applicationId)}
+              />
+
+              <div className="flex justify-between items-center gap-3" style={{ marginTop: 16 }}>
+                <LinkBtn onClick={() => { setPaywall(null); setScreen("pricing"); }} style={{ fontSize: 12.5, color: "var(--blue)", fontWeight: 600, cursor: "pointer" }}>See full pricing</LinkBtn>
+                <LinkBtn onClick={() => setPaywall(null)} style={{ fontSize: 12.5, color: "var(--text-faint)", cursor: "pointer" }}>Not now</LinkBtn>
+              </div>
+              <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 12, lineHeight: 1.5 }}>
+                Your application stays saved either way. Payments are handled by Stripe — JOB.READY never sees your card details.
+              </div>
+            </div>
+          </div>,
+          document.body
+        );
+      })()}
 
       {/* ---------------- PHASE 38: PRACTISE AGAIN — confirmation ----------------
           Rendered here (not inside a specific screen) because "Practise again" is
@@ -7661,6 +8879,69 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
         </div>
       )}
 
+      {/* ---------------- PHASE 40: PRICING PAGE ---------------- */}
+      {screen === "pricing" && (
+        <div className="jr-fade jr-page" style={{ maxWidth: 900, margin: "0 auto", padding: "40px 24px 12px" }}>
+          <Btn variant="ghost" onClick={() => setScreen(user ? "dashboard" : "landing")} style={{ marginBottom: 16, padding: "6px 4px" }}><ArrowLeft size={14} /> Back</Btn>
+          <h2 style={{ fontSize: 28, fontWeight: 800, color: "var(--navy)", marginBottom: 8 }}>Unlock applications. Prepare for each one with personalised AI practice.</h2>
+          <p style={{ fontSize: 14.5, color: "var(--text-dim)", lineHeight: 1.6, maxWidth: 640, marginBottom: 16 }}>
+            You buy <strong>application unlocks</strong>, not individual interviews. Each unlock is a package of preparation tools for one specific job application. Creating and saving applications is always free — you only pay to unlock preparation.
+          </p>
+          <Card hover={false} style={{ padding: "12px 16px", marginBottom: 22, background: "var(--surface-sunken)", border: "1px solid var(--border)" }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>What every application unlock includes</div>
+            <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "6px 18px" }}>
+              {["5 personalised mock interviews per application", "Detailed feedback after every interview", "5 assessment-centre scenarios per application", "Unlimited Classroom access (included with every plan)"].map((item) => (
+                <li key={item} className="flex items-start gap-2" style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.45 }}>
+                  <CheckCircle2 size={14} color="var(--good)" aria-hidden="true" style={{ flexShrink: 0, marginTop: 2 }} />
+                  <span>{item}</span>
+                </li>
+              ))}
+            </ul>
+          </Card>
+
+          {user && (() => {
+            const s = remainingUnlocksSummary(entitlements);
+            return (
+              <Card hover={false} style={{ padding: 14, marginBottom: 20, background: "var(--tint-info)", border: "1px solid var(--blue)" }}>
+                <div style={{ fontSize: 13.5, fontWeight: 700, color: "var(--blue-dark)" }}>{s.text}</div>
+                <div style={{ fontSize: 12.5, color: "var(--text-dim)", marginTop: 3 }}>{s.detail}</div>
+              </Card>
+            );
+          })()}
+
+          {error && screen === "pricing" && (
+            <Card style={{ padding: 12, marginBottom: 16, borderLeft: "4px solid var(--bad)", background: "#FEF2F2", fontSize: 13, color: "var(--bad)" }}>{error}</Card>
+          )}
+
+          <PricingPlans
+            entitlements={entitlements}
+            checkoutBusy={checkoutBusy}
+            onChoosePlan={(id) => (user ? beginCheckout(id, null) : setScreen("login"))}
+          />
+
+          <div style={{ marginTop: 26 }}>
+            <h3 style={{ fontSize: 16, fontWeight: 800, color: "var(--navy)", marginBottom: 10 }}>How unlocks work</h3>
+            {[
+              ["Creating applications is always free", "Add as many companies and roles as you like. Nothing is charged for saving an application."],
+              ["Your free unlock", "Every account can unlock one application for free. The first time you open a preparation tool for a locked application we ask you to confirm — the free unlock is spent only when you click “Unlock & start preparing”, never automatically."],
+              ["Unlock credits", "Single Application (1) and Application Pack (4) add unlock credits to your account. You spend them one application at a time, whenever you choose."],
+              ["Job Search Pass", "The monthly subscription unlocks up to 10 applications per month. The allowance resets at the start of each billing period. Cancel anytime — access lasts until the end of the paid period."],
+              ["What an unlock includes", "Each application unlock gives you up to 5 personalised mock interviews with detailed feedback, plus up to 5 personalised assessment-centre scenarios. Unlimited Classroom access is included with every plan."],
+            ].map(([q, a]) => (
+              <div key={q} style={{ padding: "10px 0", borderTop: "1px solid var(--border)" }}>
+                <div style={{ fontSize: 13.5, fontWeight: 700, color: "var(--navy)" }}>{q}</div>
+                <div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.55, marginTop: 3 }}>{a}</div>
+              </div>
+            ))}
+            <div style={{ fontSize: 11.5, color: "var(--text-faint)", marginTop: 14, lineHeight: 1.5 }}>
+              Payments are processed by Stripe. JOB.READY never sees or stores your card details. Prices in GBP.
+            </div>
+          </div>
+
+          <LegalFooter openLegal={openLegal} />
+        </div>
+      )}
+
       {/* ---------------- LOGIN (real Supabase Auth) ---------------- */}
       {screen === "login" && (() => {
         // Phase 23: one place to reset the auth sub-state when switching views, so a stale
@@ -7687,7 +8968,51 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                 <label htmlFor="signup-password" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Password</label>
                 <PasswordInput id="signup-password" autoComplete="new-password" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} placeholder={`At least ${PASSWORD_MIN_LENGTH} characters`} style={{ marginTop: 6, marginBottom: 16 }} />
                 <label htmlFor="signup-confirm-password" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Confirm password</label>
-                <PasswordInput id="signup-confirm-password" autoComplete="new-password" value={confirmPasswordInput} onChange={(e) => setConfirmPasswordInput(e.target.value)} onKeyDown={onEnterKey(handleSignUp)} style={{ marginTop: 6, marginBottom: 8 }} />
+                <PasswordInput id="signup-confirm-password" autoComplete="new-password" value={confirmPasswordInput} onChange={(e) => setConfirmPasswordInput(e.target.value)} style={{ marginTop: 6, marginBottom: 16 }} />
+                <label htmlFor="signup-reference-code" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)", display: "flex", alignItems: "center", gap: 5 }}>
+                  Reference code <span style={{ color: "var(--text-faint)", fontWeight: 400 }}>(Optional)</span>
+                  <InfoTooltip label="What is a reference code?" text="If you have been provided a reference code from an affiliate partner, type it in here." />
+                </label>
+                <input id="signup-reference-code" autoComplete="off" value={referenceCodeInput} onChange={(e) => setReferenceCodeInput(e.target.value)} onKeyDown={onEnterKey(handleSignUp)} placeholder="e.g. UNI2026" style={{ ...inputStyle, marginTop: 6, marginBottom: 16 }} />
+
+                {/* Optional education info. Free text, never required — the
+                    "I don't attend university" choice is a complete answer and
+                    users can also skip the whole section. Stored on the profile
+                    only so anonymised university stats are possible later. */}
+                <div role="group" aria-labelledby="signup-education-label" style={{ marginBottom: 8 }}>
+                  <div id="signup-education-label" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)", display: "flex", alignItems: "center", gap: 5 }}>
+                    Education <span style={{ color: "var(--text-faint)", fontWeight: 400 }}>(Optional)</span>
+                    <InfoTooltip label="Why do we ask about education?" text="This is optional and only used, in aggregate and anonymised, to understand which universities our users come from. It never affects how JOB.READY works for you." />
+                  </div>
+                  <div className="flex gap-2" style={{ marginTop: 6 }}>
+                    {[["university", "I attend / attended university"], ["not_university", "I don't attend university"]].map(([val, label]) => (
+                      <button
+                        key={val}
+                        type="button"
+                        aria-pressed={educationStatus === val}
+                        onClick={() => setEducationStatus((s) => (s === val ? "" : val))}
+                        style={{
+                          flex: 1, padding: "9px 10px", borderRadius: "var(--r-sm)", fontSize: 12.5, fontWeight: 600, cursor: "pointer",
+                          border: educationStatus === val ? "1.5px solid var(--blue)" : "1.5px solid var(--border)",
+                          background: educationStatus === val ? "var(--highlight)" : "#fff",
+                          color: educationStatus === val ? "var(--blue)" : "var(--text-dim)",
+                          fontFamily: "var(--font)", lineHeight: 1.35,
+                        }}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  {educationStatus === "university" && (
+                    <div style={{ marginTop: 10 }}>
+                      <label htmlFor="signup-university" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>University</label>
+                      <input id="signup-university" autoComplete="off" value={universityInput} onChange={(e) => setUniversityInput(e.target.value)} placeholder="e.g. University of Bristol" style={{ ...inputStyle, marginTop: 6, marginBottom: 10 }} />
+                      <label htmlFor="signup-degree" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Degree</label>
+                      <input id="signup-degree" autoComplete="off" value={degreeInput} onChange={(e) => setDegreeInput(e.target.value)} onKeyDown={onEnterKey(handleSignUp)} placeholder="e.g. BSc Economics" style={{ ...inputStyle, marginTop: 6 }} />
+                    </div>
+                  )}
+                </div>
+
                 {error && <div role="alert" style={{ color: "var(--bad)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
                 {authNotice && <div role="status" style={{ color: "var(--good)", fontSize: 13, marginBottom: 10 }}>{authNotice}</div>}
                 <Btn variant="accent" full disabled={authBusy} onClick={() => guarded(handleSignUp)} style={{ marginTop: 8 }}>{authBusy ? "Creating account…" : <>Create account <ChevronRight size={16} /></>}</Btn>
@@ -7811,6 +9136,22 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
             </div>
             <Btn variant="accent" onClick={() => startCreateFlow(false)}><Sparkles size={16} /> New interview</Btn>
           </div>
+
+          {/* Phase 40: remaining application unlocks. */}
+          {(() => {
+            const s = remainingUnlocksSummary(entitlements);
+            return (
+              <div className="flex items-center justify-between gap-3" style={{ background: "var(--surface-sunken)", borderRadius: "var(--r-sm)", padding: "10px 14px", marginBottom: 20, fontSize: 13 }}>
+                <span className="flex items-center gap-2" style={{ fontWeight: 700, color: "var(--navy)" }}>
+                  {s.subscription ? <Sparkles size={14} color="var(--violet)" aria-hidden="true" /> : <Lock size={13} color="var(--text-faint)" aria-hidden="true" />}
+                  {s.text}
+                </span>
+                <LinkBtn onClick={() => setScreen("pricing")} style={{ fontSize: 12.5, color: "var(--blue)", fontWeight: 600, cursor: "pointer" }}>
+                  {s.subscription ? "Manage plan" : (s.count === 0 ? "Get more" : "Pricing")}
+                </LinkBtn>
+              </div>
+            );
+          })()}
 
           {/* Phase 29: the three headline metrics — readiness as a radial score,
               completed as an achievement count, next-up as an amber priority.
@@ -8090,6 +9431,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                     {list.map((app) => {
                       const cd = interviewCountdown(app.interviewDate);
                       const next = nextActionForApplication(app);
+                      const appLocked = evaluateApplicationAccess({ applicationId: app.id, entitlements }).status === ACCESS.LOCKED;
                       return (
                         <Card key={app.id} onClick={() => openApplication(app)} style={{ padding: 20 }}>
                           <div className="flex justify-between items-start gap-3" style={{ marginBottom: 12 }}>
@@ -8100,11 +9442,18 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                                 <div style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 2 }}>{app.role}</div>
                               </div>
                             </div>
-                            {cd.status !== "none" && (
-                              <span className={cd.isUpcoming ? "jr-badge jr-badge-info" : "jr-badge jr-badge-neutral"} style={{ whiteSpace: "nowrap", flexShrink: 0 }}>
-                                <Clock size={12} aria-hidden="true" />{cd.label}
-                              </span>
-                            )}
+                            <div className="flex items-center gap-2" style={{ flexShrink: 0 }}>
+                              {appLocked && (
+                                <span className="jr-badge jr-badge-neutral" style={{ whiteSpace: "nowrap" }}>
+                                  <Lock size={11} aria-hidden="true" /> Locked
+                                </span>
+                              )}
+                              {cd.status !== "none" && (
+                                <span className={cd.isUpcoming ? "jr-badge jr-badge-info" : "jr-badge jr-badge-neutral"} style={{ whiteSpace: "nowrap" }}>
+                                  <Clock size={12} aria-hidden="true" />{cd.label}
+                                </span>
+                              )}
+                            </div>
                           </div>
                           <div className="flex items-center justify-between gap-3">
                             <div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.5, minWidth: 0 }}>
@@ -8294,6 +9643,31 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
             )}
 
             {error && <Card style={{ padding: 12, marginBottom: 16, borderLeft: "4px solid var(--bad)", background: "#FEF2F2", fontSize: 13, color: "var(--bad)" }}>{error}</Card>}
+
+            {/* ---- PHASE 40: locked-application notice ---- */}
+            {(() => {
+              const acc = evaluateApplicationAccess({ applicationId: app.id, entitlements });
+              if (acc.status === ACCESS.UNLOCKED) return null;
+              const isFree = acc.status === ACCESS.FREE;
+              return (
+                <Card hover={false} style={{ padding: 16, marginBottom: 20, borderLeft: "4px solid var(--blue)", background: "var(--tint-info)" }}>
+                  <div className="flex items-center gap-2" style={{ fontSize: 13.5, fontWeight: 700, color: "var(--blue-dark)", marginBottom: 4 }}>
+                    <Lock size={14} aria-hidden="true" /> {isFree ? "Not unlocked yet" : "This application is locked"}
+                  </div>
+                  <div style={{ fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.55, marginBottom: 12 }}>
+                    You can keep editing and saving it. {isFree
+                      ? "Your free unlock is still available — you'll be asked to confirm before it's used."
+                      : "Unlock it to open preparation tools — mock interviews, Classroom and Assessment Centre — with unlimited access."}
+                  </div>
+                  <Btn variant="accent" onClick={() => {
+                    if (isFree) setFreeUnlockPrompt({ applicationId: app.id, company: app.company, role: app.role, onProceed: null });
+                    else setPaywall({ applicationId: app.id, company: app.company, role: app.role, onProceed: null });
+                  }}>
+                    {acc.status === ACCESS.CREDIT ? "Unlock this application" : isFree ? "Unlock this application" : "See unlock options"} <ArrowRight size={14} />
+                  </Btn>
+                </Card>
+              );
+            })()}
 
             {/* ---- PHASE 37: WHAT SHOULD YOU DO NEXT — one prominent, deterministic
                 recommendation, nearest the main preparation/interview actions ---- */}
@@ -8641,7 +10015,10 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
             className="jr-input jr-textarea" style={{ height: 200, fontSize: 15 }} />
           {error && <div role="alert" style={{ color: "var(--bad)", fontSize: 13, marginTop: 10 }}>{error}</div>}
           <div className="flex justify-between items-center mt-4" style={{ flexWrap: "wrap", gap: 10 }}>
-            <span style={{ fontSize: 12, color: "var(--text-faint)" }}>{challengeAnswerInput.trim().split(/\s+/).filter(Boolean).length} words</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 12, color: "var(--text-faint)" }}>{challengeAnswerInput.trim().split(/\s+/).filter(Boolean).length} words</span>
+              <VoiceAnswerControl speech={speech} onFinalChunk={(chunk) => setChallengeAnswerInput((prev) => appendSpokenChunk(prev, chunk))} />
+            </div>
             <Btn variant="accent" onClick={() => guarded(submitChallengeAnswer)} disabled={!challengeAnswerInput.trim()}>Submit <ChevronRight size={16} /></Btn>
           </div>
         </div>
@@ -8951,7 +10328,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
 
                 <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Length</label>
                 <div className="flex gap-2 mt-2">
-                  {[["Short", 8], ["Standard", 12], ["Long", 18]].map(([l, v]) => (
+                  {[["Short", 5], ["Medium", 8], ["Long", 10]].map(([l, v]) => (
                     <button key={l} aria-pressed={length === v} onClick={() => setLength(v)} style={{
                       flex: 1, padding: "10px 0", borderRadius: "var(--radius-sm)", fontSize: 13.5, fontWeight: 600, cursor: "pointer",
                       border: length === v ? "1.5px solid var(--blue)" : "1.5px solid var(--border)",
@@ -9371,7 +10748,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
               <div className="flex justify-between items-center mt-4">
                 <div className="flex items-center gap-3">
                   <span style={{ fontSize: 12, color: "var(--text-faint)" }}>{answerInput.trim().split(/\s+/).filter(Boolean).length} words</span>
-                  <span style={{ fontSize: 12, color: "var(--text-faint)", display: "flex", alignItems: "center", gap: 4 }}><Mic size={12} /> Voice — coming soon</span>
+                  <VoiceAnswerControl speech={speech} onFinalChunk={(chunk) => setAnswerInput((prev) => appendSpokenChunk(prev, chunk))} />
                 </div>
                 <Btn variant="accent" onClick={() => guarded(submitAnswer)} disabled={!answerInput.trim()}>Submit answer <ChevronRight size={16} /></Btn>
               </div>
@@ -9439,8 +10816,11 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                   <textarea aria-label="Your answer" value={answerInput} onChange={(e) => setAnswerInput(e.target.value)} placeholder="Type your answer..."
                     style={{ width: "100%", height: 220, padding: 16, border: "1.5px solid rgba(255,255,255,0.22)", borderRadius: "var(--radius)", fontSize: 15, lineHeight: 1.55, fontFamily: "var(--font)", background: "rgba(255,255,255,0.07)", color: "#fff" }} />
                   {error && <div style={{ color: "#FF9B9B", fontSize: 13, marginTop: 10 }}>{error}</div>}
-                  <div className="flex justify-between items-center mt-4">
-                    <span style={{ fontSize: 12, color: "rgba(255,255,255,0.5)" }}>{answerInput.trim().split(/\s+/).filter(Boolean).length} words</span>
+                  <div className="flex justify-between items-center mt-4" style={{ flexWrap: "wrap", gap: 10 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 12, color: "rgba(255,255,255,0.5)" }}>{answerInput.trim().split(/\s+/).filter(Boolean).length} words</span>
+                      <VoiceAnswerControl speech={speech} dark onFinalChunk={(chunk) => setAnswerInput((prev) => appendSpokenChunk(prev, chunk))} />
+                    </div>
                     <Btn variant="accent" onClick={() => guarded(() => submitAsyncAnswer(false))}>
                       {qNum >= total ? "Submit final answer" : "Submit & continue"} <ChevronRight size={16} />
                     </Btn>
@@ -9924,9 +11304,9 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
         </div>
       )}
 
-      {screen === "classroom_generating" && <LoadingScreen messages={["Reviewing what went wrong...", "Checking the facts you'll need...", "Building your lesson...", "Writing a quick check..."]} />}
+      {screen === "classroom_generating" && <LoadingScreen messages={["Reviewing what went wrong...", "Checking the facts you'll need...", "Building your lesson...", "Writing a quick check..."]} note={CLASSROOM_RESOURCE_LOADING_NOTE} />}
 
-      {screen === "dev_module_generating" && <LoadingScreen progress={genProgress} messages={["Reviewing the diagnosis...", "Building your learning guide...", "Writing flashcards...", "Preparing a written quiz..."]} />}
+      {screen === "dev_module_generating" && <LoadingScreen progress={genProgress} note={CLASSROOM_RESOURCE_LOADING_NOTE} messages={["Reviewing the diagnosis...", "Building your learning guide...", "Writing flashcards...", "Preparing a written quiz..."]} />}
 
       {/* ---------------- PHASE 14: DEVELOPMENT MODULE ---------------- */}
       {screen === "dev_module" && devModule && devTopic && (() => {

@@ -27,26 +27,31 @@ export const ANTHROPIC_MODEL = "claude-sonnet-4-6";
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 
 // ---- DeepSeek ----
-// IMPORTANT — see the Phase 36 report ("DeepSeek integration research"): the
-// official DeepSeek documentation domains (api-docs.deepseek.com,
-// platform.deepseek.com, www.deepseek.com) were unreachable from the sandbox
-// this integration was built in (network egress to those domains is blocked
-// at the proxy level — confirmed, not a guess). The values below were
-// cross-referenced from multiple independent secondary sources (SDK wrapper
-// repos, tutorials mirroring the official quickstart) rather than the
-// official docs directly, because the task instructions are explicit that
-// guessing endpoints/models is unacceptable and fabricating "verified"
-// status is worse than stating the gap plainly.
+// Phase 41A — verified against the official DeepSeek API documentation
+// (https://api-docs.deepseek.com, checked 2026-09-03):
 //   - Base URL: https://api.deepseek.com (OpenAI-compatible surface)
 //   - Auth: `Authorization: Bearer <DEEPSEEK_API_KEY>` (OpenAI-style, NOT
 //     Anthropic's `x-api-key` header)
 //   - Chat completions endpoint: POST /chat/completions (OpenAI-compatible
 //     request/response shape: messages[], choices[0].message.content,
 //     usage.prompt_tokens / completion_tokens, choices[0].finish_reason)
-// DO NOT deploy against this without first confirming the exact model ID,
-// endpoint path, and current pricing directly against
-// https://api-docs.deepseek.com from an environment that can reach it.
-export const DEEPSEEK_MODEL = "deepseek-chat"; // UNVERIFIED against official docs — see above
+//   - Model IDs the `model` parameter currently accepts (official API
+//     reference, /api/create-chat-completion): `deepseek-v4-flash`,
+//     `deepseek-v4-pro`, `deepseek-v4-flash-vision-exp`. The pre-V4 aliases
+//     `deepseek-chat` / `deepseek-reasoner` were announced for discontinuation
+//     on 2026-07-24 (official changelog dated 2026-04-24) and no longer appear
+//     on the models or pricing pages — `deepseek-chat` is NOT a valid id.
+//   - `deepseek-v4-flash` is chosen here as the cost-efficient default:
+//     `deepseek-v4-pro` is ~3x the per-token price and `-vision-exp` is an
+//     experimental vision variant JOB.READY has no use for.
+// This model id is ONLY read inside callDeepSeekProvider below, which is only
+// reached when AI_PROVIDER routing selects "deepseek" for a request — while
+// AI_PROVIDER is unset/"anthropic" (today's production), this path is dormant.
+// JSON mode (`response_format: { type: "json_object" }`) is officially
+// supported on the V4 models and IS now enabled below, together with
+// `thinking: { type: "disabled" }` — see the evidence note inside
+// callDeepSeekProvider for why both were turned on.
+export const DEEPSEEK_MODEL = "deepseek-v4-flash";
 const DEEPSEEK_URL = "https://api.deepseek.com/chat/completions";
 
 export class ProviderCapabilityError extends Error {
@@ -173,14 +178,25 @@ export async function callDeepSeekProvider(
       { role: "system", content: req.system },
       { role: "user", content: req.userText },
     ],
-    // NOTE: deliberately NOT setting response_format: {type: "json_object"}.
-    // Several OpenAI-compatible providers reject that flag with a 400 unless
-    // the literal word "json" appears in the prompt text, and this could not
-    // be confirmed for DeepSeek specifically (see header note). Every
-    // existing system prompt already asks for strict JSON, and callClaude()'s
-    // existing fence-stripping + regex-fallback extraction already tolerates
-    // a non-strict-JSON response — so omitting this avoids a new, unverified
-    // failure mode without weakening JSON extraction.
+    // A live benchmark (`npm run benchmark:deepseek`) plus a controlled
+    // experiment (RUN_DEEPSEEK_JSON_EXPERIMENT=1 in
+    // src/deepseekBenchmarkLive.test.js) showed the previous "send nothing
+    // extra" config failing structural validation on most tasks:
+    //  - deepseek-v4-flash runs THINKING MODE ON BY DEFAULT at reasoning_effort
+    //    "high", and those chain-of-thought tokens count against this same
+    //    max_tokens budget — so tighter-budget requests were exhausted
+    //    mid-reasoning (finish_reason "length") and never emitted the closing
+    //    JSON. `thinking: { type: "disabled" }` removes that hidden consumer.
+    //  - `response_format: { type: "json_object" }` constrains the output to a
+    //    single bare JSON object. Both V4 models support it; its one documented
+    //    requirement — the literal word "json" in the prompt — is already met
+    //    by every DeepSeek-routed system prompt in this app (all ask for
+    //    "strict JSON only" with an explicit shape).
+    // Response normalization and error handling below are unchanged: the
+    // model's answer still arrives in choices[0].message.content, and
+    // callClaude()'s fence-stripping + regex-fallback extraction still applies.
+    response_format: { type: "json_object" },
+    thinking: { type: "disabled" },
   };
 
   const res = await fetchImpl(DEEPSEEK_URL, {

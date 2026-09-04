@@ -176,7 +176,7 @@ export function adaptInterviewConfig(config) {
  * Assembles the full scheduler-facing snapshot of a live interview:
  * { distribution, transcript, questionCount, config, probeAreas, categoryPreference }.
  *
- * questionCount is interview.maxQuestions (Short/Standard/Long = 8/12/18,
+ * questionCount is interview.maxQuestions (Short/Medium/Long = 5/8/10,
  * set once at interview-start time — see App.jsx) — deliberately NOT
  * interview.config.question_count, which is a per-format default
  * maxQuestions already supersedes and which would silently reintroduce a
