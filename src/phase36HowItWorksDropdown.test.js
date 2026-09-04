@@ -378,9 +378,13 @@ describe("Phase 36 — regression", () => {
     expect(LANDING_SCREEN).toContain("<LandingPage");
   });
 
-  it("'For universities' is unaffected — still a plain link, still routes correctly", () => {
-    expect(NAVBAR).toMatch(/label: "For universities", to: "universities"/);
+  it("the 'For universities' nav tab is removed, but the universities screen/route is preserved", () => {
+    // fix(landing): the public nav no longer exposes a "For universities" tab…
+    expect(NAVBAR).not.toMatch(/label: "For universities"/);
+    // …and nothing underneath it was touched — the screen, its route and the
+    // landing-page strip CTA that reaches it are all still here (re-linkable later).
     expect(SRC).toContain('{screen === "universities" && (');
+    expect(SRC).toMatch(/onUniversities=\{\(\) => setScreen\("universities"\)\}/);
   });
 
   it("every authenticated nav link is unchanged (dashboard/applications/classroom/ac_home/progress)", () => {

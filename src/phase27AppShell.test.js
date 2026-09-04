@@ -56,9 +56,11 @@ describe("Phase 27 — navigation destinations and the public/authenticated spli
     for (const dest of ['to: "dashboard"', 'to: "applications"', 'to: "classroom"', 'to: "ac_home"', 'to: "progress"']) {
       expect(authed).toContain(dest);
     }
-    // public nav is the marketing pair
+    // public nav after fix(landing): "How it works" + "Pricing" (the
+    // "For universities" tab was removed; its screen + route still exist)
     expect(authed).toContain('to: "how"');
-    expect(authed).toContain('to: "universities"');
+    expect(authed).toContain('to: "pricing"');
+    expect(authed).not.toContain('to: "universities"');
     // the split is still a single `user ?` ternary
     expect(authed).toMatch(/const links = user\s*\?/);
   });

@@ -4633,7 +4633,7 @@ function NavBar({ screen, setScreen, user, classroomNeedsWorkCount, onSignOut, o
 
   const links = user
     ? [{ label: "Dashboard", to: "dashboard" }, { label: "Applications", to: "applications" }, { label: "Classroom", to: "classroom" }, { label: "Assessment Centre", to: "ac_home" }, { label: "Progress", to: "progress" }]
-    : [{ label: "How it works", to: "how" }, { label: "For universities", to: "universities" }, { label: "Pricing", to: "pricing" }];
+    : [{ label: "How it works", to: "how" }, { label: "Pricing", to: "pricing" }];
 
   return (
     <div style={{ position: "sticky", top: 0, zIndex: 40, background: "rgba(248,250,252,0.95)", backdropFilter: "blur(8px)", borderBottom: "1px solid var(--border)" }}>
@@ -4647,8 +4647,8 @@ function NavBar({ screen, setScreen, user, classroomNeedsWorkCount, onSignOut, o
           <nav aria-label="Main" style={{ display: "flex", alignItems: "center", gap: user ? 4 : 8 }}>
             {links.map((l) => {
               // Phase 36: the public "How it works" link becomes a full
-              // product-discovery mega-menu; every other link (including
-              // "For universities" and every authenticated link) is unchanged.
+              // product-discovery mega-menu; every other link (every
+              // authenticated link, plus public "Pricing") is unchanged.
               if (l.to === "how") return <HowItWorksDesktopMenu key="how" screen={screen} setScreen={setScreen} />;
               const active = screen === l.to;
               return (
