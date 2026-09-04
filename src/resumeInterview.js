@@ -82,8 +82,20 @@ function hydrateEvaluation(ev) {
 function notResumable(reason) {
   return {
     resumable: false, reason, pipeline: null, screen: null, needsFinish: false,
-    answeredCount: 0, totalQuestions: 0, interview: null, profile: null,
+    answeredCount: 0, totalQuestions: 0, interview: null, profile: null, draftAnswer: "",
   };
+}
+
+// "Save & exit" persists the unsubmitted answer the user was typing onto
+// interviews.config.draft = { questionDbId, text, savedAt } (same jsonb vehicle
+// Phase 18 uses — no migration). It is only restored when it still belongs to
+// the exact question the resume lands on; a draft attached to an earlier
+// question the interview has since moved past is silently dropped.
+function draftFor(config, landingQuestionDbId) {
+  const d = config && config.draft && typeof config.draft === "object" ? config.draft : null;
+  if (!d || typeof d.text !== "string" || !d.text.trim()) return "";
+  if (landingQuestionDbId == null || d.questionDbId == null) return "";
+  return d.questionDbId === landingQuestionDbId ? d.text : "";
 }
 
 /**
@@ -158,11 +170,14 @@ function reconstructAdaptive(base, qs, persistedProfile, config, answeredCount) 
   const out = {
     resumable: true, reason: "ok", pipeline: "adaptive_turn", screen: "interview",
     needsFinish: false, answeredCount, totalQuestions: qs.length, profile: persistedProfile,
+    draftAnswer: "",
   };
 
-  // Case 1 — a generated-but-unanswered question exists: resume straight to it.
+  // Case 1 — a generated-but-unanswered question exists: resume straight to it,
+  // restoring the "Save & exit" draft iff it was typed against THIS question.
   if (firstUnanswered) {
     out.interview = { ...base, maxQuestions, transcript, currentQuestion: hydrateAdaptiveQuestion(firstUnanswered), pendingRecovery: null };
+    out.draftAnswer = draftFor(config, firstUnanswered.id);
     return out;
   }
 
@@ -203,10 +218,12 @@ function reconstructBatch(base, qs, persistedProfile, answeredCount) {
     timeExpired: !!q.time_expired,
   }));
   const currentIndex = answers.length;
+  const landingQ = qs[currentIndex] || null;
   return {
     resumable: true, reason: "ok", pipeline: "independent_batch",
     screen: "async_interview", needsFinish: currentIndex >= questions.length,
     answeredCount, totalQuestions: qs.length, profile: persistedProfile,
+    draftAnswer: landingQ ? draftFor(base.config, landingQ.id) : "",
     interview: {
       ...base,
       cvBackground: null, // caller fills via cvBackgroundSummary(profile.candidate_profile)

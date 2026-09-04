@@ -24,7 +24,10 @@ const fn = (start, end) => {
 
 /* ============================== 1. interview report durability ============================== */
 describe("interview report is a hard durability boundary", () => {
-  const DBC = fn("async function dbCompleteInterview(interviewId, report)", "async function dbInsertMemory(");
+  // end marker is whatever function immediately follows dbCompleteInterview — kept
+  // tight to dbCompleteInterview's own body (dbSaveInterviewProgress, added later
+  // for Save & exit, sits between it and dbInsertMemory and DOES throw by design).
+  const DBC = fn("async function dbCompleteInterview(interviewId, report)", "async function dbSaveInterviewProgress(");
   const FINISH = fn("async function finishInterview(finalInterview)", "/* ---------------- PHASE 4B");
   const RETRY = fn("async function retrySaveReport()", "async function retrySaveModule()");
 
