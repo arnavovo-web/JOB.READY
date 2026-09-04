@@ -10307,7 +10307,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                 <div className="flex items-center gap-2" style={{ color: "var(--text-faint)", fontSize: 11.5, marginBottom: 8 }}><Upload size={12} /> Paste text, or upload .txt / .docx / .pdf</div>
                 <textarea id="jd-context-input" aria-label="Job Description and Application Context" aria-describedby="jd-context-help" value={jdText} onChange={(e) => setJdText(e.target.value)}
                   placeholder="Paste the job description and any other relevant information about the company, role, programme or requirements..."
-                  style={{ width: "100%", height: 220, padding: 13, border: "1.5px solid var(--border)", borderRadius: "var(--radius-sm)", fontSize: 13.5, lineHeight: 1.5, fontFamily: "var(--font)" }} />
+                  style={{ width: "100%", boxSizing: "border-box", height: 220, padding: 13, border: "1.5px solid var(--border)", borderRadius: "var(--radius-sm)", fontSize: 13.5, lineHeight: 1.5, fontFamily: "var(--font)", resize: "vertical" }} />
               </Card>
               {error && <div style={{ color: "var(--bad)", fontSize: 13, marginTop: 12 }}>{error}</div>}
               <div className="flex flex-wrap gap-3 mt-4">
@@ -10342,7 +10342,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                   </label>
                 </div>
                 <textarea aria-label="Your CV" value={cvText} onChange={(e) => setCvText(e.target.value)} placeholder="Paste your CV text here"
-                  style={{ width: "100%", height: 220, padding: 13, border: "1.5px solid var(--border)", borderRadius: "var(--radius-sm)", fontSize: 13.5, lineHeight: 1.5, fontFamily: "var(--font)" }} />
+                  style={{ width: "100%", boxSizing: "border-box", height: 220, padding: 13, border: "1.5px solid var(--border)", borderRadius: "var(--radius-sm)", fontSize: 13.5, lineHeight: 1.5, fontFamily: "var(--font)", resize: "vertical" }} />
               </Card>
               {error && <div style={{ color: "var(--bad)", fontSize: 13, marginTop: 12 }}>{error}</div>}
               <div className="flex flex-wrap gap-3 mt-4">
