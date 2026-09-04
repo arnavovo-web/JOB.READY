@@ -48,25 +48,28 @@ const PRODUCTS: Record<ProductId, {
   mode: "payment" | "subscription";
   recurring?: { interval: "month" };
 }> = {
+  // Display strings only — Stripe uses inline price_data, so there is NO persisted
+  // Stripe Product/Price to keep in sync. The product id KEYS
+  // (last_minute_saver / student_pack / job_search_pass) are the stable functional
+  // identifiers echoed back in checkout-session metadata and never change. The
+  // `amount` (pence) values mirror src/entitlements.js PRICING_PLANS, guarded by
+  // src/phase40PricingPaywall.test.js.
   last_minute_saver: {
-    // Display string only (Stripe uses inline price_data — there is no persisted
-    // Stripe Product/Price). Matches the pricing page's "Single Application".
-    // The product id key `last_minute_saver` and `amount` are unchanged.
     name: "JOB.READY — Single Application",
-    description: "One application unlock credit",
+    description: "Unlock 1 application",
     amount: 299,
     mode: "payment",
   },
   student_pack: {
-    name: "JOB.READY — Student Pack",
-    description: "Five application unlock credits",
+    name: "JOB.READY — Application Pack",
+    description: "Unlock 4 applications",
     amount: 499,
     mode: "payment",
   },
   job_search_pass: {
     name: "JOB.READY — Job Search Pass",
-    description: "Unlimited application unlocks while active",
-    amount: 799,
+    description: "Unlock up to 10 applications every month",
+    amount: 899,
     mode: "subscription",
     recurring: { interval: "month" },
   },

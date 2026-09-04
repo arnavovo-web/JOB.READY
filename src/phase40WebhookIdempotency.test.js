@@ -18,7 +18,9 @@ import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";
 
 const MIG_DIR = new URL("../supabase/migrations/", import.meta.url);
-const PRICING_MIG = readdirSync(MIG_DIR).filter((f) => /pricing|entitlement/i.test(f)).sort().pop();
+// apply_purchase_credits lives in the original Phase 40 entitlements migration
+// (the pricing-model-v2 migration only touches subscription enforcement).
+const PRICING_MIG = readdirSync(MIG_DIR).filter((f) => /pricing_entitlements/i.test(f)).sort().pop();
 const SQL = readFileSync(new URL(PRICING_MIG, MIG_DIR), "utf8");
 const WEBHOOK = readFileSync(new URL("../supabase/functions/stripe-webhook/index.ts", import.meta.url), "utf8");
 
@@ -189,19 +191,19 @@ describe("behavioural model — matches the three required outcomes", () => {
     expect(db.payments.size).toBe(1);
   });
 
-  it("two different successful Student Pack purchases -> +10 total (accumulate)", () => {
+  it("two different successful Application Pack purchases -> +8 total (accumulate)", () => {
     const db = makeDb();
-    applyPurchaseCredits(db, { checkoutId: "cs_A", userId: "u1", credits: 5 });
-    applyPurchaseCredits(db, { checkoutId: "cs_B", userId: "u1", credits: 5 });
-    expect(db.entitlements.get("u1").unlock_credits).toBe(10);
+    applyPurchaseCredits(db, { checkoutId: "cs_A", userId: "u1", credits: 4 });
+    applyPurchaseCredits(db, { checkoutId: "cs_B", userId: "u1", credits: 4 });
+    expect(db.entitlements.get("u1").unlock_credits).toBe(8);
     expect(db.payments.size).toBe(2);
   });
 
-  it("mixed products accumulate on the same user (Student Pack + Last-Minute Saver = +6)", () => {
+  it("mixed products accumulate on the same user (Application Pack + Single Application = +5)", () => {
     const db = makeDb();
-    applyPurchaseCredits(db, { checkoutId: "cs_A", userId: "u1", credits: 5 });
+    applyPurchaseCredits(db, { checkoutId: "cs_A", userId: "u1", credits: 4 });
     applyPurchaseCredits(db, { checkoutId: "cs_B", userId: "u1", credits: 1 });
-    expect(db.entitlements.get("u1").unlock_credits).toBe(6);
+    expect(db.entitlements.get("u1").unlock_credits).toBe(5);
   });
 
   it("a first-time buyer with no entitlements row still gets exactly their credits (row seeded atomically)", () => {

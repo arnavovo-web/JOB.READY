@@ -182,11 +182,11 @@ describe("adaptInterviewConfig", () => {
 });
 
 describe("buildSchedulerState", () => {
-  it.each([["Short", 8], ["Standard", 12], ["Long", 18]])(
+  it.each([["Short", 5], ["Medium", 8], ["Long", 10]])(
     "%s length uses interview.maxQuestions (%i), never config.question_count",
     (_label, maxQuestions) => {
       // config.question_count is deliberately a value that never equals any real
-      // maxQuestions (8/12/18), so this genuinely fails if the implementation
+      // maxQuestions (5/8/10), so this genuinely fails if the implementation
       // ever reads question_count instead of maxQuestions, for every row here —
       // not just coincidentally passing where the two happen to match.
       const interview = makeInterview({ maxQuestions, config: { ...LIVE_CONFIG, question_count: 999 } });
@@ -502,7 +502,7 @@ describe("runSimulatedAdaptiveTurn — full deterministic chain", () => {
     expect(result.decision.turnType).toBe("normal");
   });
 
-  it.each([["Short", 8], ["Standard", 12], ["Long", 18]])("runs a full turn correctly at the %s interview length", (_label, maxQuestions) => {
+  it.each([["Short", 5], ["Medium", 8], ["Long", 10]])("runs a full turn correctly at the %s interview length", (_label, maxQuestions) => {
     const interview = makeInterview({ maxQuestions });
     const result = runSimulatedAdaptiveTurn({
       interview, profile: makeProfile(), methodologyDistribution: DISTRIBUTION_EQUAL,

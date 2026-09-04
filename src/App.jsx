@@ -1748,8 +1748,11 @@ async function dbLoadEntitlements(userId) {
   const supabase = await getSupabase();
   const [entRes, unlockRes, subRes] = await Promise.all([
     supabase.from("user_entitlements").select("free_unlock_used, unlock_credits").eq("user_id", userId).maybeSingle(),
-    supabase.from("application_unlocks").select("application_id, source").eq("user_id", userId),
-    supabase.from("subscriptions").select("status, current_period_end, cancel_at_period_end").eq("user_id", userId),
+    // created_at is needed to count subscription unlocks within the current Stripe
+    // billing period (Job Search Pass = 10 / period). current_period_start comes
+    // from the pricing-model-v2 migration.
+    supabase.from("application_unlocks").select("application_id, source, created_at").eq("user_id", userId),
+    supabase.from("subscriptions").select("status, current_period_end, current_period_start, cancel_at_period_end").eq("user_id", userId),
   ]);
   if (entRes.error) console.error("user_entitlements select failed:", entRes.error.message);
   if (unlockRes.error) console.error("application_unlocks select failed:", unlockRes.error.message);
@@ -1801,6 +1804,18 @@ async function rpcConsumeUnlockCredit(applicationId) {
   const supabase = await getSupabase();
   const { data, error } = await supabase.rpc("consume_unlock_credit", { p_application_id: applicationId });
   if (error) { console.error("consume_unlock_credit failed:", error.message); return { ok: false, reason: "error" }; }
+  return data || { ok: false, reason: "empty" };
+}
+
+// Spend one of the Job Search Pass monthly application unlocks (10 per Stripe
+// billing period). SECURITY DEFINER RPC — the cap is enforced + serialised in
+// the database (consume_subscription_unlock). Returns
+// { ok:true, source:'subscription', used, limit, remaining } or
+// { ok:false, reason:'monthly_unlock_limit_reached' | 'no_subscription' | ... }.
+async function rpcConsumeSubscriptionUnlock(applicationId) {
+  const supabase = await getSupabase();
+  const { data, error } = await supabase.rpc("consume_subscription_unlock", { p_application_id: applicationId });
+  if (error) { console.error("consume_subscription_unlock failed:", error.message); return { ok: false, reason: "error" }; }
   return data || { ok: false, reason: "empty" };
 }
 
@@ -2741,6 +2756,13 @@ function ConfirmDialog({ title, body, confirmLabel, onCancel, onConfirm, busy, i
  * UI components (not near the landing components below — those are span-tested
  * as "presentation-only"). PricingPlans is itself presentation-only;
  * FreeUnlockDialog is a small portalled confirmation, like ConfirmDialog. */
+// Phase 40 (pricing model v2): one shared explanation of what a single application
+// unlock buys, surfaced via the InfoTooltip next to every plan's allowance and in
+// the pricing-screen "what's included" card. Product allowances live in
+// entitlements.js (MAX_MOCK_INTERVIEWS_PER_APPLICATION / MAX_AC_SCENARIOS_PER_APPLICATION).
+const APPLICATION_UNLOCK_TOOLTIP =
+  "Each application you unlock includes up to 5 personalised mock interviews, with detailed feedback and analysis after each completed interview, plus up to 5 personalised assessment-centre scenarios. Unlimited Classroom access is included with every plan.";
+
 function PricingPlans({ onChoosePlan, checkoutBusy, entitlements, compact = false, highlightAccess = null }) {
   const e = normalizeEntitlements(entitlements);
   return (
@@ -2754,9 +2776,9 @@ function PricingPlans({ onChoosePlan, checkoutBusy, entitlements, compact = fals
         const contextHighlight = highlightAccess &&
           ((highlightAccess === "unlockable_credit" && plan.id === "student_pack") ||
            (highlightAccess === "locked" && plan.id === "last_minute_saver"));
-        // Best-value plan (Student Pack, via its display-only `badge`) is always
-        // visually featured on the full pricing page; the paywall keeps its own
-        // context highlight instead.
+        // Best-value plan (Application Pack, via its display-only `badge`) is
+        // always visually featured on the full pricing page; the paywall keeps
+        // its own context highlight instead.
         const featured = contextHighlight || (!compact && !!plan.badge);
         return (
           <Card key={plan.id} hover={false} style={{
@@ -2787,7 +2809,10 @@ function PricingPlans({ onChoosePlan, checkoutBusy, entitlements, compact = fals
                 <div style={{ fontSize: 12, fontWeight: 700, color: "var(--blue-dark)", marginTop: 2 }}>{plan.perUnit}</div>
               )}
             </div>
-            <div style={{ fontSize: 13, fontWeight: 700, color: "var(--blue-dark)" }}>{plan.headline}</div>
+            <div className="flex items-center" style={{ gap: 4, fontSize: 13, fontWeight: 700, color: "var(--blue-dark)" }}>
+              <span>{plan.headline}</span>
+              {!isFree && <InfoTooltip label="What's included with an application unlock?" text={APPLICATION_UNLOCK_TOOLTIP} />}
+            </div>
             {/* savingNote + positioning are full-page only — the compact paywall
                 keeps just the badge + per-application price + headline + features. */}
             {!compact && plan.savingNote && (
@@ -5340,7 +5365,7 @@ function App() {
   const [interviewDateInput, setInterviewDateInput] = useState("");
   const [interviewStage, setInterviewStage] = useState("first_round"); // recruiter_screen | first_round | technical | final_round
   const [interviewFormat, setInterviewFormat] = useState(null); // null = use the stage's default format; only meaningful when the stage allows a choice
-  const [length, setLength] = useState(12);
+  const [length, setLength] = useState(8); // wizard "Length": Short 5 | Medium 8 (default) | Long 10 — the exact adaptive question target (ivConfig.max_questions)
   // Phase 11: the user's explicit Question Mix. Starts EMPTY — never pre-selected,
   // never inferred from stage/role/JD. The user must pick >=1 before building.
   const [questionMix, setQuestionMix] = useState({ technical: false, behavioural: false, motivational: false });
@@ -6757,7 +6782,7 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
       motivational: config.question_mix.includes("motivational"),
     });
     setTechnicalDifficulty(config.technical_difficulty ? resolveTechnicalDifficulty(config.technical_difficulty) : DEFAULT_TECHNICAL_DIFFICULTY);
-    setLength(typeof config.max_questions === "number" ? config.max_questions : 12);
+    setLength(typeof config.max_questions === "number" ? config.max_questions : 8);
     setPractiseAgainActive(true);
     analyseAndPlan(); // same duplicate-generation guard as every other caller (Phase 18) — see there
   }
@@ -6980,7 +7005,9 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
       // Free unlock available — ask first, spend only on explicit confirmation.
       setFreeUnlockPrompt({ applicationId, company, role, onProceed: proceed });
     } else {
-      // A purchased credit is available, or the application is fully locked.
+      // ACCESS.SUBSCRIPTION (spend one of the 10 monthly Job Search Pass
+      // unlocks), ACCESS.CREDIT (spend a purchased credit) or ACCESS.LOCKED
+      // (nothing available) — the paywall renders the right option for each.
       setPaywall({ applicationId, company, role, onProceed: proceed });
     }
     return false;
@@ -7032,6 +7059,30 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
     const { onProceed, company } = paywall;
     setPaywall(null);
     setEntitlementFlash(company ? `${company} unlocked.` : "Application unlocked.");
+    if (onProceed) { try { await onProceed(); } catch (e) { /* caller surfaces its own errors */ } }
+  }
+
+  // From the paywall: spend one of the 10 monthly Job Search Pass unlocks. The
+  // cap is enforced server-side (consume_subscription_unlock); this just reads
+  // the structured result and shows a clear message when the month is used up.
+  async function spendSubscriptionUnlockFromPaywall() {
+    if (!paywall?.applicationId) return;
+    setError("");
+    const result = await rpcConsumeSubscriptionUnlock(paywall.applicationId);
+    if (!result?.ok) {
+      setError(result?.reason === "monthly_unlock_limit_reached"
+        ? "You've used all 10 of your Job Search Pass application unlocks this month. Your allowance resets at the start of the next billing period — or use a free/purchased unlock below."
+        : result?.reason === "no_subscription"
+        ? "Your Job Search Pass isn't active. Choose an option below."
+        : "Couldn't unlock this application. Please try again.");
+      await refreshEntitlements();
+      return;
+    }
+    await refreshEntitlements();
+    const { onProceed, company } = paywall;
+    setPaywall(null);
+    const left = typeof result.remaining === "number" ? ` ${result.remaining} left this month.` : "";
+    setEntitlementFlash((company ? `${company} unlocked.` : "Application unlocked.") + left);
     if (onProceed) { try { await onProceed(); } catch (e) { /* caller surfaces its own errors */ } }
   }
 
@@ -7647,7 +7698,7 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
       //  - profile: the interview_profile + candidate_profile the adaptive turn
       //    engine and BOTH report paths need — currently held only in React
       //    `profile` state, with no reload path.
-      //  - max_questions: the adaptive completion target (wizard "Length"),
+      //  - max_questions: the wizard "Length" — the exact question target,
       //    otherwise lost with the `length` state on reload.
       // Additive keys; nothing in the live flow reads config.profile /
       // config.max_questions except the Phase 18 reconstruction layer.
@@ -7657,6 +7708,18 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
         opening_question: result.opening_question,
       };
       ivConfig.max_questions = length;
+      // The wizard "Length" (Short 5 / Medium 8 / Long 10) is the EXACT question
+      // count for every normal build, both pipelines. The adaptive engine reads it
+      // via max_questions above (isInterviewComplete); the independent/batch
+      // generator counts by question_count, so mirror the user's choice there too —
+      // otherwise a batch interview would silently use the per-format default from
+      // resolveInterviewConfig and ignore the selector. Quick Practice keeps the
+      // fixed smaller count it set in the guard above (session_kind
+      // "quick_practice"); Challenge Me builds its own ivConfig and never reaches
+      // here.
+      if (ivConfig.pipeline === "independent_batch" && ivConfig.session_kind !== "quick_practice") {
+        ivConfig.question_count = length;
+      }
 
       // Phase 16B: these two writes touch DIFFERENT tables with independent data —
       // the `applications` row (analysed JD profile + Application Intelligence that
@@ -8290,7 +8353,7 @@ Rules: scores computed honestly from the transcript's evaluations. Never fabrica
   }
 
   function resetForNewInterview() {
-    setCompany(""); setRole(""); setJdText(""); setCvText(""); setInterviewStage("first_round"); setInterviewFormat(null); setLength(12);
+    setCompany(""); setRole(""); setJdText(""); setCvText(""); setInterviewStage("first_round"); setInterviewFormat(null); setLength(8);
     setQuestionMix({ technical: false, behavioural: false, motivational: false }); // Phase 11: always an explicit choice
     setTechnicalDifficulty(DEFAULT_TECHNICAL_DIFFICULTY); // Phase 31: back to the Intermediate default
     setProfile(null); setInterview(null); setReport(null); setError(""); setFocusWeaknesses(false); setWizardStep(1); setApplicationId(null);
@@ -8686,6 +8749,8 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
         const access = evaluateApplicationAccess({ applicationId: paywall.applicationId, entitlements });
         const copy = paywallCopy(access);
         const canSpendCredit = access.status === ACCESS.CREDIT;
+        const canSpendSubscription = access.status === ACCESS.SUBSCRIPTION;
+        const subLeft = access.subscriptionUnlocksRemaining; // number | null
         return createPortal(
           <div role="presentation" onClick={() => setPaywall(null)}
             style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.55)", display: "flex", alignItems: "flex-start", justifyContent: "center", zIndex: 200, overflowY: "auto", padding: "6vh 16px 40px" }}>
@@ -8707,6 +8772,20 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                 <Card style={{ padding: 10, marginBottom: 14, borderLeft: "4px solid var(--bad)", background: "#FEF2F2", fontSize: 12.5, color: "var(--bad)" }}>{error}</Card>
               )}
 
+              {canSpendSubscription && (
+                <Card hover={false} style={{ padding: 14, marginBottom: 16, border: "1px solid var(--blue)", background: "var(--tint-info)" }}>
+                  <div style={{ fontSize: 13.5, fontWeight: 700, color: "var(--blue-dark)" }}>Use a Job Search Pass unlock</div>
+                  <div style={{ fontSize: 12.5, color: "var(--text-dim)", margin: "3px 0 10px" }}>
+                    {typeof subLeft === "number"
+                      ? `${subLeft} of your 10 monthly application unlock${subLeft === 1 ? "" : "s"} remaining this billing period.`
+                      : "Included with your Job Search Pass — up to 10 application unlocks this billing period."}
+                  </div>
+                  <Btn variant="accent" full onClick={() => guarded(spendSubscriptionUnlockFromPaywall)}>
+                    Unlock this application <ArrowRight size={15} />
+                  </Btn>
+                </Card>
+              )}
+
               {canSpendCredit && (
                 <Card hover={false} style={{ padding: 14, marginBottom: 16, border: "1px solid var(--blue)", background: "var(--tint-info)" }}>
                   <div style={{ fontSize: 13.5, fontWeight: 700, color: "var(--blue-dark)" }}>Use one of your unlock credits</div>
@@ -8720,7 +8799,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
               )}
 
               <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 10 }}>
-                {canSpendCredit ? "Or top up" : "Choose an option"}
+                {canSpendSubscription || canSpendCredit ? "Or top up" : "Choose an option"}
               </div>
               <PricingPlans
                 entitlements={entitlements}
@@ -8804,14 +8883,14 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
       {screen === "pricing" && (
         <div className="jr-fade jr-page" style={{ maxWidth: 900, margin: "0 auto", padding: "40px 24px 12px" }}>
           <Btn variant="ghost" onClick={() => setScreen(user ? "dashboard" : "landing")} style={{ marginBottom: 16, padding: "6px 4px" }}><ArrowLeft size={14} /> Back</Btn>
-          <h2 style={{ fontSize: 28, fontWeight: 800, color: "var(--navy)", marginBottom: 8 }}>Choose how you want to prepare</h2>
+          <h2 style={{ fontSize: 28, fontWeight: 800, color: "var(--navy)", marginBottom: 8 }}>Unlock applications. Prepare for each one with personalised AI practice.</h2>
           <p style={{ fontSize: 14.5, color: "var(--text-dim)", lineHeight: 1.6, maxWidth: 640, marginBottom: 16 }}>
-            Each <strong>application unlock</strong> gives you unlimited access to JOB.READY's preparation tools for one job application. You can always create and save applications for free — you only pay to unlock the tools.
+            You buy <strong>application unlocks</strong>, not individual interviews. Each unlock is a package of preparation tools for one specific job application. Creating and saving applications is always free — you only pay to unlock preparation.
           </p>
           <Card hover={false} style={{ padding: "12px 16px", marginBottom: 22, background: "var(--surface-sunken)", border: "1px solid var(--border)" }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>Every application unlock includes</div>
-            <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "6px 18px" }}>
-              {["Unlimited AI mock interviews", "Personalised Classroom resources", "Assessment Centre practice", "Detailed performance reports"].map((item) => (
+            <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>What every application unlock includes</div>
+            <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "6px 18px" }}>
+              {["5 personalised mock interviews per application", "Detailed feedback after every interview", "5 assessment-centre scenarios per application", "Unlimited Classroom access (included with every plan)"].map((item) => (
                 <li key={item} className="flex items-start gap-2" style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.45 }}>
                   <CheckCircle2 size={14} color="var(--good)" aria-hidden="true" style={{ flexShrink: 0, marginTop: 2 }} />
                   <span>{item}</span>
@@ -8845,8 +8924,9 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
             {[
               ["Creating applications is always free", "Add as many companies and roles as you like. Nothing is charged for saving an application."],
               ["Your free unlock", "Every account can unlock one application for free. The first time you open a preparation tool for a locked application we ask you to confirm — the free unlock is spent only when you click “Unlock & start preparing”, never automatically."],
-              ["Unlock credits", "Single Application and Student Pack add credits to your account. You spend them one application at a time, whenever you choose."],
-              ["Job Search Pass", "While the monthly subscription is active, every application is unlocked. Cancel anytime — access lasts until the end of the paid period."],
+              ["Unlock credits", "Single Application (1) and Application Pack (4) add unlock credits to your account. You spend them one application at a time, whenever you choose."],
+              ["Job Search Pass", "The monthly subscription unlocks up to 10 applications per month. The allowance resets at the start of each billing period. Cancel anytime — access lasts until the end of the paid period."],
+              ["What an unlock includes", "Each application unlock gives you up to 5 personalised mock interviews with detailed feedback, plus up to 5 personalised assessment-centre scenarios. Unlimited Classroom access is included with every plan."],
             ].map(([q, a]) => (
               <div key={q} style={{ padding: "10px 0", borderTop: "1px solid var(--border)" }}>
                 <div style={{ fontSize: 13.5, fontWeight: 700, color: "var(--navy)" }}>{q}</div>
@@ -9063,11 +9143,11 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
             return (
               <div className="flex items-center justify-between gap-3" style={{ background: "var(--surface-sunken)", borderRadius: "var(--r-sm)", padding: "10px 14px", marginBottom: 20, fontSize: 13 }}>
                 <span className="flex items-center gap-2" style={{ fontWeight: 700, color: "var(--navy)" }}>
-                  {s.unlimited ? <Sparkles size={14} color="var(--violet)" aria-hidden="true" /> : <Lock size={13} color="var(--text-faint)" aria-hidden="true" />}
+                  {s.subscription ? <Sparkles size={14} color="var(--violet)" aria-hidden="true" /> : <Lock size={13} color="var(--text-faint)" aria-hidden="true" />}
                   {s.text}
                 </span>
                 <LinkBtn onClick={() => setScreen("pricing")} style={{ fontSize: 12.5, color: "var(--blue)", fontWeight: 600, cursor: "pointer" }}>
-                  {s.unlimited ? "Manage plan" : (s.count === 0 ? "Get more" : "Pricing")}
+                  {s.subscription ? "Manage plan" : (s.count === 0 ? "Get more" : "Pricing")}
                 </LinkBtn>
               </div>
             );
@@ -10248,7 +10328,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
 
                 <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Length</label>
                 <div className="flex gap-2 mt-2">
-                  {[["Short", 8], ["Standard", 12], ["Long", 18]].map(([l, v]) => (
+                  {[["Short", 5], ["Medium", 8], ["Long", 10]].map(([l, v]) => (
                     <button key={l} aria-pressed={length === v} onClick={() => setLength(v)} style={{
                       flex: 1, padding: "10px 0", borderRadius: "var(--radius-sm)", fontSize: 13.5, fontWeight: 600, cursor: "pointer",
                       border: length === v ? "1.5px solid var(--blue)" : "1.5px solid var(--border)",

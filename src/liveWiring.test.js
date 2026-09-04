@@ -478,8 +478,8 @@ describe("Q. wasFollowUp refers to the current question, not the next decision (
 });
 
 /* ============================== R ============================== */
-describe("R. Short/Standard/Long lengths (EXECUTABLE)", () => {
-  it.each([["Short", 8], ["Standard", 12], ["Long", 18]])("%s (%i questions) schedules and ends deterministically", (_label, maxQuestions) => {
+describe("R. Short/Medium/Long lengths (EXECUTABLE)", () => {
+  it.each([["Short", 5], ["Medium", 8], ["Long", 10]])("%s (%i questions) schedules and ends deterministically", (_label, maxQuestions) => {
     const interview = makeInterview({ maxQuestions });
     const { decision } = runSimulatedAdaptiveTurn({
       interview, profile: makeProfile(), methodologyDistribution: interview.methodologyDistribution,

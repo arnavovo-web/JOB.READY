@@ -5,11 +5,13 @@
  * applicationSchedule.js — no AI call, no web search, no database access,
  * never throws). It is the single source of truth for:
  *
- *   - the four published plans (Free / Single Application / Student Pack /
+ *   - the four published plans (Free / Single Application / Application Pack /
  *     Job Search Pass) and their prices, shared by the pricing page, the
  *     paywall and the Stripe Checkout call. NOTE: `id` (last_minute_saver /
- *     student_pack / job_search_pass), `amount` and `unlocks` are the
- *     functional keys and never change; `name` / `headline` / `summary` /
+ *     student_pack / job_search_pass) is the STABLE functional key and never
+ *     changes; `amount` and `unlocks` are functional values (mirrored in
+ *     create-checkout / stripe-webhook, guarded by phase40PricingPaywall.test.js);
+ *     `name` / `headline` / `summary` /
  *     `features` / `badge` / `perUnit` / `savingNote` / `positioning` /
  *     `ctaLabel` are display-only copy;
  *   - deciding, from a user's entitlement snapshot, whether a specific
@@ -50,11 +52,13 @@ export const PRICING_PLANS = [
     unlocks: 1,
     headline: "1 application unlock",
     summary:
-      "1 application unlock, then unlimited access to every JOB.READY preparation tool for that application. Nothing is ever charged automatically.",
+      "Unlock one application and prepare for it with personalised AI practice. Nothing is ever charged automatically.",
     features: [
       "1 application unlock",
-      "Unlimited AI mock interviews, Classroom, Assessment Centre and reports for that application",
-      "Nothing is charged automatically — you confirm before it's used",
+      "Up to 5 personalised mock interviews for that application",
+      "Detailed feedback and analysis after every completed interview",
+      "Up to 5 personalised assessment-centre scenarios",
+      "Unlimited Classroom access",
     ],
   },
   {
@@ -67,58 +71,77 @@ export const PRICING_PLANS = [
     priceLabel: "£2.99",
     cadence: "one-off",
     unlocks: 1,
-    headline: "1 application unlock",
+    headline: "1 application",
     perUnit: "£2.99 per application",
-    summary: "Perfect if you're preparing for one specific role.",
+    summary: "Unlock one application and prepare for it with personalised AI practice.",
     features: [
-      "Unlimited preparation for one application",
-      "No subscription",
-      "Use the unlock whenever you choose",
+      "5 personalised mock interviews for that application",
+      "Detailed feedback after every interview",
+      "5 assessment-centre scenarios for that application",
+      "Unlimited Classroom access",
     ],
     ctaLabel: "Buy 1 Unlock",
   },
   {
     id: "student_pack",
     kind: "one_time",
-    name: "Student Pack",
+    name: "Application Pack",
     emoji: "\u{1F393}", // 🎓
     amount: 499,
     priceLabel: "£4.99",
     cadence: "one-off",
-    unlocks: 5,
-    headline: "5 application unlocks",
+    unlocks: 4,
+    headline: "4 applications",
     badge: "⭐ BEST VALUE", // ⭐ — display only
-    perUnit: "Just £1 per application",
-    // 5 × £2.99 = £14.95 individually vs £4.99 → (14.95 − 4.99) / 14.95 ≈ 66.6%.
-    savingNote: "Save over 65% compared with buying individually",
-    summary: "Perfect for students applying to multiple roles.",
+    perUnit: "£1.25 per application",
+    // 4 × £2.99 = £11.96 individually vs £4.99 → (11.96 − 4.99) / 11.96 ≈ 58.3%.
+    savingNote: "Save over 55% compared with buying singly",
+    summary: "Unlock four applications and prepare for each with personalised AI practice.",
     features: [
-      "5 application unlocks",
-      "Use them one application at a time",
-      "No subscription",
+      "4 application unlocks — use one at a time",
+      "5 mock interviews + 5 assessment-centre scenarios per application",
+      "Detailed feedback after every interview",
+      "Unlimited Classroom access",
     ],
-    ctaLabel: "Buy 5 Unlocks",
+    ctaLabel: "Buy 4 Unlocks",
   },
   {
     id: "job_search_pass",
     kind: "subscription",
     name: "Job Search Pass",
     emoji: "\u{1F525}", // 🔥
-    amount: 799,
-    priceLabel: "£7.99",
+    amount: 899,
+    priceLabel: "£8.99",
     cadence: "per month",
-    unlocks: Infinity,
-    headline: "Unlimited application unlocks",
-    positioning: "Best for multiple applications",
-    summary: "For active job seekers applying to multiple roles.",
+    // Monthly allowance of application unlocks. Resets each Stripe billing
+    // period (see SUBSCRIPTION_MONTHLY_UNLOCKS + the period-scoped count in the
+    // migration / evaluateApplicationAccess).
+    unlocks: 10,
+    headline: "10 applications / month",
+    positioning: "Best for an active job search",
+    summary: "Unlock up to 10 applications every month and prepare for each with personalised AI practice.",
     features: [
-      "Unlimited application unlocks while active",
-      "Unlimited AI mock interviews, Classroom, Assessment Centre and reports",
+      "Up to 10 application unlocks every month",
+      "5 mock interviews + 5 assessment-centre scenarios per application",
+      "Detailed feedback after every interview",
+      "Unlimited Classroom access",
       "Cancel anytime — access lasts until the end of the paid period",
     ],
-    ctaLabel: "Start Unlimited",
+    ctaLabel: "Start Job Search Pass",
   },
 ];
+
+// The Job Search Pass monthly application-unlock allowance. Mirrored server-side
+// in consume_subscription_unlock() (the migration) and enforced per Stripe
+// billing period. Kept as a named constant so the pricing card, the paywall and
+// the enforcement logic can never drift.
+export const SUBSCRIPTION_MONTHLY_UNLOCKS = 10;
+
+// Per unlocked application, the ceiling on personalised AI generation. Mirrored
+// server-side (the migration's per-application cap triggers). Classroom is NOT
+// capped — it is unlimited on every plan.
+export const MAX_MOCK_INTERVIEWS_PER_APPLICATION = 5;
+export const MAX_AC_SCENARIOS_PER_APPLICATION = 5;
 
 export function planById(id) {
   return PRICING_PLANS.find((p) => p.id === id) || null;
@@ -135,7 +158,7 @@ export function isPurchasableProduct(id) {
 // server-side in the Stripe webhook (guarded by the phase test).
 export const CREDITS_PER_PRODUCT = {
   last_minute_saver: 1,
-  student_pack: 5,
+  student_pack: 4,
 };
 
 /* ------------------------------ subscriptions ------------------------------ */
@@ -168,48 +191,117 @@ export function subscriptionIsActive(row, now = Date.now()) {
 export function normalizeEntitlements(raw) {
   const r = raw && typeof raw === "object" ? raw : {};
   const ids = Array.isArray(r.unlockedApplicationIds) ? r.unlockedApplicationIds : [];
+  // Subscription unlocks already spent in the CURRENT Stripe billing period.
+  // number when we have reliable data (rows + a period start), else null
+  // ("unknown" — the UI must NOT fabricate a count; see remainingUnlocksSummary).
+  // Guard null/undefined explicitly (Number(null) is 0, not NaN).
+  const rawUsed = r.subscriptionUnlocksUsedThisPeriod;
+  const usedThisPeriod =
+    rawUsed == null || !Number.isFinite(Number(rawUsed)) ? null : Math.max(0, Math.floor(Number(rawUsed)));
   return {
     freeUnlockUsed: !!r.freeUnlockUsed,
     unlockCredits: Math.max(0, Math.floor(Number(r.unlockCredits) || 0)),
     hasActiveSubscription: !!r.hasActiveSubscription,
     subscriptionStatus: typeof r.subscriptionStatus === "string" ? r.subscriptionStatus : null,
     subscriptionCurrentPeriodEnd: r.subscriptionCurrentPeriodEnd || null,
+    subscriptionCurrentPeriodStart: r.subscriptionCurrentPeriodStart || null,
+    subscriptionUnlocksUsedThisPeriod: usedThisPeriod,
     unlockedApplicationIds: [...new Set(ids.filter((x) => typeof x === "string" && x))],
   };
 }
 
 // Build the canonical snapshot from the raw Supabase rows the client loads
 // (public.user_entitlements + public.application_unlocks + public.subscriptions).
+// application_unlocks rows must carry `source` and `created_at`; subscriptions
+// rows must carry `current_period_start` (added by the pricing-model-v2 migration).
 export function entitlementsFromRows({ entitlementRow, unlockRows, subscriptionRows }, now = Date.now()) {
   const unlocks = Array.isArray(unlockRows) ? unlockRows : [];
   const subs = Array.isArray(subscriptionRows) ? subscriptionRows : [];
   const activeSub = subs.find((s) => subscriptionIsActive(s, now)) || null;
+  const hasActiveSubscription = !!activeSub;
+  const periodStartRaw = activeSub?.current_period_start || null;
+  const periodStartMs = periodStartRaw ? new Date(periodStartRaw).getTime() : NaN;
+
+  // A row grants access when its source is permanent (free/credit/comp) OR it is
+  // a subscription unlock and the subscription is still active — mirrors
+  // has_application_access() in the migration.
+  const grants = (u) =>
+    ["free", "credit", "comp"].includes(u.source) ||
+    (u.source === "subscription" && hasActiveSubscription);
+
+  // Subscription unlocks spent in the current billing period. Only reliable when
+  // we actually know the period start; otherwise null (UI shows "up to 10").
+  let usedThisPeriod = null;
+  if (hasActiveSubscription && Number.isFinite(periodStartMs)) {
+    usedThisPeriod = unlocks.filter(
+      (u) => u.source === "subscription" && new Date(u.created_at).getTime() >= periodStartMs,
+    ).length;
+  }
+
   return normalizeEntitlements({
     freeUnlockUsed: !!entitlementRow?.free_unlock_used,
     unlockCredits: entitlementRow?.unlock_credits,
-    hasActiveSubscription: !!activeSub,
+    hasActiveSubscription,
     subscriptionStatus: activeSub?.status || subs[0]?.status || null,
     subscriptionCurrentPeriodEnd: activeSub?.current_period_end || null,
-    unlockedApplicationIds: unlocks.map((u) => u.application_id),
+    subscriptionCurrentPeriodStart: periodStartRaw,
+    subscriptionUnlocksUsedThisPeriod: usedThisPeriod,
+    unlockedApplicationIds: unlocks.filter(grants).map((u) => u.application_id),
   });
 }
 
 /* ----------------------------- access decision ---------------------------- */
 
+// The Job Search Pass monthly allowance already spent this billing period.
+// Returns null when the count is unknown (no reliable period data).
+export function subscriptionUnlocksUsed(entitlements) {
+  const e = normalizeEntitlements(entitlements);
+  if (!e.hasActiveSubscription) return 0;
+  return e.subscriptionUnlocksUsedThisPeriod; // number | null
+}
+
+// How many of the 10 monthly application unlocks remain this billing period.
+// number when known, null when unknown (UI must not fabricate — see
+// remainingUnlocksSummary).
+export function subscriptionUnlocksRemaining(entitlements) {
+  const e = normalizeEntitlements(entitlements);
+  if (!e.hasActiveSubscription) return 0;
+  const used = e.subscriptionUnlocksUsedThisPeriod;
+  if (used === null || used === undefined) return null;
+  return Math.max(0, SUBSCRIPTION_MONTHLY_UNLOCKS - used);
+}
+
 export const ACCESS = {
   UNLOCKED: "unlocked", // no action needed
   FREE: "unlockable_free", // free unlock available — show the confirmation modal
+  SUBSCRIPTION: "unlockable_subscription", // active Job Search Pass with monthly allowance left
   CREDIT: "unlockable_credit", // user has >=1 purchased credit to spend
   LOCKED: "locked", // nothing available — show the pricing options
 };
 
 export function evaluateApplicationAccess({ applicationId, entitlements }) {
   const e = normalizeEntitlements(entitlements);
-  const base = { creditsRemaining: e.unlockCredits, hasSubscription: e.hasActiveSubscription };
+  const subRemaining = subscriptionUnlocksRemaining(e); // number | null | 0
+  const base = {
+    creditsRemaining: e.unlockCredits,
+    hasSubscription: e.hasActiveSubscription,
+    subscriptionUnlocksRemaining: subRemaining,
+  };
   if (!applicationId) return { status: ACCESS.LOCKED, reason: "no_application", ...base };
-  if (e.hasActiveSubscription) return { status: ACCESS.UNLOCKED, reason: "subscription", ...base };
+
+  // Already unlocked for THIS application (free/credit/comp permanently, or a
+  // subscription unlock while the subscription is still active). Applies to
+  // everyone — the subscription is no longer a blanket "all applications" grant.
   if (e.unlockedApplicationIds.includes(applicationId))
     return { status: ACCESS.UNLOCKED, reason: "already_unlocked", ...base };
+
+  // Active Job Search Pass with monthly allowance remaining (or an unknown-but-
+  // present allowance) -> spend one of the 10.
+  if (e.hasActiveSubscription && (subRemaining === null || subRemaining > 0))
+    return { status: ACCESS.SUBSCRIPTION, reason: "subscription_allowance", ...base };
+
+  // Subscriber who has used all 10 this period falls through to their own free
+  // unlock / purchased credits, then the paywall.
   if (!e.freeUnlockUsed) return { status: ACCESS.FREE, reason: "free_available", ...base };
   if (e.unlockCredits > 0) return { status: ACCESS.CREDIT, reason: "credit_available", ...base };
   return { status: ACCESS.LOCKED, reason: "no_entitlement", ...base };
@@ -219,10 +311,10 @@ export function applicationIsUnlocked({ applicationId, entitlements }) {
   return evaluateApplicationAccess({ applicationId, entitlements }).status === ACCESS.UNLOCKED;
 }
 
-// Every not-UNLOCKED status now needs an explicit user decision in a modal
-// (FREE -> confirmation modal; CREDIT/LOCKED -> paywall).
+// Every not-UNLOCKED status needs an explicit user decision in a modal
+// (FREE -> confirmation modal; SUBSCRIPTION/CREDIT/LOCKED -> paywall).
 export function accessNeedsPrompt(status) {
-  return status === ACCESS.FREE || status === ACCESS.CREDIT || status === ACCESS.LOCKED;
+  return status === ACCESS.FREE || status === ACCESS.SUBSCRIPTION || status === ACCESS.CREDIT || status === ACCESS.LOCKED;
 }
 
 /* ------------------------------- display copy ----------------------------- */
@@ -230,7 +322,30 @@ export function accessNeedsPrompt(status) {
 export function remainingUnlocksSummary(entitlements) {
   const e = normalizeEntitlements(entitlements);
   if (e.hasActiveSubscription) {
-    return { unlimited: true, count: null, text: "Unlimited applications", detail: "Job Search Pass active" };
+    // Job Search Pass is NOT unlimited — 10 application unlocks per billing
+    // period. `unlimited` is always false here; `subscription` flags the plan
+    // for the UI (icon / "Manage plan" link).
+    const remaining = subscriptionUnlocksRemaining(e); // number | null
+    if (remaining === null) {
+      // No reliable usage data yet — never fabricate a count.
+      return {
+        unlimited: false,
+        subscription: true,
+        count: null,
+        text: "Job Search Pass active",
+        detail: `Up to ${SUBSCRIPTION_MONTHLY_UNLOCKS} application unlocks this month`,
+      };
+    }
+    return {
+      unlimited: false,
+      subscription: true,
+      count: remaining,
+      text: `${remaining} of ${SUBSCRIPTION_MONTHLY_UNLOCKS} application unlock${remaining === 1 ? "" : "s"} remaining this month`,
+      detail:
+        remaining === 0
+          ? "Your allowance resets at the start of the next billing period"
+          : "Job Search Pass — allowance resets each billing period",
+    };
   }
   const freeLeft = e.freeUnlockUsed ? 0 : 1;
   const count = freeLeft + e.unlockCredits;
@@ -240,7 +355,7 @@ export function remainingUnlocksSummary(entitlements) {
   else if (freeLeft && !e.unlockCredits) detail = "Your free unlock is still available";
   else if (freeLeft && e.unlockCredits) detail = `Free unlock + ${e.unlockCredits} purchased`;
   else detail = `${e.unlockCredits} purchased credit${e.unlockCredits === 1 ? "" : "s"}`;
-  return { unlimited: false, count, text, detail };
+  return { unlimited: false, subscription: false, count, text, detail };
 }
 
 // Copy for the free-unlock confirmation modal. `company` is optional — when
@@ -256,18 +371,24 @@ export function freeUnlockPromptCopy(company) {
   };
 }
 
-// Headline + body for the locked-application paywall (CREDIT or LOCKED).
+// Headline + body for the locked-application paywall (SUBSCRIPTION / CREDIT / LOCKED).
 export function paywallCopy(access) {
   const status = typeof access === "string" ? access : access?.status;
+  if (status === ACCESS.SUBSCRIPTION) {
+    return {
+      title: "Unlock this application",
+      body: "Use one of your Job Search Pass application unlocks for this month, or choose another option below.",
+    };
+  }
   if (status === ACCESS.CREDIT) {
     return {
       title: "Continue your preparation",
-      body: "Unlock this application to get unlimited access to all JOB.READY preparation resources. You can spend one of your unlock credits, or choose another option below.",
+      body: "Unlock this application to open its preparation tools. You can spend one of your unlock credits, or choose another option below.",
     };
   }
   return {
     title: "Continue your preparation",
-    body: "Unlock this application to get unlimited access to all JOB.READY preparation resources.",
+    body: "Unlock this application to open its preparation tools — mock interviews, assessment-centre scenarios and Classroom.",
   };
 }
 

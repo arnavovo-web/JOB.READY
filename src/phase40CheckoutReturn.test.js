@@ -60,18 +60,18 @@ function simulateRefresh({ status, current }) {
 }
 
 const BASE = normalizeEntitlements({ freeUnlockUsed: true, unlockCredits: 1 });
-const GAINED = normalizeEntitlements({ freeUnlockUsed: true, unlockCredits: 6 }); // Student Pack landed
+const GAINED = normalizeEntitlements({ freeUnlockUsed: true, unlockCredits: 6 }); // Application Pack landed
 const GAINED_SUB = normalizeEntitlements({ hasActiveSubscription: true, freeUnlockUsed: true });
 
 /* ============================== the four required scenarios ============================== */
 describe("scenario 1 — immediate checkout return, webhook not done yet", () => {
   it("shows the truthful 'confirming' state, never a success message", () => {
     // initial banner (set synchronously before the async loop)
-    const initial = { phase: "confirming", productName: "Student Pack", expect: "credits", baseline: BASE };
+    const initial = { phase: "confirming", productName: "Application Pack", expect: "credits", baseline: BASE };
     expect(initial.phase).toBe("confirming");
     expect(CHECKOUT_CONFIRMING_MESSAGE).toMatch(/confirming your purchase/i);
     // and during the whole poll (entitlement never appears) no success is emitted
-    const r = simulatePoll({ expect: "credits", baseline: BASE, productName: "Student Pack", snapshotAt: () => BASE });
+    const r = simulatePoll({ expect: "credits", baseline: BASE, productName: "Application Pack", snapshotAt: () => BASE });
     expect(r.flash).toBeNull();
     expect(r.banner.phase).toBe("pending");
   });
@@ -81,11 +81,11 @@ describe("scenario 2 — entitlement appears during polling", () => {
   it("swaps to a confirmed success once refreshEntitlements() actually shows the credits", () => {
     // not there for the first two checks, then the webhook completes
     const r = simulatePoll({
-      expect: "credits", baseline: BASE, productName: "Student Pack",
+      expect: "credits", baseline: BASE, productName: "Application Pack",
       snapshotAt: (i) => (i >= 2 ? GAINED : BASE),
     });
     expect(r.banner).toBeNull();
-    expect(r.flash).toBe("Student Pack confirmed — it's on your account now.");
+    expect(r.flash).toBe("Application Pack confirmed — it's on your account now.");
     expect(r.checks).toBe(3); // confirmed on the 3rd check, no further polling
   });
 
@@ -102,11 +102,11 @@ describe("scenario 2 — entitlement appears during polling", () => {
 describe("scenario 3 — entitlement still absent after the polling window", () => {
   it("shows the 'may still be processing' banner and never claims success", () => {
     const r = simulatePoll({
-      expect: "credits", baseline: BASE, productName: "Student Pack",
+      expect: "credits", baseline: BASE, productName: "Application Pack",
       snapshotAt: () => BASE, // webhook never lands within the window
     });
     expect(r.flash).toBeNull();
-    expect(r.banner).toMatchObject({ phase: "pending", productName: "Student Pack" });
+    expect(r.banner).toMatchObject({ phase: "pending", productName: "Application Pack" });
     expect(r.checks).toBe(CHECKOUT_POLL_BACKOFF_MS.length + 1); // exhausted every check
     expect(CHECKOUT_PENDING_MESSAGE).toMatch(/may still be processing/i);
     expect(CHECKOUT_PENDING_MESSAGE).not.toMatch(/\bsuccess\b|is now on your account/i);
@@ -114,7 +114,7 @@ describe("scenario 3 — entitlement still absent after the polling window", () 
 });
 
 describe("scenario 4 — manual Refresh picks up a subsequently-completed entitlement", () => {
-  const pending = { phase: "pending", productName: "Student Pack", expect: "credits", baseline: BASE, busy: false };
+  const pending = { phase: "pending", productName: "Application Pack", expect: "credits", baseline: BASE, busy: false };
 
   it("Refresh while still not ready -> stays pending, still no false success", () => {
     const r = simulateRefresh({ status: pending, current: BASE });
@@ -125,13 +125,13 @@ describe("scenario 4 — manual Refresh picks up a subsequently-completed entitl
   it("Refresh after the webhook has completed -> confirmed success, banner cleared", () => {
     const r = simulateRefresh({ status: pending, current: GAINED });
     expect(r.banner).toBeNull();
-    expect(r.flash).toBe("Student Pack confirmed — it's on your account now.");
+    expect(r.flash).toBe("Application Pack confirmed — it's on your account now.");
   });
 
-  it("a second Student Pack while already holding credits is only confirmed when the balance rises above the baseline", () => {
-    const status = { phase: "pending", productName: "Student Pack", expect: "credits", baseline: normalizeEntitlements({ freeUnlockUsed: true, unlockCredits: 2 }), busy: false };
+  it("a second Application Pack while already holding credits is only confirmed when the balance rises above the baseline", () => {
+    const status = { phase: "pending", productName: "Application Pack", expect: "credits", baseline: normalizeEntitlements({ freeUnlockUsed: true, unlockCredits: 2 }), busy: false };
     expect(simulateRefresh({ status, current: normalizeEntitlements({ freeUnlockUsed: true, unlockCredits: 2 }) }).flash).toBeNull();
-    expect(simulateRefresh({ status, current: normalizeEntitlements({ freeUnlockUsed: true, unlockCredits: 7 }) }).flash).toBe("Student Pack confirmed — it's on your account now.");
+    expect(simulateRefresh({ status, current: normalizeEntitlements({ freeUnlockUsed: true, unlockCredits: 7 }) }).flash).toBe("Application Pack confirmed — it's on your account now.");
   });
 });
 

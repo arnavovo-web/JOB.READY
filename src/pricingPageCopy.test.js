@@ -1,15 +1,24 @@
 /* ================================================================== *
- * PRICING PAGE — clarity / conversion copy (display only)
+ * PRICING PAGE — pricing model v2 copy + config (display + values)
  * ------------------------------------------------------------------
- * Guards that the pricing-page UI+copy improvements landed WITHOUT
- * touching any functional key: plan ids, amounts, unlock counts,
- * cadence, Stripe/checkout/webhook logic, entitlement constants.
- * Also checks the advertised Student Pack saving is arithmetically true.
+ * Pricing model v2:
+ *   Single Application  £2.99 one-time   -> unlock 1 application
+ *   Application Pack    £4.99 one-time   -> unlock 4 applications
+ *   Job Search Pass     £8.99 / month    -> unlock 10 applications per month
+ * Each application unlock = up to 5 mock interviews (+ feedback) + up to 5
+ * assessment-centre scenarios. Unlimited Classroom access on every plan.
+ *
+ * Guards that the config values AND the user-facing copy match, across
+ * entitlements.js, the pricing screen and the PricingPlans component,
+ * and that create-checkout / stripe-webhook stay in sync.
  * Node env — source + pure-value assertions only.
  * ================================================================== */
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
-import { PRICING_PLANS, planById, PURCHASABLE_PRODUCT_IDS, CREDITS_PER_PRODUCT } from "./entitlements.js";
+import {
+  PRICING_PLANS, planById, PURCHASABLE_PRODUCT_IDS, CREDITS_PER_PRODUCT,
+  SUBSCRIPTION_MONTHLY_UNLOCKS, MAX_MOCK_INTERVIEWS_PER_APPLICATION, MAX_AC_SCENARIOS_PER_APPLICATION,
+} from "./entitlements.js";
 
 const SRC = readFileSync(new URL("./App.jsx", import.meta.url), "utf8");
 const CHECKOUT = readFileSync(new URL("../supabase/functions/create-checkout/index.ts", import.meta.url), "utf8");
@@ -17,181 +26,206 @@ const WEBHOOK = readFileSync(new URL("../supabase/functions/stripe-webhook/index
 const byId = Object.fromEntries(PRICING_PLANS.map((p) => [p.id, p]));
 
 /* ---------------------------------------------------------------- *
- * functional keys UNCHANGED
+ * config values — the source of truth
  * ---------------------------------------------------------------- */
-describe("nothing functional changed", () => {
-  it("plan ids, order, amounts, unlock counts and cadence are exactly the pricing model", () => {
+describe("pricing model v2 — config values", () => {
+  it("plan ids + order are the stable functional keys (unchanged)", () => {
     expect(PRICING_PLANS.map((p) => p.id)).toEqual(["free", "last_minute_saver", "student_pack", "job_search_pass"]);
-    expect([byId.free.amount, byId.last_minute_saver.amount, byId.student_pack.amount, byId.job_search_pass.amount]).toEqual([0, 299, 499, 799]);
-    expect([byId.free.unlocks, byId.last_minute_saver.unlocks, byId.student_pack.unlocks, byId.job_search_pass.unlocks]).toEqual([1, 1, 5, Infinity]);
-    expect(byId.last_minute_saver.priceLabel).toBe("£2.99");
-    expect(byId.student_pack.priceLabel).toBe("£4.99");
-    expect(byId.job_search_pass.priceLabel).toBe("£7.99");
-    expect(byId.job_search_pass.cadence).toBe("per month");
-    expect(byId.last_minute_saver.kind).toBe("one_time");
-    expect(byId.student_pack.kind).toBe("one_time");
-    expect(byId.job_search_pass.kind).toBe("subscription");
     expect(PURCHASABLE_PRODUCT_IDS).toEqual(["last_minute_saver", "student_pack", "job_search_pass"]);
-    expect(CREDITS_PER_PRODUCT).toEqual({ last_minute_saver: 1, student_pack: 5 });
   });
 
-  it("create-checkout + webhook still keyed on the same ids / amounts / credit counts — untouched", () => {
-    expect(CHECKOUT).toMatch(/last_minute_saver:[\s\S]*?amount:\s*299\b/);
-    expect(CHECKOUT).toMatch(/student_pack:[\s\S]*?amount:\s*499\b/);
-    expect(CHECKOUT).toMatch(/job_search_pass:[\s\S]*?amount:\s*799\b/);
-    expect(WEBHOOK).toMatch(/last_minute_saver:\s*1\b/);
-    expect(WEBHOOK).toMatch(/student_pack:\s*5\b/);
-    // the Stripe-facing display string matches the pricing page ("Single
-    // Application") — a NAME only; the product id key `last_minute_saver:` and
-    // its amount: 299 are untouched (asserted above).
-    expect(CHECKOUT).toMatch(/name:\s*"JOB\.READY — Single Application"/);
-    expect(CHECKOUT).not.toMatch(/Last-Minute Saver/);
-    expect(CHECKOUT).toMatch(/last_minute_saver:\s*\{[\s\S]*?name:\s*"JOB\.READY — Single Application"/);
+  it("£2.99 -> exactly 1 application", () => {
+    expect(byId.last_minute_saver.amount).toBe(299);
+    expect(byId.last_minute_saver.priceLabel).toBe("£2.99");
+    expect(byId.last_minute_saver.unlocks).toBe(1);
+    expect(byId.last_minute_saver.kind).toBe("one_time");
+    expect(CREDITS_PER_PRODUCT.last_minute_saver).toBe(1);
+  });
+
+  it("£4.99 -> exactly 4 applications", () => {
+    expect(byId.student_pack.amount).toBe(499);
+    expect(byId.student_pack.priceLabel).toBe("£4.99");
+    expect(byId.student_pack.unlocks).toBe(4);
+    expect(byId.student_pack.kind).toBe("one_time");
+    expect(CREDITS_PER_PRODUCT.student_pack).toBe(4);
+  });
+
+  it("£8.99/month -> exactly 10 applications per billing month, as a subscription", () => {
+    expect(byId.job_search_pass.amount).toBe(899);
+    expect(byId.job_search_pass.priceLabel).toBe("£8.99");
+    expect(byId.job_search_pass.cadence).toBe("per month");
+    expect(byId.job_search_pass.kind).toBe("subscription");
+    expect(byId.job_search_pass.unlocks).toBe(10);
+    expect(SUBSCRIPTION_MONTHLY_UNLOCKS).toBe(10);
+    // the subscription is NOT a one-time credit grant
+    expect(CREDITS_PER_PRODUCT.job_search_pass).toBeUndefined();
+  });
+
+  it("per-application allowances: 5 mock interviews + 5 assessment-centre scenarios", () => {
+    expect(MAX_MOCK_INTERVIEWS_PER_APPLICATION).toBe(5);
+    expect(MAX_AC_SCENARIOS_PER_APPLICATION).toBe(5);
+  });
+
+  it("display names: Single Application / Application Pack / Job Search Pass", () => {
+    expect(planById("last_minute_saver").name).toBe("Single Application");
+    expect(planById("student_pack").name).toBe("Application Pack");
+    expect(planById("job_search_pass").name).toBe("Job Search Pass");
   });
 });
 
 /* ---------------------------------------------------------------- *
- * display name + card copy
+ * create-checkout + stripe-webhook stay in sync with the config
  * ---------------------------------------------------------------- */
-describe("plan display copy", () => {
-  it("the £2.99 one-time plan is displayed as 'Single Application' (id unchanged)", () => {
-    expect(planById("last_minute_saver").name).toBe("Single Application");
-    expect(planById("last_minute_saver").id).toBe("last_minute_saver");
+describe("Stripe checkout + webhook mirror the config", () => {
+  it("create-checkout unit_amounts = entitlements.js amounts (299 / 499 / 899)", () => {
+    expect(CHECKOUT).toMatch(new RegExp(`last_minute_saver:[\\s\\S]*?amount:\\s*${byId.last_minute_saver.amount}\\b`));
+    expect(CHECKOUT).toMatch(new RegExp(`student_pack:[\\s\\S]*?amount:\\s*${byId.student_pack.amount}\\b`));
+    expect(CHECKOUT).toMatch(new RegExp(`job_search_pass:[\\s\\S]*?amount:\\s*${byId.job_search_pass.amount}\\b`));
+    expect(CHECKOUT).toMatch(/job_search_pass:[\s\S]*?amount:\s*899\b/);
+    expect(CHECKOUT).not.toMatch(/amount:\s*799\b/); // old subscription price is gone
   });
 
-  it("Free: '1 application unlock' + unlimited tools + nothing charged automatically", () => {
-    expect(byId.free.headline).toBe("1 application unlock");
-    expect(byId.free.summary).toMatch(/nothing is (ever )?charged automatically/i);
-    expect(byId.free.features.join(" | ")).toMatch(/1 application unlock/);
-    expect(byId.free.features.join(" | ")).toMatch(/nothing is charged automatically/i);
+  it("create-checkout display strings match the plan names, no stale wording", () => {
+    expect(CHECKOUT).toMatch(/name:\s*"JOB\.READY — Single Application"/);
+    expect(CHECKOUT).toMatch(/name:\s*"JOB\.READY — Application Pack"/);
+    expect(CHECKOUT).toMatch(/name:\s*"JOB\.READY — Job Search Pass"/);
+    expect(CHECKOUT).not.toMatch(/Student Pack|Last-Minute Saver|Unlimited application unlocks while active/);
+    // subscription is still a recurring monthly price
+    expect(CHECKOUT).toMatch(/job_search_pass:[\s\S]*?mode:\s*"subscription"[\s\S]*?recurring:\s*\{\s*interval:\s*"month"\s*\}/);
   });
 
-  it("Single Application: 1 unlock, 'one specific role' copy, no-subscription benefits, '£2.99 per application', CTA 'Buy 1 Unlock'", () => {
-    const p = byId.last_minute_saver;
-    expect(p.headline).toBe("1 application unlock");
-    expect(p.summary).toBe("Perfect if you're preparing for one specific role.");
-    expect(p.perUnit).toBe("£2.99 per application");
-    expect(p.ctaLabel).toBe("Buy 1 Unlock");
-    expect(p.features).toEqual([
-      "Unlimited preparation for one application",
-      "No subscription",
-      "Use the unlock whenever you choose",
-    ]);
+  it("webhook one-time credit grants: last_minute_saver -> 1, student_pack -> 4 (no subscription entry)", () => {
+    expect(WEBHOOK).toMatch(new RegExp(`last_minute_saver:\\s*${CREDITS_PER_PRODUCT.last_minute_saver}\\b`));
+    expect(WEBHOOK).toMatch(new RegExp(`student_pack:\\s*${CREDITS_PER_PRODUCT.student_pack}\\b`));
+    expect(WEBHOOK).toMatch(/student_pack:\s*4\b/);
+    expect(WEBHOOK).not.toMatch(/student_pack:\s*5\b/);
+  });
+});
+
+/* ---------------------------------------------------------------- *
+ * the advertised Application Pack saving is arithmetically correct
+ * ---------------------------------------------------------------- */
+describe("Application Pack value claims are mathematically accurate", () => {
+  const single = byId.last_minute_saver.amount; // 299p
+  const pack = byId.student_pack.amount;         // 499p
+  const packUnlocks = byId.student_pack.unlocks; // 4
+
+  it("'£1.25 per application' — £4.99 / 4 = 124.75p, rounds to £1.25", () => {
+    const perUnitPence = pack / packUnlocks; // 124.75
+    expect(Math.round(perUnitPence)).toBe(125);
+    expect(byId.student_pack.perUnit).toBe("£1.25 per application");
   });
 
-  it("Student Pack: BEST VALUE badge, 5 unlocks, 'multiple roles' copy, '£1 per application', accurate saving, CTA 'Buy 5 Unlocks'", () => {
-    const p = byId.student_pack;
-    expect(p.badge).toMatch(/BEST VALUE/);
-    expect(p.badge).toMatch(/⭐/);
-    expect(p.headline).toBe("5 application unlocks");
-    expect(p.summary).toBe("Perfect for students applying to multiple roles.");
-    expect(p.perUnit).toBe("Just £1 per application");
-    expect(p.savingNote).toBe("Save over 65% compared with buying individually");
-    expect(p.ctaLabel).toBe("Buy 5 Unlocks");
-    expect(p.features).toEqual([
-      "5 application unlocks",
-      "Use them one application at a time",
-      "No subscription",
-    ]);
+  it("'Save over 55% compared with buying singly' is true (actual ≈ 58.3%)", () => {
+    const buyingSingly = single * packUnlocks; // 1196p
+    const saving = (buyingSingly - pack) / buyingSingly;
+    expect(saving).toBeGreaterThan(0.55);
+    expect(Math.round(saving * 1000) / 10).toBe(58.3);
+    expect(byId.student_pack.savingNote).toMatch(/over 55%/);
   });
 
-  it("Job Search Pass: 'Unlimited application unlocks', 'active job seekers' copy, positioning line, CTA 'Start Unlimited'", () => {
-    const p = byId.job_search_pass;
-    expect(p.headline).toBe("Unlimited application unlocks");
-    expect(p.summary).toBe("For active job seekers applying to multiple roles.");
-    expect(p.positioning).toBe("Best for multiple applications");
-    expect(p.ctaLabel).toBe("Start Unlimited");
-    expect(p.features[0]).toBe("Unlimited application unlocks while active");
-    expect(p.features[2]).toMatch(/Cancel anytime/);
-  });
-
-  it("only Student Pack carries a badge / saving note", () => {
+  it("only the Application Pack carries a badge / saving note", () => {
     expect(PRICING_PLANS.filter((p) => p.badge).map((p) => p.id)).toEqual(["student_pack"]);
     expect(PRICING_PLANS.filter((p) => p.savingNote).map((p) => p.id)).toEqual(["student_pack"]);
+    expect(byId.student_pack.badge).toMatch(/BEST VALUE/);
   });
 });
 
 /* ---------------------------------------------------------------- *
- * the advertised saving is arithmetically correct
+ * every plan's feature list communicates the product model
  * ---------------------------------------------------------------- */
-describe("Student Pack value claims are mathematically accurate", () => {
-  const single = byId.last_minute_saver.amount;   // 299p
-  const pack = byId.student_pack.amount;          // 499p
-  const packUnlocks = byId.student_pack.unlocks;  // 5
-
-  it("'Just £1 per application' — £4.99 / 5 rounds to ~£1.00", () => {
-    const perUnitPence = pack / packUnlocks; // 99.8
-    expect(Math.round(perUnitPence)).toBe(100); // £1.00 to the nearest penny
-    expect(perUnitPence).toBeLessThan(100);     // it is in fact fractionally UNDER £1
+describe("plan feature copy communicates the model", () => {
+  it("every paid plan mentions 5 mock interviews, feedback, 5 AC scenarios and unlimited Classroom", () => {
+    for (const id of ["last_minute_saver", "student_pack", "job_search_pass"]) {
+      const joined = byId[id].features.join(" | ");
+      expect(joined, id).toMatch(/5 (personalised )?(mock )?interviews?/i);
+      expect(joined, id).toMatch(/feedback/i);
+      expect(joined, id).toMatch(/5 (personalised )?assessment-centre scenarios?/i);
+      expect(joined, id).toMatch(/unlimited classroom/i);
+    }
   });
 
-  it("'Save over 65% compared with buying individually' is true (actual ≈ 66.6%)", () => {
-    const buyingIndividually = single * packUnlocks; // 1495p
-    const saving = (buyingIndividually - pack) / buyingIndividually;
-    expect(saving).toBeGreaterThan(0.65);
-    expect(Math.round(saving * 1000) / 10).toBe(66.6);
+  it("the subscription plan makes the 10/month allowance explicit", () => {
+    const p = byId.job_search_pass;
+    expect(p.headline).toMatch(/10 applications? ?\/ ?month/i);
+    expect(p.features.join(" | ")).toMatch(/10 application unlocks every month/i);
+    expect(p.ctaLabel).toBe("Start Job Search Pass");
+  });
+
+  it("no plan still advertises 'unlimited application unlocks' or the old names", () => {
+    const all = JSON.stringify(PRICING_PLANS);
+    expect(all).not.toMatch(/Unlimited application unlocks/);
+    expect(all).not.toMatch(/Student Pack|Last-Minute Saver|Start Unlimited/);
   });
 });
 
 /* ---------------------------------------------------------------- *
- * pricing screen: explanation section
+ * pricing SCREEN copy (App.jsx)
  * ---------------------------------------------------------------- */
-describe("pricing screen — 'Choose how you want to prepare' explainer", () => {
+describe("pricing screen copy", () => {
   const start = SRC.indexOf('{screen === "pricing" && (');
   const PRICING_SCREEN = SRC.slice(start, SRC.indexOf("<LegalFooter openLegal={openLegal} />", start));
 
-  it("leads with the required heading + supporting copy", () => {
-    expect(PRICING_SCREEN).toContain("Choose how you want to prepare");
-    expect(PRICING_SCREEN).toMatch(/Each <strong>application unlock<\/strong> gives you unlimited access to JOB\.READY's preparation tools for one job application\./);
+  it("core message: unlock applications, prepare with personalised AI practice", () => {
+    expect(PRICING_SCREEN).toMatch(/Unlock applications\. Prepare for each one with personalised AI practice\./);
   });
 
-  it("shows what every unlock includes — the four required items, once each", () => {
-    for (const item of [
-      "Unlimited AI mock interviews",
-      "Personalised Classroom resources",
-      "Assessment Centre practice",
-      "Detailed performance reports",
-    ]) {
-      expect(PRICING_SCREEN.split(item).length - 1, item).toBe(1);
-    }
-    expect(PRICING_SCREEN).toMatch(/Every application unlock includes/i);
+  it("makes it explicit that users buy application unlocks, not individual interviews", () => {
+    expect(PRICING_SCREEN).toMatch(/application unlocks<\/strong>, not individual interviews/);
   });
 
-  it("does not stuff the plan-name change anywhere stale in the page", () => {
-    expect(PRICING_SCREEN).not.toMatch(/Last-Minute Saver/);
+  it("'what every application unlock includes' names the 5 interviews / feedback / 5 scenarios / unlimited Classroom", () => {
+    expect(PRICING_SCREEN).toMatch(/What every application unlock includes/i);
+    expect(PRICING_SCREEN).toMatch(/5 personalised mock interviews per application/);
+    expect(PRICING_SCREEN).toMatch(/Detailed feedback after every interview/);
+    expect(PRICING_SCREEN).toMatch(/5 assessment-centre scenarios per application/);
+    expect(PRICING_SCREEN).toMatch(/Unlimited Classroom access/);
+  });
+
+  it("'How unlocks work' explains the monthly reset for Job Search Pass and drops stale wording", () => {
+    expect(PRICING_SCREEN).toMatch(/up to 10 applications per month\. The allowance resets/);
+    expect(PRICING_SCREEN).toMatch(/Application Pack \(4\)/);
+    expect(PRICING_SCREEN).not.toMatch(/Student Pack|Last-Minute Saver/);
   });
 });
 
 /* ---------------------------------------------------------------- *
- * PricingPlans component renders the new display fields
+ * PricingPlans COMPONENT (App.jsx) — prices, allowances, tooltip
  * ---------------------------------------------------------------- */
 describe("PricingPlans component", () => {
   const start = SRC.indexOf("function PricingPlans(");
   const COMP = SRC.slice(start, SRC.indexOf("\nfunction FreeUnlockDialog(", start));
 
-  it("renders badge, per-unit line, saving note, positioning line and a per-plan CTA label", () => {
-    expect(COMP).toMatch(/plan\.badge &&/);
-    expect(COMP).toMatch(/BEST VALUE/);
-    expect(COMP).toMatch(/plan\.perUnit &&/);
-    expect(COMP).toMatch(/plan\.savingNote &&/);
-    expect(COMP).toMatch(/plan\.positioning &&/);
-    expect(COMP).toMatch(/plan\.ctaLabel \? plan\.ctaLabel/);
+  it("renders each plan's price label and allowance headline", () => {
+    expect(COMP).toMatch(/\{plan\.priceLabel\}/);
+    expect(COMP).toMatch(/\{plan\.cadence\}/);       // "per month" for the subscription
+    expect(COMP).toMatch(/<span>\{plan\.headline\}<\/span>/); // "1 application" / "4 applications" / "10 applications / month"
   });
 
-  it("features the best-value (badged) plan on the full page, but the paywall keeps its own context highlight", () => {
+  it("shows an accessible application-unlock info tooltip next to the allowance (reuses InfoTooltip, no new dependency)", () => {
+    expect(COMP).toMatch(/<InfoTooltip label="What's included with an application unlock\?" text=\{APPLICATION_UNLOCK_TOOLTIP\} \/>/);
+    // it's hidden on the Free card, present on the paid ones
+    expect(COMP).toMatch(/\{!isFree && <InfoTooltip/);
+    // the shared tooltip copy names the allowances + unlimited Classroom
+    expect(SRC).toMatch(/const APPLICATION_UNLOCK_TOOLTIP =\s*\n?\s*"Each application you unlock includes up to 5 personalised mock interviews[\s\S]*?up to 5 personalised assessment-centre scenarios\. Unlimited Classroom access is included with every plan\."/);
+    // InfoTooltip itself is the existing component — desktop hover + focus + click (touch) + role="tooltip"
+    expect(SRC).toMatch(/function InfoTooltip\(\{ label, text \}\)/);
+    expect(SRC).toMatch(/role="tooltip"/);
+    expect(SRC).toMatch(/onMouseEnter=\{\(\) => setOpen\(true\)\} onMouseLeave/);
+    expect(SRC).toMatch(/aria-describedby=\{open \? idRef\.current : undefined\}/);
+  });
+
+  it("still features the best-value (badged) plan and keeps the paywall context highlight", () => {
     expect(COMP).toMatch(/const featured = contextHighlight \|\| \(!compact && !!plan\.badge\)/);
-    // context highlight logic (paywall) is preserved verbatim
     expect(COMP).toMatch(/highlightAccess === "unlockable_credit" && plan\.id === "student_pack"/);
     expect(COMP).toMatch(/highlightAccess === "locked" && plan\.id === "last_minute_saver"/);
   });
 
-  it("compact (paywall) mode: keeps badge + per-application price, but hides the long summary AND the savingNote / positioning lines", () => {
-    // kept in compact — badge + per-unit are NOT gated on !compact
-    expect(COMP).not.toMatch(/!compact && plan\.badge/);
-    expect(COMP).not.toMatch(/!compact && plan\.perUnit/);
-    // hidden in compact
-    expect(COMP).toMatch(/!compact && plan\.summary &&/);
-    expect(COMP).toMatch(/!compact && plan\.savingNote &&/);
-    expect(COMP).toMatch(/!compact && plan\.positioning &&/);
+  it("prices £2.99 / £4.99 / £8.99 and allowances 1 / 4 / 10 are what the cards will render", () => {
+    // (values come from PRICING_PLANS, asserted above; this ties them to the render path)
+    expect([byId.last_minute_saver.priceLabel, byId.student_pack.priceLabel, byId.job_search_pass.priceLabel])
+      .toEqual(["£2.99", "£4.99", "£8.99"]);
+    expect([byId.last_minute_saver.headline, byId.student_pack.headline, byId.job_search_pass.headline])
+      .toEqual(["1 application", "4 applications", "10 applications / month"]);
   });
 });

@@ -281,8 +281,8 @@ export function summariseResumable(row, counts, app) {
  * last-resort fallback for a legacy/corrupt row with no usable config.
  *
  *  adaptive_turn:
- *    config.max_questions  — the user's chosen "Length" (Short 8 / Standard 12 /
- *      Long 18); written on every interview created since Phase 18; the value the
+ *    config.max_questions  — the user's chosen "Length" (Short 5 / Medium 8 /
+ *      Long 10); written on every interview created since Phase 18; the value the
  *      deterministic ending rule (isInterviewComplete) actually uses.
  *    config.question_count — stage default fallback for a pre-Phase-18 row.
  *    generatedCount        — genuine last resort (config entirely absent).

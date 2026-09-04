@@ -31,9 +31,12 @@ const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY");
 const STRIPE_WEBHOOK_SECRET = Deno.env.get("STRIPE_WEBHOOK_SECRET");
 
 // Mirrors src/entitlements.js CREDITS_PER_PRODUCT (guarded by the phase test).
+// One-time purchases only — the subscription (job_search_pass) grants a
+// per-billing-period allowance, not a fixed credit count, and is handled by
+// syncSubscription + consume_subscription_unlock, never here.
 const CREDITS_PER_PRODUCT: Record<string, number> = {
   last_minute_saver: 1,
-  student_pack: 5,
+  student_pack: 4,
 };
 
 function admin() {
@@ -97,8 +100,14 @@ async function syncSubscription(sub: Stripe.Subscription) {
     stripe_subscription_id: sub.id,
     status: sub.status,
     price_id: sub.items?.data?.[0]?.price?.id ?? null,
-    // `current_period_end` is top-level on older Stripe API versions and on the
-    // subscription item on newer ones — read whichever is present.
+    // `current_period_start` / `current_period_end` are top-level on older Stripe
+    // API versions and on the subscription item on newer ones — read whichever is
+    // present. `current_period_start` bounds the Job Search Pass 10-unlock
+    // monthly allowance (see consume_subscription_unlock); when it advances, the
+    // allowance resets automatically — no cron.
+    current_period_start: isoFromUnix(
+      (sub as any).current_period_start ?? (sub.items?.data?.[0] as any)?.current_period_start,
+    ),
     current_period_end: isoFromUnix(
       (sub as any).current_period_end ?? (sub.items?.data?.[0] as any)?.current_period_end,
     ),

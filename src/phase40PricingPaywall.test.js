@@ -36,6 +36,11 @@ const AIGEN = readFileSync(new URL("../supabase/functions/ai-generate/index.ts",
 
 const NEW_TABLES = ["user_entitlements", "application_unlocks", "payments", "subscriptions"];
 
+// Pricing model v2 — Job Search Pass = 10 application unlocks / Stripe billing period.
+const V2_MIG_NAME = migFiles.find((f) => /pricing_model_v2/.test(f));
+const V2 = V2_MIG_NAME ? readFileSync(new URL(V2_MIG_NAME, MIG_DIR), "utf8") : "";
+const v2Lower = V2.toLowerCase();
+
 /* ============================== migration ============================== */
 describe("Phase 40 — entitlement migration", () => {
   it("a dedicated pricing/entitlement migration file exists and is not named a 'baseline'", () => {
@@ -379,6 +384,70 @@ describe("Phase 40 — application creation / save is NEVER gated", () => {
   it("confirmCompanyRole (wizard step 1 -> 2) is not gated — setup always proceeds", () => {
     const fn = SRC.slice(SRC.indexOf("async function confirmCompanyRole("), SRC.indexOf("async function handleFileUpload("));
     expect(fn).not.toMatch(/ensureApplicationAccess\(/);
+  });
+});
+
+/* ============ pricing model v2 — subscription = 10 unlocks / billing period ============ */
+describe("Pricing model v2 — Job Search Pass monthly cap is server-authoritative", () => {
+  it("a dedicated additive migration exists, timestamped after the entitlements migration", () => {
+    expect(V2_MIG_NAME, "supabase/migrations/*pricing_model_v2*.sql").toBeTruthy();
+    expect(/^\d{14}_/.test(V2_MIG_NAME)).toBe(true);
+    expect(V2_MIG_NAME.slice(0, 14) > PRICING_MIG_NAME.slice(0, 14)).toBe(true);
+  });
+
+  it("is purely additive + idempotent — no dropped columns/tables, no create policy, only add-if-not-exists / create-or-replace", () => {
+    expect(v2Lower).toMatch(/alter table public\.subscriptions\s*add column if not exists current_period_start timestamptz/);
+    expect(v2Lower).not.toMatch(/drop table|drop column|alter column .* type|truncate/);
+    expect(v2Lower).not.toMatch(/create policy/); // RLS on the Phase 40 tables is unchanged
+    expect(v2Lower.match(/create or replace function/g)?.length).toBeGreaterThanOrEqual(4);
+    expect(v2Lower).not.toMatch(/\bcreate function public\./); // never a bare CREATE FUNCTION
+  });
+
+  it("consume_subscription_unlock: advisory-lock serialised, 10-cap, period-scoped, structured rejection", () => {
+    expect(v2Lower).toMatch(/create or replace function public\.consume_subscription_unlock\(p_application_id uuid\)/);
+    expect(v2Lower).toMatch(/pg_advisory_xact_lock\(hashtext\('jobready_sub_unlock'\), hashtext\(uid::text\)\)/);
+    expect(v2Lower).toMatch(/c_monthly_limit constant integer := 10/);
+    expect(v2Lower).toMatch(/and u\.source = 'subscription'\s*and u\.created_at >= v_period_start/);
+    expect(v2Lower).toMatch(/'reason', 'monthly_unlock_limit_reached'/);
+    expect(v2Lower).toMatch(/'reason', 'no_subscription'/);
+    expect(v2Lower).toMatch(/revoke all on function public\.consume_subscription_unlock\(uuid\)\s*from public, anon/);
+    expect(v2Lower).toMatch(/grant execute on function public\.consume_subscription_unlock\(uuid\)\s*to authenticated/);
+  });
+
+  it("has_application_access drops the blanket subscription grant; a subscription row only counts while active", () => {
+    const body = v2Lower.slice(v2Lower.indexOf("function public.has_application_access("));
+    expect(body).not.toMatch(/if public\.has_active_subscription\(uid\) then\s*return true;/);
+    expect(body).toMatch(/u\.source in \('free', 'credit', 'comp'\)\s*or \(u\.source = 'subscription' and public\.has_active_subscription\(uid\)\)/);
+  });
+
+  it("consume_free_unlock / consume_unlock_credit no longer short-circuit for subscribers", () => {
+    expect(v2Lower).toMatch(/create or replace function public\.consume_free_unlock\(/);
+    expect(v2Lower).toMatch(/create or replace function public\.consume_unlock_credit\(/);
+    expect(v2Lower).not.toMatch(/'source', 'subscription', 'persisted', false/);
+  });
+
+  it("stripe-webhook syncs current_period_start so the allowance can reset without a cron", () => {
+    expect(WEBHOOK).toMatch(/current_period_start:\s*isoFromUnix\(\s*\(sub as any\)\.current_period_start\s*\?\?\s*\(sub\.items\?\.data\?\.\[0\] as any\)\?\.current_period_start,?\s*\)/);
+  });
+
+  it("entitlements.js exposes the constant + the client mirror, and never reports Job Search Pass as unlimited", () => {
+    expect(ENT_SRC).toMatch(/export const SUBSCRIPTION_MONTHLY_UNLOCKS = 10;/);
+    expect(ENT_SRC).toMatch(/export function subscriptionUnlocksRemaining\(/);
+    expect(ENT_SRC).toMatch(/ACCESS = \{[\s\S]*?SUBSCRIPTION: "unlockable_subscription"/);
+    // remainingUnlocksSummary's subscriber branch never sets unlimited:true
+    const summary = ENT_SRC.slice(ENT_SRC.indexOf("export function remainingUnlocksSummary("), ENT_SRC.indexOf("export function freeUnlockPromptCopy("));
+    expect(summary).not.toMatch(/unlimited:\s*true/);
+    expect(summary).toMatch(/application unlock.*remaining this month|Up to \$\{SUBSCRIPTION_MONTHLY_UNLOCKS\} application unlocks this month/);
+  });
+
+  it("App.jsx wires the subscription-unlock RPC through the paywall (client is not the authority)", () => {
+    expect(SRC).toMatch(/supabase\.rpc\("consume_subscription_unlock", \{ p_application_id: applicationId \}\)/);
+    expect(SRC).toMatch(/async function spendSubscriptionUnlockFromPaywall\(\)/);
+    expect(SRC).toMatch(/monthly_unlock_limit_reached/);
+    expect(SRC).toMatch(/canSpendSubscription = access\.status === ACCESS\.SUBSCRIPTION/);
+    // dbLoadEntitlements now reads created_at + current_period_start for the period count
+    expect(SRC).toMatch(/from\("application_unlocks"\)\.select\("application_id, source, created_at"\)/);
+    expect(SRC).toMatch(/from\("subscriptions"\)\.select\("status, current_period_end, current_period_start, cancel_at_period_end"\)/);
   });
 });
 
