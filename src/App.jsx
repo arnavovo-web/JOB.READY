@@ -1989,6 +1989,65 @@ async function dbCompleteInterview(interviewId, report) {
   return { ok: !updErr && !repErr, updateOk: !updErr, reportOk: !repErr, error: (repErr && repErr.message) || (updErr && updErr.message) || null };
 }
 
+// "Save & exit" — durably record leaving an in-progress interview. Every SUBMITTED
+// answer is already persisted the moment it is submitted (dbInsertAnswer /
+// dbInsertAnswerOnly), so this write only adds two things onto the EXISTING
+// interviews.config jsonb (the same vehicle Phase 18 resume already reads — no
+// migration, no schema change): the UNSUBMITTED draft the user was typing
+// (`draft`, or null to clear a stale one) and a `last_saved_at` marker.
+// interviews.config is small; a read-modify-write is fine and avoids depending on
+// a jsonb_set RPC. The interviews.status is NOT touched here — a Save & exit
+// interview must stay 'in_progress'. RLS interviews_self already scopes this
+// UPDATE to the owner (user_id = auth.uid()). THROWS on any read/write failure so
+// the caller never navigates away on a silent persistence failure.
+async function dbSaveInterviewProgress(interviewId, { draft }) {
+  const supabase = await getSupabase();
+  const { data: row, error: rErr } = await supabase.from("interviews").select("config, status").eq("id", interviewId).maybeSingle();
+  if (rErr || !row) throw new Error("Couldn't save your progress. Please try again.");
+  if (row.status === "completed") {
+    // Nothing to save onto a finished interview — treat as a no-op success rather
+    // than clobbering a completed row's config.
+    return row.config || null;
+  }
+  const prev = row.config && typeof row.config === "object" ? row.config : {};
+  const nextConfig = { ...prev, draft: draft || null, last_saved_at: new Date().toISOString() };
+  const { error: uErr } = await supabase.from("interviews").update({ config: nextConfig }).eq("id", interviewId);
+  if (uErr) throw new Error("Couldn't save your progress. Please try again.");
+  return nextConfig;
+}
+
+// The Dashboard / Application "Continue your interview" surfaces are driven by
+// `resumableInterviews` (metadata only — no transcript). loadFullUserState builds
+// this once at session hydration; this helper rebuilds it on demand (after a
+// "Save & exit") so the card appears immediately without a full reload. It
+// mirrors the Phase 18 metadata block in loadFullUserState exactly — the two
+// bulk reads (never N+1) plus the shared pure summariser.
+async function dbLoadResumableInterviews(userId, apps) {
+  const supabase = await getSupabase();
+  const { data: inProgressRaw } = await supabase.from("interviews")
+    .select("*").eq("user_id", userId).eq("status", "in_progress").order("created_at", { ascending: false });
+  if (!Array.isArray(inProgressRaw) || !inProgressRaw.length) return [];
+  const ipIds = inProgressRaw.map((i) => i.id);
+  const { data: ipQ } = await supabase.from("interview_questions").select("id, interview_id, question_number").in("interview_id", ipIds);
+  const qList = Array.isArray(ipQ) ? ipQ : [];
+  const qIds = qList.map((r) => r.id);
+  const { data: ipA } = qIds.length
+    ? await supabase.from("answers").select("question_id").in("question_id", qIds)
+    : { data: [] };
+  const answeredQ = new Set((Array.isArray(ipA) ? ipA : []).map((r) => r.question_id));
+  const countsByIv = new Map();
+  for (const r of qList) {
+    const c = countsByIv.get(r.interview_id) || { total: 0, answered: 0 };
+    c.total += 1;
+    if (answeredQ.has(r.id)) c.answered += 1;
+    countsByIv.set(r.interview_id, c);
+  }
+  const appList = Array.isArray(apps) ? apps : [];
+  return inProgressRaw.map((row) =>
+    summariseResumable(row, countsByIv.get(row.id) || { total: 0, answered: 0 }, appList.find((a) => a.id === row.application_id))
+  );
+}
+
 async function dbInsertMemory(userId, interviewId, entry) {
   const supabase = await getSupabase();
   const { error } = await supabase.from("interview_memory").insert({ user_id: userId, interview_id: interviewId, question_text: entry.question, category: entry.category, competency: entry.competency, score: entry.score, company: entry.company, role: entry.role, answer_text: entry.answerText || null });
@@ -2706,6 +2765,25 @@ function Btn({ children, onClick, disabled, variant = "primary", style, full, cl
     danger: { background: "var(--bad)", color: "#fff" },
   };
   return <button id={id} className={className ? "jr-btn " + className : "jr-btn"} onClick={onClick} disabled={disabled} style={{ ...base, ...(variants[variant] || variants.primary), ...style }}>{children}</button>;
+}
+
+// "Save & exit" — the one control for safely leaving an active interview. Sits in
+// the interview header next to the (non-navigating) logo. `dark` matches the
+// batch/async interview's navy header. Deliberately understated (a link-weight
+// ghost button, not an accent CTA) so it never competes with "Submit answer".
+function SaveExitButton({ onClick, dark = false }) {
+  return (
+    <button type="button" onClick={onClick} className="jr-btn"
+      style={{
+        fontFamily: "var(--font)", fontSize: 12.5, fontWeight: 600, cursor: "pointer",
+        display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 10px",
+        borderRadius: "var(--r-sm)", border: dark ? "1px solid rgba(255,255,255,0.28)" : "1px solid var(--border)",
+        background: dark ? "rgba(255,255,255,0.06)" : "#fff",
+        color: dark ? "rgba(255,255,255,0.9)" : "var(--text-dim)",
+      }}>
+      <ArrowLeft size={13} aria-hidden="true" /> Save &amp; exit
+    </button>
+  );
 }
 
 // Phase B — a small, reusable confirmation dialog (no existing modal/dialog component was
@@ -5556,6 +5634,9 @@ function App() {
   // "Start New Interview" bypass the duplicate check on the immediate re-entry.
   const resumeRef = useRef(false);
   const forceNewRef = useRef(false);
+  // Single-flight guard for "Save & exit" — a double click must not fire two
+  // config writes / two navigations.
+  const saveExitRef = useRef(false);
   // Phase B: single-flight guard for submitChallengeAnswer — prevents a duplicate answer
   // submission the same way resumeRef/devGenRef guard their own flows.
   const challengeBusyRef = useRef(false);
@@ -7362,6 +7443,9 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
         catch (e) { iv.cvBackground = ""; }
       }
       setInterview(iv);
+      // Restore the "Save & exit" draft (empty string when there is none, or when
+      // the persisted draft belonged to a question the interview has moved past).
+      setAnswerInput(recon.draftAnswer || "");
 
       if (recon.needsFinish) {
         // Every question is answered but the interview never completed. Reuse the
@@ -7377,6 +7461,60 @@ Never invent an alias that is not genuinely equivalent. "review" is the model kn
       setError("Couldn't reopen that interview. Please try again.");
     } finally {
       resumeRef.current = false;
+    }
+  }
+
+  // "Save & exit" — leave an active interview for the dashboard WITHOUT losing
+  // progress. Every submitted answer is already durably persisted (dbInsertAnswer
+  // / dbInsertAnswerOnly run on submit), and the interview row is already
+  // status='in_progress', so the only new write here is the unsubmitted draft the
+  // user was typing (onto interviews.config.draft — no migration) plus a
+  // last_saved_at marker. Navigation happens ONLY after that write succeeds:
+  //   success -> refresh the resume surfaces, drop the in-memory interview, go to
+  //             the dashboard, show the confirmation toast.
+  //   failure -> stay on the interview, show a retryable error, no toast, no nav.
+  // Works for every multi-question application interview (adaptive "interview" and
+  // batch/Quick-Practice "async_interview"). Challenge Me (one question, completes
+  // on submit) is deliberately excluded — it has no resumable multi-question state.
+  async function saveAndExitInterview() {
+    if (!interview || !interview.id || !user || saveExitRef.current) return;
+    saveExitRef.current = true;
+    setError("");
+    try {
+      const isBatch = interview.config?.pipeline === "independent_batch";
+      const landingQId = isBatch
+        ? interview.questions?.[interview.currentIndex]?.dbId ?? null
+        : interview.currentQuestion?.dbId ?? null;
+      const draftText = sanitizeText(answerInput || "").trim();
+      const draft = draftText && landingQId
+        ? { questionDbId: landingQId, text: draftText, savedAt: new Date().toISOString() }
+        : null;
+
+      // Hard durability boundary: THROWS on any read/write failure.
+      await dbSaveInterviewProgress(interview.id, { draft });
+
+      // Rebuild the "Continue your interview" surfaces so the card is there the
+      // instant we land on the dashboard. Best-effort — a failed refresh only
+      // means the card appears on the next full load, never lost progress.
+      // summariseResumable reads app.interview_date (snake_case, as it comes off
+      // the DB); the in-memory `applications` state carries it as `interviewDate`,
+      // so re-key just that field for the summariser's sort.
+      try {
+        const appsForSummary = applications.map((a) => ({ id: a.id, company: a.company, role: a.role, interview_date: a.interviewDate || null }));
+        const refreshed = await dbLoadResumableInterviews(user.id, appsForSummary);
+        setResumableInterviews(refreshed);
+      } catch (e) { console.error("resumable refresh after save & exit failed:", e.message); }
+
+      speech.stop();
+      setInterview(null); setProfile(null); setReport(null); setAnswerInput(""); setError("");
+      setScreen("dashboard");
+      setEntitlementFlash("Interview progress saved — you can continue whenever you're ready.");
+    } catch (e) {
+      // Persistence failed — do NOT navigate, do NOT toast. Keep the user where
+      // they are with a clear, retryable message.
+      setError(e.message || "Couldn't save your progress. You're still in the interview — please try again.");
+    } finally {
+      saveExitRef.current = false;
     }
   }
 
@@ -10169,7 +10307,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                 <div className="flex items-center gap-2" style={{ color: "var(--text-faint)", fontSize: 11.5, marginBottom: 8 }}><Upload size={12} /> Paste text, or upload .txt / .docx / .pdf</div>
                 <textarea id="jd-context-input" aria-label="Job Description and Application Context" aria-describedby="jd-context-help" value={jdText} onChange={(e) => setJdText(e.target.value)}
                   placeholder="Paste the job description and any other relevant information about the company, role, programme or requirements..."
-                  style={{ width: "100%", height: 220, padding: 13, border: "1.5px solid var(--border)", borderRadius: "var(--radius-sm)", fontSize: 13.5, lineHeight: 1.5, fontFamily: "var(--font)" }} />
+                  style={{ width: "100%", boxSizing: "border-box", height: 220, padding: 13, border: "1.5px solid var(--border)", borderRadius: "var(--radius-sm)", fontSize: 13.5, lineHeight: 1.5, fontFamily: "var(--font)", resize: "vertical" }} />
               </Card>
               {error && <div style={{ color: "var(--bad)", fontSize: 13, marginTop: 12 }}>{error}</div>}
               <div className="flex flex-wrap gap-3 mt-4">
@@ -10204,7 +10342,7 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
                   </label>
                 </div>
                 <textarea aria-label="Your CV" value={cvText} onChange={(e) => setCvText(e.target.value)} placeholder="Paste your CV text here"
-                  style={{ width: "100%", height: 220, padding: 13, border: "1.5px solid var(--border)", borderRadius: "var(--radius-sm)", fontSize: 13.5, lineHeight: 1.5, fontFamily: "var(--font)" }} />
+                  style={{ width: "100%", boxSizing: "border-box", height: 220, padding: 13, border: "1.5px solid var(--border)", borderRadius: "var(--radius-sm)", fontSize: 13.5, lineHeight: 1.5, fontFamily: "var(--font)", resize: "vertical" }} />
               </Card>
               {error && <div style={{ color: "var(--bad)", fontSize: 13, marginTop: 12 }}>{error}</div>}
               <div className="flex flex-wrap gap-3 mt-4">
@@ -10701,7 +10839,10 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
               <div style={{ borderBottom: "1px solid var(--border)", background: "#fff" }}>
                 <div style={{ maxWidth: 680, margin: "0 auto", padding: "16px 24px" }}>
                   <div className="flex justify-between items-center">
-                    <JobReadyLogo size={20} />
+                    <div className="flex items-center gap-3">
+                      <JobReadyLogo size={20} />
+                      {interview.id && <SaveExitButton onClick={() => guarded(saveAndExitInterview)} />}
+                    </div>
                     <div style={{ fontSize: 12.5, color: "var(--text-dim)", fontWeight: 600 }}>{company} · {role}</div>
                   </div>
                 </div>
@@ -10721,7 +10862,10 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
             <div style={{ borderBottom: "1px solid var(--border)", background: "#fff" }}>
               <div style={{ maxWidth: 680, margin: "0 auto", padding: "16px 24px" }}>
                 <div className="flex justify-between items-center mb-3">
-                  <JobReadyLogo size={20} />
+                  <div className="flex items-center gap-3">
+                    <JobReadyLogo size={20} />
+                    {interview.id && <SaveExitButton onClick={() => guarded(saveAndExitInterview)} />}
+                  </div>
                   <div style={{ fontSize: 12.5, color: "var(--text-dim)", fontWeight: 600 }}>{company} · {role}</div>
                 </div>
                 <div className="flex justify-between items-center mb-2">
@@ -10778,7 +10922,10 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
             <div style={{ borderBottom: "1px solid rgba(255,255,255,0.12)" }}>
               <div style={{ maxWidth: 680, margin: "0 auto", padding: "16px 24px" }}>
                 <div className="flex justify-between items-center mb-3">
-                  <JobReadyLogo size={20} background="dark" />
+                  <div className="flex items-center gap-3">
+                    <JobReadyLogo size={20} background="dark" />
+                    {interview.id && <SaveExitButton dark onClick={() => guarded(saveAndExitInterview)} />}
+                  </div>
                   <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.7)", fontWeight: 600 }}>{company} · {role} — {interview.formatLabel}</div>
                 </div>
                 <div className="flex justify-between items-center mb-2">

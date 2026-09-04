@@ -152,6 +152,56 @@ describe("reconstructInterviewState — batch (independent_batch)", () => {
     expect(r.interview.currentIndex).toBe(2);
     expect(r.needsFinish).toBe(true);
   });
+
+  it("Save & exit draft is restored when it belongs to the batch question the resume lands on", () => {
+    const row = batchRow({ config: { pipeline: "independent_batch", profile: PROFILE, draft: { questionDbId: "bq3", text: "half-typed batch answer" } } });
+    const r = reconstructInterviewState({ interviewRow: row, questions: [bq(1, true), bq(2, true), bq(3, false), bq(4, false)], meta });
+    expect(r.interview.currentIndex).toBe(2); // lands on bq3
+    expect(r.draftAnswer).toBe("half-typed batch answer");
+  });
+
+  it("a batch draft attached to an already-answered question is dropped", () => {
+    const row = batchRow({ config: { pipeline: "independent_batch", profile: PROFILE, draft: { questionDbId: "bq1", text: "stale" } } });
+    const r = reconstructInterviewState({ interviewRow: row, questions: [bq(1, true), bq(2, true), bq(3, false)], meta });
+    expect(r.draftAnswer).toBe("");
+  });
+});
+
+describe("reconstructInterviewState — Save & exit draft (adaptive)", () => {
+  it("restores the draft only for the exact question the resume lands on", () => {
+    const row = adaptiveRow({ config: { pipeline: "adaptive_turn", max_questions: 4, profile: PROFILE, draft: { questionDbId: "q3", text: "my unsent answer" } } });
+    const r = reconstructInterviewState({ interviewRow: row, questions: [q(1, true), q(2, true), q(3, false)], meta });
+    expect(r.interview.currentQuestion.dbId).toBe("q3");
+    expect(r.draftAnswer).toBe("my unsent answer");
+  });
+
+  it("drops a draft that was saved against an earlier (now-answered) question", () => {
+    const row = adaptiveRow({ config: { pipeline: "adaptive_turn", max_questions: 4, profile: PROFILE, draft: { questionDbId: "q2", text: "stale draft" } } });
+    const r = reconstructInterviewState({ interviewRow: row, questions: [q(1, true), q(2, true), q(3, false)], meta });
+    expect(r.draftAnswer).toBe("");
+  });
+
+  it("no draft key → draftAnswer is the empty string, never undefined", () => {
+    const r = reconstructInterviewState({ interviewRow: adaptiveRow(), questions: [q(1, false)], meta });
+    expect(r.draftAnswer).toBe("");
+  });
+
+  it("a whitespace-only draft is not restored", () => {
+    const row = adaptiveRow({ config: { pipeline: "adaptive_turn", max_questions: 4, profile: PROFILE, draft: { questionDbId: "q1", text: "   \n  " } } });
+    const r = reconstructInterviewState({ interviewRow: row, questions: [q(1, false)], meta });
+    expect(r.draftAnswer).toBe("");
+  });
+
+  it("needsFinish / not-resumable results still carry draftAnswer:'' (no question to type against)", () => {
+    const finish = reconstructInterviewState({
+      interviewRow: adaptiveRow({ config: { pipeline: "adaptive_turn", max_questions: 2, profile: PROFILE, draft: { questionDbId: "q2", text: "x" } } }),
+      questions: [q(1, true), q(2, true)], meta,
+    });
+    expect(finish.needsFinish).toBe(true);
+    expect(finish.draftAnswer).toBe("");
+    const dead = reconstructInterviewState({ interviewRow: { id: "iv", status: "completed", config: {} }, questions: [], meta });
+    expect(dead.draftAnswer).toBe("");
+  });
 });
 
 describe("reconstructInterviewState — safety / not-resumable", () => {
