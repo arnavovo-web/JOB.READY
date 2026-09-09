@@ -36,9 +36,10 @@ describe("RLS policy-split migration", () => {
   const code = split.sql.replace(/\/\*[\s\S]*?\*\//g, "").replace(/--[^\n]*/g, "");
   const codeLower = code.toLowerCase();
 
-  it("exists, ordered last, additive + idempotent", () => {
+  it("exists, ordered after the analytics migrations, additive + idempotent", () => {
     expect(split.name).toMatch(/^\d{14}_institutional_rls_policy_split\.sql$/);
-    expect(FILES.indexOf(split.name)).toBe(FILES.length - 1);
+    const analyticsIdx = FILES.findIndex((f) => f.includes("institutional_analytics_indexes"));
+    expect(FILES.indexOf(split.name)).toBeGreaterThan(analyticsIdx);
     for (const c of codeLower.match(/create index[^(]*/g) || []) expect(c).toMatch(/if not exists/);
     expect(codeLower).not.toMatch(/drop table|alter table|truncate|delete from|update public\./);
   });

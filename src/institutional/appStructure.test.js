@@ -7,7 +7,7 @@
  * App.cssUtilities guard enforces (applied here to theme.js).
  * ================================================================== */
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -125,8 +125,14 @@ describe("dashboard shell — the six insight sections + setup", () => {
 describe("auth gate", () => {
   it("has a distinct no-access state for a valid account with no institution", () => {
     expect(APP).toMatch(/no-access/);
-    expect(APP).toMatch(/No institutional access/);
+    expect(APP).toMatch(/No workspace linked/);
     expect(APP).toMatch(/getMyInstitutions/);
+  });
+  it("presents the EKI² brand on the sign-in / no-access screens", () => {
+    expect(APP).toContain("EKI_FULL_NAME");
+    expect(APP).toContain("EKI_SHORT");
+    expect(APP).toMatch(/Employability Knowledge Intelligence Interface/);
+    expect(APP).toMatch(/AuthBrandPanel/);
   });
   it("signs in with password against the shared Supabase auth", () => {
     expect(CLIENT).toMatch(/signInWithPassword/);
@@ -152,12 +158,30 @@ describe("k-anonymity is plumbed through the UI", () => {
 });
 
 describe("no parallel student store in the data layer", () => {
-  it("api.js only writes institutional tables, and reads student data only via inst_* RPCs", () => {
+  it("api.js only writes institutional / appointment config tables, and reaches student data only via gated RPCs", () => {
     const fromCalls = [...API.matchAll(/\.from\(["'](\w+)["']\)/g)].map((m) => m[1]);
-    const allowed = new Set(["institutions", "institution_organisations", "cohorts", "cohort_members", "institution_staff"]);
-    for (const t of fromCalls) expect(allowed.has(t)).toBe(true);
-    // any cross-into-student-data call must be an RPC named inst_* / get_my_institutions
-    const rpcs = [...API.matchAll(/\.rpc\(["'](\w+)["']|rpc\(["'](\w+)["']/g)].map((m) => m[1] || m[2]).filter(Boolean);
-    for (const r of rpcs) expect(/^(inst_|get_my_institutions|jr_inst_)/.test(r)).toBe(true);
+    const allowed = new Set([
+      "institutions", "institution_organisations", "cohorts", "cohort_members", "institution_staff",
+      "appointment_slots", // careers availability — RLS: staff, own slots
+    ]);
+    for (const t of fromCalls) expect(allowed.has(t), `unexpected table write: ${t}`).toBe(true);
+    // every RPC is a SECURITY DEFINER function that self-enforces institution-staff /
+    // student-link authorisation — never a raw student table read from the client.
+    const rpcs = [...API.matchAll(/\brpc\(["'](\w+)["']/g)].map((m) => m[1]);
+    const RPC_OK = /^(inst_|get_my_institutions|jr_inst_|inst_reconcile_cohort_members|list_institution_appointments|eki_student_briefing|set_appointment_status|list_appointment_types)$/;
+    for (const r of rpcs) expect(RPC_OK.test(r), `unexpected rpc: ${r}`).toBe(true);
+  });
+  it("the appointment RPCs the client calls are the authorised set (no direct student-table reads)", () => {
+    for (const fn of ["list_institution_appointments", "eki_student_briefing", "set_appointment_status"]) {
+      expect(API).toContain(fn);
+    }
+    // the eki_student_briefing SQL double-gates: staff of the institution AND the
+    // student is a current cohort member of it
+    const MIG = readFileSync(join(HERE, "..", "..", "supabase", "migrations",
+      readdirSync(join(HERE, "..", "..", "supabase", "migrations")).find((f) => /careers_appointments\.sql$/.test(f))), "utf8");
+    const briefing = MIG.slice(MIG.indexOf("function public.eki_student_briefing"));
+    expect(briefing).toMatch(/jr_inst_role\(v_inst\) is null/);
+    expect(briefing).toMatch(/cohort_members cm[\s\S]*?student_id = v_student/);
+    expect(briefing).not.toMatch(/answer_text|transcript/i);
   });
 });

@@ -136,6 +136,10 @@ import { reconstructInterviewState, sortResumableInterviews, summariseResumable,
 import { PRIVACY_POLICY } from "./legal/privacyPolicy";
 import { TERMS_OF_SERVICE } from "./legal/termsOfService";
 import { formatLegalDate, LEGAL_CONTACT } from "./legal/legalContact";
+// Careers appointments (student booking → university careers team via EKI²).
+// Self-contained screen; loads its own data on mount through the shared
+// browser Supabase client. See supabase/migrations/20260909180000_careers_appointments.sql.
+import CareersAppointmentsScreen from "./careersAppointments.jsx";
 // Speech-to-text (voice interview answers) — pure helpers only; the browser
 // Web Speech API wrapper hook `useSpeechToText` lives in this file.
 import {
@@ -4632,7 +4636,7 @@ function NavBar({ screen, setScreen, user, classroomNeedsWorkCount, onSignOut, o
   useEffect(() => { setMenuOpen(false); }, [screen]);
 
   const links = user
-    ? [{ label: "Dashboard", to: "dashboard" }, { label: "Applications", to: "applications" }, { label: "Classroom", to: "classroom" }, { label: "Assessment Centre", to: "ac_home" }, { label: "Progress", to: "progress" }]
+    ? [{ label: "Dashboard", to: "dashboard" }, { label: "Applications", to: "applications" }, { label: "Classroom", to: "classroom" }, { label: "Assessment Centre", to: "ac_home" }, { label: "Progress", to: "progress" }, { label: "Careers support", to: "careers" }]
     : [{ label: "How it works", to: "how" }, { label: "Pricing", to: "pricing" }];
 
   return (
@@ -8621,7 +8625,9 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
   /* ---------------- DERIVED VALUES ---------------- */
   const showNav = ["landing", "how", "universities", "pricing", "login", "privacy", "terms", "dashboard", "applications", "application", "application_form", "create", "create_choose", "resume_choice", "invitation_paste", "invitation_review", "preview", "progress", "report", "report_view", "classroom", "lesson", "ac_home", "ac_exercise", "ac_scorecard", "ac_attempt_view",
     // Phase B — engagement features
-    "quick_practice_setup", "challenge_question", "challenge_feedback"].includes(screen);
+    "quick_practice_setup", "challenge_question", "challenge_feedback",
+    // Careers appointments (student ↔ university careers team via EKI²)
+    "careers"].includes(screen);
 
   // Phase 30: open a legal page, remembering where to return to. Legal pages are
   // public (no auth guard) and reachable from the landing page, the auth screens
@@ -11020,6 +11026,15 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
             <Btn variant="secondary" onClick={() => setScreen(historyBackScreen)}>Back</Btn>
           </div>
         </div>
+      )}
+
+      {/* ---------------- CAREERS APPOINTMENTS (student ↔ university careers team) ---------------- */}
+      {screen === "careers" && user && (
+        <CareersAppointmentsScreen
+          user={user}
+          applications={applications}
+          onBack={() => setScreen("dashboard")}
+        />
       )}
 
       {/* ---------------- PROGRESS (+ Interview DNA + Interview Memory) ---------------- */}

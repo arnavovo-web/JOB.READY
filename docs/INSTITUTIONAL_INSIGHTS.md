@@ -1,11 +1,20 @@
-# JOB.READY — Institutional Insights
+# JOB.READY — EKI² (Employability Knowledge Intelligence Interface)
 
-A B2B product layer that gives universities and student organisations **aggregated,
-k-anonymised employability intelligence** derived from the existing JOB.READY
-student interview data. It is a *separate front-end tree* mounted at
-`/institutional`; it shares the Supabase project and the design language with the
-student app and **nothing else**. It creates **no parallel student / application /
-interview store** — every number is computed from the existing tables.
+**EKI²** ("EKI squared") is the institutional-facing product: the *Employability
+Knowledge Intelligence Interface* for university careers and employability teams,
+powered by JOB.READY student data. It gives them **aggregated, k-anonymised
+employability intelligence** derived from the existing JOB.READY interview
+practice, plus a **Careers Appointments** workflow that turns that intelligence
+into targeted 1:1 support.
+
+It is a *separate front-end tree* mounted at `/institutional`; it shares the
+Supabase project and the design language with the student app and **nothing
+else**. It creates **no parallel student / application / interview store** — every
+number is computed from the existing tables. The normal student-facing JOB.READY
+branding is unchanged.
+
+`DATA → INSIGHT → HUMAN INTERVENTION` — JOB.READY collects the practice data, EKI²
+finds the patterns, the careers team acts on them; Appointments connects the two.
 
 ## Shape
 
@@ -87,6 +96,46 @@ Documented aggregation rules (baked into the SQL, echoed in each envelope):
 yields a single neutral *"not enough data"* finding — asserted by
 `insightsNoFabrication.test.js` across every deriver and every broken-envelope shape.
 
+## Careers Appointments
+
+Students book time with their university careers team **from the normal JOB.READY
+app** (`Careers support` in the student nav → `screen === "careers"`,
+`src/careersAppointments.jsx`). The adviser sees the booking in **EKI² →
+Appointments** and opens a focused **student intelligence briefing**.
+
+```
+appointment_types   global defaults (institution_id null) + per-institution custom
+appointment_slots   a careers staff member's bookable window (staff_id → profiles)
+                    · no-overlap: EXCLUDE gist(staff_id, tstzrange(starts_at,ends_at))
+appointments        one booked slot ↔ one student (slot_id UNIQUE) + optional application_id
+```
+
+* **Booking** is a SECURITY DEFINER RPC `book_appointment(slot, type, application, comment)`:
+  it locks the slot, re-checks `open` + future, verifies the caller is a linked
+  student of the slot's institution and (if given) owns the application, then flips
+  the slot to `booked` and inserts the appointment — atomically. `cancel_appointment`
+  (student or staff) reopens a future slot; `set_appointment_status` (staff) marks
+  completed / no_show / cancelled.
+* **RLS**: students read only open future slots for institutions they belong to and
+  **only their own** appointments; staff read their institution's slots + appointments
+  and manage their own slots. `appointments` has **no write policy** at all — every
+  state change is an RPC.
+* **`eki_student_briefing(appointment_id)`** — the key RPC. **Double-gated**: the
+  caller must be staff of the appointment's institution **and** the student must be a
+  current linked cohort member of it. Returns: the student's name + cohort(s) *in
+  that institution only*, the appointment + the student's own comment, a concise
+  application overview (company / role / stage / date / practice count — never
+  `jd_profile` or `application_intelligence`), and an **Interview DNA** built from
+  the six controlled evaluation dimensions over that student's completed interviews
+  (strengths / development areas / a repeated-development-area pattern only when
+  ≥2 recent interviews support it / first-vs-last trend / hardest question category).
+  No answer text, no transcript. `src/institutional/appointments.js` shapes it and
+  derives the top-of-page briefing sentences — all literal restatements of the data.
+* Verified by a 15-case live isolation/permission matrix (institution isolation,
+  comment privacy, application-ownership, "student can't call the briefing", cancel
+  reopens the slot) and a functional smoke (book / double-book `slot_taken` /
+  overlap `23P01` / cancel).
+
 ## Deployment
 
 **No new environment variables. No new Edge Functions.** Only database migrations and
@@ -98,6 +147,8 @@ the front-end bundle.
    * `20260909140000_institutional_analytics.sql` — the seven `inst_*` RPCs + taxonomy helpers
    * `20260909160000_institutional_analytics_indexes.sql` — analytics join indexes
    * `20260909170000_institutional_rls_policy_split.sql` — command-scoped write policies + merged read
+   * `20260909180000_careers_appointments.sql` — appointment tables, RLS, 9 RPCs incl. `eki_student_briefing`
+   * `20260909190000_careers_appointments_policy_merge.sql` — one SELECT policy per appointment table (perf)
    All are idempotent (`create ... if not exists`, `create or replace`, `drop policy if
    exists` + recreate) and additive. The live project also carries a few folded-in
    hot-fix migrations in its ledger (`..._can_manage_bool`, `..._pin_helper_search_path`,
@@ -133,6 +184,9 @@ The live project has a demo institution **"Northgate University (demo)"**
 (`slug = northgate-demo`, owner `arnav.ovo@gmail.com`) with two cohorts and **18
 synthetic students** (`profiles.email like '%@northgate-demo.example'`, ~36 interviews
 / 144 evaluations) so the dashboard is populated above the k=5 threshold end to end.
+It also has ~12 demo careers-appointment slots (`appointment_slots.note = 'demo-seed'`)
+with two booked appointments so EKI² → Appointments and the student booking flow are
+populated (removed by the same student delete below).
 
 Remove it entirely with:
 
@@ -154,11 +208,17 @@ delete from public.institutions where slug = 'northgate-demo';
   if institutions grow large.
 * The authenticated dashboard has been verified by render tests + the full RLS/analytics
   battery, but a human visual pass on the assembled screens is still worthwhile.
+* **Appointments v1**: careers staff = any `institution_staff` row (no dedicated
+  careers-adviser role yet); appointment types are seeded globally and can be extended
+  per institution only via SQL (no admin UI yet); no reminders / calendar sync; a slot
+  is a single window (no recurring availability). Architected for all of these.
 
 ## Test surface
 
-`src/institutional/*.test.js` (node env, no DOM — consistent with the rest of the repo):
-`taxonomy`, `analytics`, `insights`, `insightsNoFabrication`, `chartsRender`
-(react-dom/server), `appStructure`, `foundationMigration`, `analyticsMigration`,
-`hardeningMigrations`. Plus the live SQL batteries run during Milestones 2–4 (RLS
-matrix, calculation spot-checks against hand computation, `EXPLAIN`, query timing).
+`src/institutional/*.test.js` + `src/careersAppointments*.test.js` (node env, no DOM —
+consistent with the rest of the repo): `taxonomy`, `analytics`, `insights`,
+`insightsNoFabrication`, `appointments`, `chartsRender` (react-dom/server),
+`appStructure`, `foundationMigration`, `analyticsMigration`, `hardeningMigrations`,
+`careersMigration`, `careersAppointmentsCore`, `careersAppointmentsWiring`. Plus the
+live SQL batteries (RLS/permission matrix, appointment isolation + privacy matrix,
+calculation spot-checks vs hand computation, `EXPLAIN`, query timing).

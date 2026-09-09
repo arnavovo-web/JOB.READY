@@ -215,3 +215,72 @@ async function callAnalytics(fnName, institutionId, filters, metric) {
   }
   return data;
 }
+
+/* ---------- Careers Appointments (EKI² side) -------------------- *
+ * The student-facing half (booking) lives in src/careersAppointments.jsx,
+ * which talks to Supabase through this same client.
+ */
+
+/** The careers-team schedule for an institution in a time window. */
+export async function listInstitutionAppointments(institutionId, { from, to, statuses } = {}) {
+  const data = await rpc("list_institution_appointments", {
+    p_institution_id: institutionId,
+    p_from: from || null,
+    p_to: to || null,
+    p_statuses: statuses && statuses.length ? statuses : null,
+  });
+  return Array.isArray(data) ? data : [];
+}
+
+/** The focused, authorised student intelligence briefing for one appointment. */
+export async function getStudentBriefing(appointmentId) {
+  return rpc("eki_student_briefing", { p_appointment_id: appointmentId });
+}
+
+/** owner/admin/staff: mark an appointment completed / no_show / cancelled. */
+export async function setAppointmentStatus(appointmentId, status) {
+  return rpc("set_appointment_status", { p_appointment_id: appointmentId, p_status: status });
+}
+
+/** Availability the signed-in staff member has published (their own slots). */
+export async function listMySlots(institutionId, userId) {
+  return selectRows("appointment_slots", (q) =>
+    q.eq("institution_id", institutionId).eq("staff_id", userId).order("starts_at", { ascending: true })
+  );
+}
+
+/** owner/admin: every slot in the institution (all advisers). */
+export async function listAllSlots(institutionId) {
+  return selectRows("appointment_slots", (q) =>
+    q.eq("institution_id", institutionId).order("starts_at", { ascending: true })
+  );
+}
+
+export async function listInstitutionAppointmentTypes(institutionId) {
+  const data = await rpc("list_appointment_types", { p_institution_id: institutionId });
+  return Array.isArray(data) ? data : [];
+}
+
+/** Publish an availability slot (RLS: staff, own slots). */
+export async function createSlot(institutionId, userId, { startsAt, endsAt, appointmentTypeId, note }) {
+  const supabase = await getSupabase();
+  const { data, error } = await supabase.from("appointment_slots").insert({
+    institution_id: institutionId,
+    staff_id: userId,
+    appointment_type_id: appointmentTypeId || null,
+    starts_at: startsAt,
+    ends_at: endsAt,
+    note: note || null,
+    created_by: userId,
+  }).select().single();
+  if (error) throw new Error(error.message);
+  return data;
+}
+
+/** Remove an open slot the staff member owns. */
+export async function deleteSlot(slotId) {
+  const supabase = await getSupabase();
+  const { error } = await supabase.from("appointment_slots").delete().eq("id", slotId);
+  if (error) throw new Error(error.message);
+  return { ok: true };
+}

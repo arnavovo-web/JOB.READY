@@ -16,6 +16,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   LayoutDashboard, BarChart3, Radar, Compass, Target, LineChart,
   Users, LogOut, Building2, ChevronDown, ShieldCheck, RefreshCw, Lock,
+  CalendarClock, Clock, ArrowLeft, CheckCircle2, XCircle, Sparkles, Briefcase, MessageSquareText, Plus, Trash2,
 } from "lucide-react";
 import { INSTITUTIONAL_CSS } from "./theme.js";
 import {
@@ -26,6 +27,10 @@ import {
 } from "./supabaseClient.js";
 import * as api from "./api.js";
 import { summariseCohorts, emptyFilters, describeFilters } from "./analytics.js";
+import {
+  shapeBriefing, deriveBriefingSummary, groupAppointmentsByDay, statusMeta,
+  bandTone, bandWord, dateTimeLabel, timeRange, repeatedDevelopmentSentence, trendSentence,
+} from "./appointments.js";
 import {
   deriveOverviewFindings, derivePerformanceFindings, deriveCompetencyFindings,
   deriveCareerFindings, deriveQuestionFindings, deriveImprovementFindings,
@@ -52,6 +57,10 @@ function useInstitutionalStyle() {
   }, []);
 }
 
+/* ---- product identity --------------------------------------- */
+export const EKI_FULL_NAME = "Employability Knowledge Intelligence Interface";
+export const EKI_SHORT = "EKI²";
+
 /* ---- nav model ---------------------------------------------- */
 const NAV = [
   { key: "overview", label: "Overview", icon: LayoutDashboard, group: "insights" },
@@ -60,6 +69,7 @@ const NAV = [
   { key: "career", label: "Career Insights", icon: Compass, group: "insights" },
   { key: "development", label: "Development Areas", icon: Target, group: "insights" },
   { key: "improvement", label: "Improvement", icon: LineChart, group: "insights" },
+  { key: "appointments", label: "Appointments", icon: CalendarClock, group: "work" },
   { key: "cohorts", label: "Cohorts & students", icon: Users, group: "manage" },
 ];
 
@@ -68,6 +78,11 @@ const NAV = [
  * ================================================================= */
 export default function InstitutionalApp() {
   useInstitutionalStyle();
+  useEffect(() => {
+    const prev = document.title;
+    document.title = `${EKI_SHORT} · JOB.READY`;
+    return () => { document.title = prev; };
+  }, []);
 
   const [phase, setPhase] = useState("loading"); // loading | signin | no-access | ready
   const [session, setSession] = useState(null);
@@ -149,56 +164,87 @@ export default function InstitutionalApp() {
 /* =================================================================
  * AUTH SURFACES
  * ================================================================= */
+/** Left-hand identity panel shared by the sign-in and no-access screens. */
+function AuthBrandPanel() {
+  return (
+    <div className="ii-authbrand">
+      <div className="ii-authbrand-inner">
+        <div className="ii-authbrand-kicker">JOB<span style={{ color: "#93b4ff" }}>.</span>READY</div>
+        <h1 className="ii-authbrand-name">{EKI_FULL_NAME}</h1>
+        <div className="ii-authbrand-short" aria-label="E K I squared">{EKI_SHORT}</div>
+        <p className="ii-authbrand-blurb">
+          The institutional interface for university careers and employability teams.
+          Aggregated intelligence from your students' JOB.READY interview practice —
+          and the appointment workflow that turns it into targeted support.
+        </p>
+        <ul className="ii-authbrand-points">
+          <li><Radar size={13} /> Cohort competency &amp; readiness intelligence</li>
+          <li><Target size={13} /> Ranked, evidence-based development areas</li>
+          <li><CalendarClock size={13} /> Careers appointments with a per-student briefing</li>
+        </ul>
+      </div>
+      <div className="ii-authbrand-foot">Access is provisioned per institution by JOB.READY.</div>
+    </div>
+  );
+}
+
 function SignIn({ onSubmit, error }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   return (
-    <div className="ii-authwrap">
-      <form
-        className="ii-authcard ii-fade"
-        onSubmit={async (e) => { e.preventDefault(); setBusy(true); await onSubmit(email.trim(), password); setBusy(false); }}
-      >
-        <div className="ii-brand" style={{ marginBottom: 6 }}>
-          <span className="ii-brand-mark">JR</span>
-          <span>JOB<span style={{ color: "var(--ii-blue)" }}>.</span>READY</span>
-        </div>
-        <p className="ii-brand-sub" style={{ color: "var(--ii-text-faint)", marginBottom: 20 }}>Institutional Insights</p>
-        <h1 className="ii-h2" style={{ marginBottom: 6 }}>Sign in</h1>
-        <p className="ii-text-sm" style={{ marginBottom: 20 }}>
-          Use your JOB.READY staff account. Access is granted per institution by JOB.READY.
-        </p>
-        {error ? <div style={{ marginBottom: 14 }}><Alert tone="error">{error}</Alert></div> : null}
-        <Field label="Work email">
-          <input className="ii-input" type="email" required autoComplete="username"
-            value={email} onChange={(e) => setEmail(e.target.value)} />
-        </Field>
-        <Field label="Password">
-          <input className="ii-input" type="password" required autoComplete="current-password"
-            value={password} onChange={(e) => setPassword(e.target.value)} />
-        </Field>
-        <Btn variant="accent" type="submit" disabled={busy} style={{ width: "100%", marginTop: 4 }}>
-          {busy ? "Signing in…" : "Sign in"}
-        </Btn>
-      </form>
+    <div className="ii-authsplit">
+      <AuthBrandPanel />
+      <div className="ii-authform-wrap">
+        <form
+          className="ii-authform ii-fade"
+          onSubmit={async (e) => { e.preventDefault(); setBusy(true); await onSubmit(email.trim(), password); setBusy(false); }}
+        >
+          <p className="ii-eyebrow" style={{ marginBottom: 6 }}>{EKI_SHORT} — institutional sign in</p>
+          <h2 className="ii-h1" style={{ marginBottom: 8 }}>Sign in to your workspace</h2>
+          <p className="ii-text-sm" style={{ marginBottom: 22 }}>
+            Use the JOB.READY account your institution registered with the careers team.
+          </p>
+          {error ? <div style={{ marginBottom: 14 }}><Alert tone="error">{error}</Alert></div> : null}
+          <Field label="Work email">
+            <input className="ii-input" type="email" required autoComplete="username"
+              placeholder="you@university.ac.uk"
+              value={email} onChange={(e) => setEmail(e.target.value)} />
+          </Field>
+          <Field label="Password">
+            <input className="ii-input" type="password" required autoComplete="current-password"
+              value={password} onChange={(e) => setPassword(e.target.value)} />
+          </Field>
+          <Btn variant="accent" type="submit" disabled={busy} style={{ width: "100%", marginTop: 4 }}>
+            {busy ? "Signing in…" : "Sign in"}
+          </Btn>
+          <p className="ii-text-sm ii-muted" style={{ marginTop: 18 }}>
+            Trouble signing in? Contact your JOB.READY institutional partner.
+          </p>
+        </form>
+      </div>
     </div>
   );
 }
 
 function NoAccess({ email, onSignOut }) {
   return (
-    <div className="ii-authwrap">
-      <div className="ii-authcard ii-fade" style={{ textAlign: "center" }}>
-        <div className="ii-empty-icon" style={{ margin: "0 auto 14px" }}><ShieldCheck size={22} /></div>
-        <h1 className="ii-h2" style={{ marginBottom: 8 }}>No institutional access</h1>
-        <p className="ii-text-sm" style={{ marginBottom: 6 }}>
-          <strong>{email}</strong> is a valid JOB.READY account, but it isn’t linked to any
-          institution’s Insights workspace yet.
-        </p>
-        <p className="ii-text-sm" style={{ marginBottom: 20 }}>
-          Ask your JOB.READY contact to add you as staff for your institution.
-        </p>
-        <Btn variant="ghost" onClick={onSignOut}><LogOut size={14} /> Sign out</Btn>
+    <div className="ii-authsplit">
+      <AuthBrandPanel />
+      <div className="ii-authform-wrap">
+        <div className="ii-authform ii-fade">
+          <div className="ii-empty-icon" style={{ marginBottom: 14 }}><ShieldCheck size={22} /></div>
+          <h2 className="ii-h1" style={{ marginBottom: 8 }}>No workspace linked</h2>
+          <p className="ii-text-sm" style={{ marginBottom: 6 }}>
+            <strong>{email}</strong> is a valid JOB.READY account, but it isn't yet
+            authorised for any institution's {EKI_SHORT} workspace.
+          </p>
+          <p className="ii-text-sm" style={{ marginBottom: 22 }}>
+            Ask your institution's {EKI_SHORT} administrator, or your JOB.READY partner,
+            to add you as a careers-team member.
+          </p>
+          <Btn variant="ghost" onClick={onSignOut}><LogOut size={14} /> Sign out</Btn>
+        </div>
       </div>
     </div>
   );
@@ -255,13 +301,18 @@ function Shell({ institutions, activeInst, onSwitchInstitution, onSignOut, userE
       <aside className="ii-sidebar">
         <div className="ii-brand">
           <span className="ii-brand-mark">JR</span>
-          <div style={{ lineHeight: 1.1 }}>
-            <div>JOB<span style={{ color: "var(--ii-blue)" }}>.</span>READY</div>
-            <div className="ii-brand-sub">Insights</div>
+          <div style={{ lineHeight: 1.15 }}>
+            <div className="ii-brand-eki" aria-label="E K I squared">{EKI_SHORT}</div>
+            <div className="ii-brand-sub">JOB.READY · Employability Intelligence</div>
           </div>
         </div>
         <nav className="ii-nav">
+          <div className="ii-nav-heading">Intelligence</div>
           {NAV.filter((n) => n.group === "insights").map((n) => (
+            <NavLink key={n.key} item={n} active={view === n.key} onClick={() => setView(n.key)} />
+          ))}
+          <div className="ii-nav-heading" style={{ marginTop: 14 }}>Careers work</div>
+          {NAV.filter((n) => n.group === "work").map((n) => (
             <NavLink key={n.key} item={n} active={view === n.key} onClick={() => setView(n.key)} />
           ))}
         </nav>
@@ -281,7 +332,7 @@ function Shell({ institutions, activeInst, onSwitchInstitution, onSignOut, userE
             onSwitch={onSwitchInstitution}
           />
           <div className="ii-row-wrap">
-            {view !== "cohorts" ? (
+            {!["cohorts", "appointments"].includes(view) ? (
               <CohortFilter cohortSummary={cohortSummary} filters={filters} onChange={setFilters} />
             ) : null}
             <span className="ii-text-sm ii-muted" title={userEmail}>{userEmail}</span>
@@ -297,6 +348,7 @@ function Shell({ institutions, activeInst, onSwitchInstitution, onSignOut, userE
           {view === "career" && <CareerView ctx={ctx} />}
           {view === "development" && <DevelopmentView ctx={ctx} />}
           {view === "improvement" && <ImprovementView ctx={ctx} />}
+          {view === "appointments" && <AppointmentsView ctx={ctx} />}
           {view === "cohorts" && <CohortsView ctx={ctx} />}
         </div>
       </div>
@@ -310,6 +362,415 @@ function NavLink({ item, active, onClick }) {
     <button className={`ii-navlink ${active ? "ii-navlink-active" : ""}`} onClick={onClick}>
       <Icon size={16} /> {item.label}
     </button>
+  );
+}
+
+/* =================================================================
+ * APPOINTMENTS  (careers-team schedule + student intelligence briefing)
+ * ================================================================= */
+const APPT_STATUS_FILTERS = [
+  { key: "upcoming", label: "Upcoming", statuses: ["booked"], futureOnly: true },
+  { key: "booked", label: "All booked", statuses: ["booked"] },
+  { key: "completed", label: "Completed", statuses: ["completed"] },
+  { key: "cancelled", label: "Cancelled/missed", statuses: ["cancelled", "no_show"] },
+  { key: "all", label: "Everything", statuses: null },
+];
+
+function AppointmentsView({ ctx }) {
+  const { institutionId, institution, userId } = ctx;
+  const [tab, setTab] = useState("schedule");
+  const [selected, setSelected] = useState(null); // appointment id
+
+  if (selected) {
+    return <AppointmentDetail ctx={ctx} appointmentId={selected} onBack={() => setSelected(null)} />;
+  }
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Careers work"
+        title="Appointments"
+        sub={`Students book careers appointments from JOB.READY. Open one to see a focused, authorised preparation briefing for that student — ${institution?.name || "your institution"} only.`}
+        actions={
+          <div className="ii-row" style={{ gap: 6 }}>
+            <Btn size="sm" variant={tab === "schedule" ? "primary" : "ghost"} onClick={() => setTab("schedule")}>Schedule</Btn>
+            <Btn size="sm" variant={tab === "availability" ? "primary" : "ghost"} onClick={() => setTab("availability")}>My availability</Btn>
+          </div>
+        }
+      />
+      {tab === "schedule"
+        ? <ScheduleTab institutionId={institutionId} onOpen={setSelected} />
+        : <AvailabilityTab institutionId={institutionId} userId={userId} />}
+    </>
+  );
+}
+
+function ScheduleTab({ institutionId, onOpen }) {
+  const [statusKey, setStatusKey] = useState("upcoming");
+  const [state, setState] = useState({ loading: true, rows: [], error: "" });
+
+  const filter = APPT_STATUS_FILTERS.find((f) => f.key === statusKey) || APPT_STATUS_FILTERS[0];
+
+  useEffect(() => {
+    let dead = false;
+    setState({ loading: true, rows: [], error: "" });
+    const from = filter.futureOnly ? new Date(Date.now() - 6 * 3600e3).toISOString() : new Date(Date.now() - 400 * 24 * 3600e3).toISOString();
+    const to = new Date(Date.now() + 120 * 24 * 3600e3).toISOString();
+    api.listInstitutionAppointments(institutionId, { from, to, statuses: filter.statuses })
+      .then((rows) => { if (!dead) setState({ loading: false, rows, error: "" }); })
+      .catch((e) => { if (!dead) setState({ loading: false, rows: [], error: e.message || "Failed to load." }); });
+    return () => { dead = true; };
+  }, [institutionId, statusKey]);
+
+  const groups = useMemo(() => groupAppointmentsByDay(state.rows), [state.rows]);
+
+  return (
+    <>
+      <div className="ii-row-wrap ii-section" style={{ gap: 6 }}>
+        {APPT_STATUS_FILTERS.map((f) => (
+          <button key={f.key} className={`ii-chip ${statusKey === f.key ? "ii-chip-active" : ""}`} onClick={() => setStatusKey(f.key)}>
+            {f.label}
+          </button>
+        ))}
+      </div>
+
+      {state.loading ? <Spinner label="Loading the schedule…" />
+        : state.error ? <Alert tone="error">{state.error}</Alert>
+        : !groups.length ? (
+          <Card><EmptyState title="No appointments here yet">
+            When a student books a careers appointment from JOB.READY it appears here. Publish
+            availability under <strong>My availability</strong> so students can book.
+          </EmptyState></Card>
+        ) : (
+          <div className="ii-appt-days">
+            {groups.map((g) => (
+              <div key={g.key} className="ii-appt-day">
+                <div className="ii-appt-daylabel">{g.label}</div>
+                <div className="ii-appt-list">
+                  {g.items.map((a) => {
+                    const st = statusMeta(a.status);
+                    return (
+                      <button key={a.id} className="ii-appt-row" onClick={() => onOpen(a.id)}>
+                        <span className="ii-appt-time"><Clock size={13} /> {timeRange(a.starts_at, a.ends_at)}</span>
+                        <span className="ii-appt-student">{a.student_name || "Student"}</span>
+                        <span className="ii-appt-type">{a.type_label}</span>
+                        {a.has_application ? <span className="ii-badge ii-badge-info"><Briefcase size={11} /> application</span> : null}
+                        <span className="ii-nav-spacer" />
+                        <span className={`ii-badge ii-badge-${st.tone === "info" ? "info" : st.tone === "good" ? "good" : st.tone === "warn" ? "warn" : "neutral"}`}>{st.label}</span>
+                        <span className="ii-appt-open">Open briefing →</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+    </>
+  );
+}
+
+/* ---- the key screen: student intelligence briefing ------------- */
+function AppointmentDetail({ ctx, appointmentId, onBack }) {
+  const [state, setState] = useState({ loading: true, raw: null, error: "" });
+  const [actionBusy, setActionBusy] = useState("");
+  const [notice, setNotice] = useState("");
+
+  const load = useCallback(() => {
+    setState({ loading: true, raw: null, error: "" });
+    api.getStudentBriefing(appointmentId)
+      .then((raw) => setState({ loading: false, raw, error: "" }))
+      .catch((e) => setState({ loading: false, raw: null, error: e.message || "Couldn't load this briefing." }));
+  }, [appointmentId]);
+  useEffect(load, [load]);
+
+  const shaped = useMemo(() => shapeBriefing(state.raw), [state.raw]);
+  const summary = useMemo(() => deriveBriefingSummary(shaped), [shaped]);
+
+  async function act(status) {
+    setActionBusy(status); setNotice("");
+    try {
+      await api.setAppointmentStatus(appointmentId, status);
+      setNotice(`Marked ${statusMeta(status).label.toLowerCase()}.`);
+      load();
+    } catch (e) { setNotice(e.message || "Couldn't update."); }
+    setActionBusy("");
+  }
+
+  return (
+    <>
+      <button className="ii-btn ii-btn-ghost ii-btn-sm" style={{ marginBottom: 16 }} onClick={onBack}>
+        <ArrowLeft size={13} /> Back to schedule
+      </button>
+
+      {state.loading ? <Spinner label="Preparing the briefing…" />
+        : state.error ? <Alert tone="error">{state.error}</Alert>
+        : !shaped ? <Alert tone="warn">No briefing data.</Alert>
+        : (
+          <>
+            <PageHeader
+              eyebrow="Appointment briefing"
+              title={shaped.student.name || "Student briefing"}
+              sub={`${shaped.appointment.typeLabel}${shaped.appointment.startsAt ? ` · ${dateTimeLabel(shaped.appointment.startsAt)}` : ""}`}
+            />
+            {notice ? <div style={{ marginBottom: 14 }}><Alert tone="info">{notice}</Alert></div> : null}
+
+            <BriefingSummaryCard summary={summary} shaped={shaped} />
+
+            <div className="ii-grid ii-grid-2 ii-section">
+              <StudentOverviewCard shaped={shaped} />
+              <ApplicationCard app={shaped.application} />
+            </div>
+
+            <InterviewDnaCard dna={shaped.dna} target={shaped.target} />
+
+            <PatternsCard shaped={shaped} />
+
+            <Card className="ii-section">
+              <SectionTitle hint="does not notify the student">Mark this appointment</SectionTitle>
+              <div className="ii-row-wrap" style={{ gap: 8 }}>
+                <Btn size="sm" variant="ghost" disabled={actionBusy} onClick={() => act("completed")}><CheckCircle2 size={13} /> Completed</Btn>
+                <Btn size="sm" variant="ghost" disabled={actionBusy} onClick={() => act("no_show")}><XCircle size={13} /> No-show</Btn>
+                <Btn size="sm" variant="ghost" disabled={actionBusy} onClick={() => act("cancelled")}>Cancel appointment</Btn>
+              </div>
+            </Card>
+
+            <p className="ii-anon-note">
+              <Lock size={11} /> Authorised individual briefing. Derived from this student's JOB.READY
+              interview practice and their own appointment note — no transcripts, nothing from other institutions.
+            </p>
+          </>
+        )}
+    </>
+  );
+}
+
+function BriefingSummaryCard({ summary, shaped }) {
+  return (
+    <div className="ii-briefing ii-section">
+      <div className="ii-briefing-head"><Sparkles size={14} /> Briefing</div>
+      <div className="ii-briefing-grid">
+        <BriefingRow label="Primary development area"
+          value={summary.primaryDevelopmentArea
+            ? `${summary.primaryDevelopmentArea.label} — ${summary.primaryDevelopmentArea.mean} (below ${summary.primaryDevelopmentArea.target})`
+            : (summary.hasData ? "None below target" : "Not enough interview data yet")}
+          tone={summary.primaryDevelopmentArea ? "bad" : "neutral"} />
+        <BriefingRow label="Strongest area"
+          value={summary.strongestArea ? `${summary.strongestArea.label} — ${summary.strongestArea.mean}` : "—"}
+          tone={summary.strongestArea ? "good" : "neutral"} />
+        <BriefingRow label="Relevant application"
+          value={summary.relevantApplication
+            ? [summary.relevantApplication.company, summary.relevantApplication.role].filter(Boolean).join(" — ")
+            : "No specific application selected"} />
+        <BriefingRow label="Student's reason for the appointment"
+          value={summary.studentReason || "— (none given)"} wide />
+      </div>
+      {summary.repeatedConcern ? (
+        <div className="ii-briefing-flag"><Target size={12} /> Repeated concern: {summary.repeatedConcern} has been below target across recent interviews.</div>
+      ) : null}
+    </div>
+  );
+}
+function BriefingRow({ label, value, tone, wide }) {
+  return (
+    <div className={`ii-briefing-cell ${wide ? "ii-briefing-cell-wide" : ""}`}>
+      <span className="ii-briefing-label">{label}</span>
+      <span className={`ii-briefing-value ${tone === "bad" ? "ii-tone-bad" : tone === "good" ? "ii-tone-good" : ""}`}>{value}</span>
+    </div>
+  );
+}
+
+function StudentOverviewCard({ shaped }) {
+  const s = shaped.student, a = shaped.appointment;
+  return (
+    <Card>
+      <SectionTitle>Student overview</SectionTitle>
+      <dl className="ii-kv">
+        <div><dt>Name</dt><dd>{s.name || "—"}</dd></div>
+        <div><dt>Institution</dt><dd>{s.institution || "—"}</dd></div>
+        <div><dt>Cohort</dt><dd>{s.cohorts.length ? s.cohorts.join(", ") : "—"}</dd></div>
+        <div><dt>Appointment</dt><dd>{a.typeLabel}</dd></div>
+        <div><dt>When</dt><dd>{a.startsAt ? `${dateTimeLabel(a.startsAt)}${a.endsAt ? `–${timeRange(a.startsAt, a.endsAt).split(" – ")[1] || ""}` : ""}` : "—"}</dd></div>
+        <div><dt>Status</dt><dd><span className={`ii-badge ii-badge-${statusMeta(a.status).tone === "info" ? "info" : statusMeta(a.status).tone === "good" ? "good" : "neutral"}`}>{statusMeta(a.status).label}</span></dd></div>
+      </dl>
+      {a.comment ? (
+        <div className="ii-quote"><MessageSquareText size={13} /> <span>{a.comment}</span></div>
+      ) : null}
+    </Card>
+  );
+}
+
+function ApplicationCard({ app }) {
+  return (
+    <Card>
+      <SectionTitle>Application</SectionTitle>
+      {!app ? (
+        <p className="ii-text-sm ii-muted">No specific application selected for this appointment.</p>
+      ) : (
+        <dl className="ii-kv">
+          <div><dt>Company</dt><dd>{app.company || "—"}</dd></div>
+          <div><dt>Role</dt><dd>{app.role || "—"}</dd></div>
+          <div><dt>Stage</dt><dd>{app.stage || "—"}</dd></div>
+          <div><dt>Interview date</dt><dd>{app.interviewDate ? dateTimeLabel(app.interviewDate).split(" · ")[0] : "—"}</dd></div>
+          <div><dt>Practice interviews</dt><dd>{app.practiceInterviews} completed for this application</dd></div>
+        </dl>
+      )}
+    </Card>
+  );
+}
+
+function InterviewDnaCard({ dna, target }) {
+  return (
+    <Card className="ii-section">
+      <SectionTitle hint={dna.nInterviews ? `${dna.nInterviews} completed interview${dna.nInterviews === 1 ? "" : "s"} · overall ${dna.overallMean ?? "—"}` : null}>
+        Interview DNA
+      </SectionTitle>
+      {!dna.hasEnoughData ? (
+        <p className="ii-text-sm ii-muted">This student has not completed enough JOB.READY interviews to build an Interview DNA yet.</p>
+      ) : (
+        <div className="ii-grid ii-grid-2" style={{ gap: 16 }}>
+          <div>
+            <div className="ii-eyebrow" style={{ color: "var(--ii-good)", marginBottom: 8 }}>Strengths</div>
+            {dna.strengths.length ? dna.strengths.map((x) => (
+              <div key={x.key} className="ii-dna-line"><span>{x.label}</span><span className="ii-badge ii-badge-good">{x.mean} · strong</span></div>
+            )) : <p className="ii-text-sm ii-muted">No dimension is at target yet.</p>}
+          </div>
+          <div>
+            <div className="ii-eyebrow" style={{ color: "var(--ii-bad)", marginBottom: 8 }}>Development areas</div>
+            {dna.development.length ? dna.development.map((x) => (
+              <div key={x.key} className="ii-dna-line"><span>{x.label}</span><span className="ii-badge ii-badge-bad">{x.mean} · below {target}</span></div>
+            )) : <p className="ii-text-sm ii-muted">Every dimension is at or above target.</p>}
+          </div>
+        </div>
+      )}
+      {dna.hasEnoughData ? (
+        <div style={{ marginTop: 14 }}>
+          <div className="ii-eyebrow" style={{ marginBottom: 8 }}>All six dimensions</div>
+          <ScoreBars target={target} rows={dna.dimensions.map((d) => ({
+            key: d.key, label: d.label, mean: d.mean, suppressed: false, n_students: 1, min_n: MIN_COHORT_N,
+          }))} />
+        </div>
+      ) : null}
+    </Card>
+  );
+}
+
+function PatternsCard({ shaped }) {
+  const repeated = repeatedDevelopmentSentence(shaped);
+  const trend = trendSentence(shaped);
+  const hard = shaped.patterns.hardestCategory;
+  if (!repeated && !trend && !hard) return null;
+  return (
+    <Card className="ii-section">
+      <SectionTitle hint="patterns, not individual results">What the pattern says</SectionTitle>
+      <ul className="ii-pattern-list">
+        {repeated ? <li className="ii-pattern ii-pattern-watch"><Target size={13} /> <strong>Repeated development area.</strong> {repeated}</li> : null}
+        {trend ? <li className="ii-pattern"><LineChart size={13} /> <strong>Trend.</strong> {trend}</li> : null}
+        {hard ? <li className="ii-pattern"><Radar size={13} /> <strong>Hardest question type.</strong> {hard.label} questions average {hard.mean} for this student.</li> : null}
+      </ul>
+    </Card>
+  );
+}
+
+/* ---- availability (staff publishes bookable slots) ------------- */
+function AvailabilityTab({ institutionId, userId }) {
+  const [state, setState] = useState({ loading: true, slots: [], types: [], error: "" });
+  const [busy, setBusy] = useState("");
+  const [notice, setNotice] = useState("");
+  const [form, setForm] = useState({ date: "", start: "", end: "", typeId: "" });
+
+  const load = useCallback(() => {
+    setState((s) => ({ ...s, loading: true, error: "" }));
+    Promise.all([api.listMySlots(institutionId, userId), api.listInstitutionAppointmentTypes(institutionId)])
+      .then(([slots, types]) => setState({ loading: false, slots, types, error: "" }))
+      .catch((e) => setState({ loading: false, slots: [], types: [], error: e.message || "Couldn't load availability." }));
+  }, [institutionId, userId]);
+  useEffect(load, [load]);
+
+  async function addSlot(e) {
+    e.preventDefault();
+    if (!form.date || !form.start || !form.end) return;
+    const startsAt = new Date(`${form.date}T${form.start}`);
+    const endsAt = new Date(`${form.date}T${form.end}`);
+    if (!(endsAt > startsAt)) { setNotice("End time must be after the start time."); return; }
+    if (startsAt.getTime() <= Date.now()) { setNotice("Choose a time in the future."); return; }
+    setBusy("add"); setNotice("");
+    try {
+      await api.createSlot(institutionId, userId, {
+        startsAt: startsAt.toISOString(), endsAt: endsAt.toISOString(),
+        appointmentTypeId: form.typeId || null,
+      });
+      setForm({ date: "", start: "", end: "", typeId: "" });
+      setNotice("Slot published.");
+      load();
+    } catch (e) {
+      setNotice(/exclusion|overlap|23P01/i.test(e.message) ? "That overlaps another slot you've published." : (e.message || "Couldn't publish the slot."));
+    }
+    setBusy("");
+  }
+  async function removeSlot(id) {
+    setBusy(id); setNotice("");
+    try { await api.deleteSlot(id); load(); }
+    catch (e) { setNotice(e.message || "Couldn't remove that slot."); }
+    setBusy("");
+  }
+
+  const now = Date.now();
+  const upcoming = (state.slots || []).filter((s) => new Date(s.starts_at).getTime() > now);
+
+  return (
+    <>
+      {notice ? <div style={{ marginBottom: 14 }}><Alert tone="info">{notice}</Alert></div> : null}
+      {state.error ? <Alert tone="error">{state.error}</Alert> : null}
+
+      <Card className="ii-section">
+        <SectionTitle>Publish a slot</SectionTitle>
+        <form onSubmit={addSlot} className="ii-row-wrap" style={{ gap: 12, alignItems: "flex-end" }}>
+          <label style={{ display: "block" }}><span className="ii-label">Date</span>
+            <input className="ii-input" type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} /></label>
+          <label style={{ display: "block" }}><span className="ii-label">Start</span>
+            <input className="ii-input" type="time" value={form.start} onChange={(e) => setForm({ ...form, start: e.target.value })} /></label>
+          <label style={{ display: "block" }}><span className="ii-label">End</span>
+            <input className="ii-input" type="time" value={form.end} onChange={(e) => setForm({ ...form, end: e.target.value })} /></label>
+          <label style={{ display: "block", minWidth: 190 }}><span className="ii-label">Appointment type</span>
+            <select className="ii-input ii-select" value={form.typeId} onChange={(e) => setForm({ ...form, typeId: e.target.value })}>
+              <option value="">Any type</option>
+              {state.types.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+            </select></label>
+          <Btn variant="accent" type="submit" disabled={busy === "add"}><Plus size={13} /> {busy === "add" ? "Publishing…" : "Publish"}</Btn>
+        </form>
+        <p className="ii-text-sm ii-muted" style={{ marginTop: 10 }}>
+          Students in your institution's cohorts can book any open slot. Slots you publish can't overlap each other.
+        </p>
+      </Card>
+
+      <Card>
+        <SectionTitle hint={`${upcoming.length} upcoming`}>Your published slots</SectionTitle>
+        {state.loading ? <Spinner />
+          : !upcoming.length ? <EmptyState title="No upcoming slots">Publish one above so students can book time with you.</EmptyState>
+          : (
+            <div className="ii-appt-list">
+              {upcoming.map((s) => {
+                const t = state.types.find((x) => x.id === s.appointment_type_id);
+                const st = statusMeta(s.status === "open" ? "booked" : s.status);
+                return (
+                  <div key={s.id} className="ii-appt-row" style={{ cursor: "default" }}>
+                    <span className="ii-appt-time"><Clock size={13} /> {dateTimeLabel(s.starts_at)} · {timeRange(s.starts_at, s.ends_at)}</span>
+                    <span className="ii-appt-type">{t ? t.label : "Any type"}</span>
+                    <span className="ii-nav-spacer" />
+                    <span className={`ii-badge ii-badge-${s.status === "booked" ? "info" : s.status === "open" ? "good" : "neutral"}`}>
+                      {s.status === "open" ? "Open" : s.status === "booked" ? "Booked" : s.status}
+                    </span>
+                    {s.status === "open" ? (
+                      <button className="ii-btn ii-btn-ghost ii-btn-sm" disabled={busy === s.id} onClick={() => removeSlot(s.id)}><Trash2 size={12} /></button>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+      </Card>
+    </>
   );
 }
 

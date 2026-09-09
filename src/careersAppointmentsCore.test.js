@@ -1,0 +1,99 @@
+import { describe, it, expect } from "vitest";
+import {
+  slotsForType, groupSlotsByDay, canCancel, splitAppointments,
+  canAdvance, bookingArgs, BOOKING_STEPS, studentStatusMeta,
+  fmtTimeRange, fmtDayLong,
+} from "./careersAppointmentsCore.js";
+
+const future = (h) => new Date(Date.now() + h * 3600e3).toISOString();
+const past = (h) => new Date(Date.now() - h * 3600e3).toISOString();
+
+const SLOTS = [
+  { slot_id: "a", type_key: "interview_prep", starts_at: future(24), ends_at: future(24.5), staff_name: "A. Adviser" },
+  { slot_id: "b", type_key: null, starts_at: future(25), ends_at: future(25.5), staff_name: "B. Adviser" },
+  { slot_id: "c", type_key: "cv_review", starts_at: future(48), ends_at: future(48.5) },
+];
+
+describe("slotsForType", () => {
+  it("a typed slot only matches its own type; a null-type slot matches everything", () => {
+    expect(slotsForType(SLOTS, "interview_prep").map((s) => s.slot_id)).toEqual(["a", "b"]);
+    expect(slotsForType(SLOTS, "cv_review").map((s) => s.slot_id)).toEqual(["b", "c"]);
+    expect(slotsForType(SLOTS, "career_guidance").map((s) => s.slot_id)).toEqual(["b"]);
+  });
+  it("no type chosen -> only the any-type slots", () => {
+    expect(slotsForType(SLOTS, "").map((s) => s.slot_id)).toEqual(["b"]);
+  });
+  it("safe on junk", () => {
+    expect(slotsForType(null, "x")).toEqual([]);
+  });
+});
+
+describe("groupSlotsByDay", () => {
+  it("groups + sorts by day then time", () => {
+    const g = groupSlotsByDay(SLOTS);
+    expect(g.length).toBe(2);
+    expect(g[0].slots.map((s) => s.slot_id)).toEqual(["a", "b"]);
+    expect(g[1].slots.map((s) => s.slot_id)).toEqual(["c"]);
+    expect(g[0].label).toMatch(/\w+ \d+ \w+ \d{4}/);
+  });
+});
+
+describe("canCancel", () => {
+  it("only a booked, still-future appointment", () => {
+    expect(canCancel({ status: "booked", starts_at: future(2) })).toBe(true);
+    expect(canCancel({ status: "booked", starts_at: past(2) })).toBe(false);
+    expect(canCancel({ status: "completed", starts_at: future(2) })).toBe(false);
+    expect(canCancel({ status: "cancelled", starts_at: future(2) })).toBe(false);
+    expect(canCancel(null)).toBe(false);
+  });
+});
+
+describe("splitAppointments", () => {
+  it("upcoming = future booked; everything else is past", () => {
+    const list = [
+      { id: 1, status: "booked", starts_at: future(10) },
+      { id: 2, status: "booked", starts_at: past(10) },
+      { id: 3, status: "completed", starts_at: past(5) },
+      { id: 4, status: "cancelled", starts_at: future(5) },
+    ];
+    const { upcoming, past: p } = splitAppointments(list);
+    expect(upcoming.map((a) => a.id)).toEqual([1]);
+    expect(p.map((a) => a.id).sort()).toEqual([2, 3, 4]);
+  });
+});
+
+describe("booking wizard guard", () => {
+  it("step order", () => {
+    expect(BOOKING_STEPS).toEqual(["type", "slot", "details", "review"]);
+  });
+  it("type step needs a type; slot step needs a slot", () => {
+    expect(canAdvance("type", {}).ok).toBe(false);
+    expect(canAdvance("type", { typeKey: "cv_review" }).ok).toBe(true);
+    expect(canAdvance("slot", { typeKey: "cv_review" }).ok).toBe(false);
+    expect(canAdvance("slot", { typeKey: "cv_review", slotId: "c" }).ok).toBe(true);
+  });
+  it("details step rejects an over-long comment, else passes", () => {
+    expect(canAdvance("details", { comment: "x".repeat(2001) }).ok).toBe(false);
+    expect(canAdvance("details", { comment: "short" }).ok).toBe(true);
+    expect(canAdvance("details", {}).ok).toBe(true);
+  });
+  it("bookingArgs maps a completed draft to RPC params, trimming / nulling empties", () => {
+    expect(bookingArgs({ slotId: "s1", typeId: "t1", applicationId: "app1", comment: "  hi  " }))
+      .toEqual({ p_slot_id: "s1", p_appointment_type_id: "t1", p_application_id: "app1", p_comment: "hi" });
+    expect(bookingArgs({ slotId: "s1", comment: "   " }))
+      .toEqual({ p_slot_id: "s1", p_appointment_type_id: null, p_application_id: null, p_comment: null });
+  });
+});
+
+describe("status + formatting", () => {
+  it("student status labels", () => {
+    expect(studentStatusMeta("booked").label).toBe("Booked");
+    expect(studentStatusMeta("no_show").label).toBe("Missed");
+    expect(studentStatusMeta("weird").label).toBe("weird");
+  });
+  it("time range + long day are deterministic", () => {
+    const s = "2026-03-04T14:00:00.000Z", e = "2026-03-04T14:30:00.000Z";
+    expect(fmtTimeRange(s, e)).toMatch(/^\d{2}:\d{2}–\d{2}:\d{2}$/);
+    expect(fmtDayLong(s)).toMatch(/^\w+ \d+ \w+ 2026$/);
+  });
+});
