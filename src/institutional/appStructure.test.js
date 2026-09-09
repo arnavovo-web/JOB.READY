@@ -54,14 +54,20 @@ describe("design + code isolation from the student monolith", () => {
       expect(decl[1]).not.toContain("}");
     }
   });
-  it("every className referenced in the JSX is defined in theme.js (browser-parseable rule)", () => {
-    const cssStart = THEME.indexOf("`");
-    const css = THEME.slice(cssStart + 1, THEME.lastIndexOf("`")).replace(/\/\*[\s\S]*?\*\//g, "");
+  it("every static className token in the institutional JSX has a rule in theme.js", () => {
+    const css = THEME.slice(THEME.indexOf("`") + 1, THEME.lastIndexOf("`")).replace(/\/\*[\s\S]*?\*\//g, "");
     const defined = new Set([...css.matchAll(/\.([a-zA-Z][\w-]*)\s*\{/g)].map((m) => m[1]));
+    const sources = ["InstitutionalApp.jsx", "ui.jsx", "charts.jsx"].map((f) => read(f)).join("\n");
     const used = new Set();
-    for (const m of APP.matchAll(/className=(?:"([^"]*)"|\{`([^`]*)`\})/g)) {
-      for (const tok of (m[1] || m[2] || "").split(/\s+/)) {
-        if (tok && tok.startsWith("ii-")) used.add(tok);
+    // className="a b c"  and  className={"a b c"}
+    for (const m of sources.matchAll(/className=(?:"([^"]*)"|\{"([^"]*)"\})/g)) {
+      for (const tok of (m[1] || m[2] || "").split(/\s+/)) if (tok.startsWith("ii-")) used.add(tok);
+    }
+    // literal segments of className={`ii-x ii-y ${expr}-suffix ...`} — a token
+    // ending in "-" is a dynamic-class PREFIX (e.g. `ii-finding-${severity}`), not a real class
+    for (const m of sources.matchAll(/className=\{`([^`]*)`\}/g)) {
+      for (const seg of m[1].split(/\$\{[^}]*\}/)) {
+        for (const tok of seg.split(/\s+/)) if (tok.startsWith("ii-") && !tok.endsWith("-")) used.add(tok);
       }
     }
     const missing = [...used].filter((c) => !defined.has(c)).sort();
@@ -83,12 +89,35 @@ describe("dashboard shell — the six insight sections + setup", () => {
   });
   it("frames the hero question around employability, not usage", () => {
     expect(APP).toMatch(/how prepared are/i);
-    expect(APP).toMatch(/usage is deliberately not the headline/i);
+    expect(APP).toMatch(/usage is shown, but it is not the headline/i);
   });
-  it("routes each analytics section to a real api fetcher (no hard-coded numbers)", () => {
-    for (const fn of ["getPerformance", "getCompetencies", "getCareerInsights", "getDevelopmentAreas", "getImprovement"]) {
-      expect(APP).toMatch(new RegExp(`fetcher=\\{api\\.${fn}\\}`));
+  it("each section view fetches a real inst_* RPC via api (no hard-coded numbers)", () => {
+    for (const [view, fn] of [
+      ["PerformanceView", "getPerformance"], ["CompetenciesView", "getCompetencies"],
+      ["CareerView", "getCareerInsights"], ["DevelopmentView", "getDevelopmentAreas"],
+      ["ImprovementView", "getImprovement"],
+    ]) {
+      expect(APP, `${view} must exist`).toMatch(new RegExp(`function ${view}\\(`));
+      expect(APP, `${view} must call api.${fn}`).toMatch(new RegExp(`useSection\\(api\\.${fn},`));
     }
+    // Overview synthesises across every section
+    expect(APP).toMatch(/useAllSections\(ctx\)/);
+    expect(APP).toMatch(/getAllAnalytics/);
+  });
+  it("renders derived findings, not just raw metrics, in every analytics view", () => {
+    for (const d of [
+      "deriveOverviewFindings", "derivePerformanceFindings", "deriveCompetencyFindings",
+      "deriveCareerFindings", "deriveQuestionFindings", "deriveImprovementFindings", "deriveDevelopmentFindings",
+    ]) {
+      expect(APP).toContain(d);
+    }
+    expect(APP).toMatch(/<FindingList/);
+  });
+  it("shows k-anonymity states honestly — never a fabricated value where a group is suppressed", () => {
+    expect(APP).toMatch(/isLive\(/);
+    expect(APP).toMatch(/<NoData/);
+    expect(APP).toMatch(/SuppressedBlock|Suppressed/);
+    expect(read("charts.jsx")).toMatch(/fewer than \{min \|\| 5\}/);
   });
 });
 

@@ -220,8 +220,9 @@ begin
     'readiness_mix', case when (select count(*) from readiness_roll) < c_min_n then
       jsonb_build_object('suppressed', true, 'reason', 'below_min_n', 'n', (select count(*) from readiness_roll))
     else
-      (select jsonb_build_object('suppressed', false, 'n', count(*), 'buckets',
-        jsonb_agg(jsonb_build_object('key', readiness, 'count', c) order by c desc))
+      (select jsonb_build_object('suppressed', false,
+         'n', (select count(*) from readiness_roll),
+         'buckets', jsonb_agg(jsonb_build_object('key', readiness, 'count', c) order by c desc))
        from (select readiness, count(*) c from readiness_roll group by readiness) q)
     end
   ) into v_result;

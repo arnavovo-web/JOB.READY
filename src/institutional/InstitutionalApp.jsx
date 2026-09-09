@@ -15,10 +15,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   LayoutDashboard, BarChart3, Radar, Compass, Target, LineChart,
-  Users, LogOut, Building2, ChevronDown, ShieldCheck, RefreshCw,
+  Users, LogOut, Building2, ChevronDown, ShieldCheck, RefreshCw, Lock,
 } from "lucide-react";
 import { INSTITUTIONAL_CSS } from "./theme.js";
-import { MIN_COHORT_N } from "./taxonomy.js";
+import {
+  MIN_COHORT_N, dimensionLabel, categoryLabel, roleFamilyLabel, readinessMeta, stageLabel,
+} from "./taxonomy.js";
 import {
   getSession, signInWithPassword, signOut, onAuthStateChange,
 } from "./supabaseClient.js";
@@ -27,9 +29,18 @@ import {
   summariseCohorts, emptyFilters, describeFilters,
 } from "./analytics.js";
 import {
+  deriveOverviewFindings, derivePerformanceFindings, deriveCompetencyFindings,
+  deriveCareerFindings, deriveQuestionFindings, deriveImprovementFindings,
+  deriveDevelopmentFindings, contractIssue, isLive, rankFindings,
+} from "./insights.js";
+import {
   Btn, Card, PageHeader, SectionTitle, Stat, Alert, EmptyState, Spinner,
-  PendingMetric, Field, AnonNote, Badge,
+  Field, AnonNote, Badge,
 } from "./ui.jsx";
+import {
+  FindingList, ScoreBars, DistributionBar, DeltaBars, TrendLine,
+  OpportunityList, SuppressedBlock, KeyStatRow, CalloutPair,
+} from "./charts.jsx";
 
 /* ---- style injection (once) ----------------------------------- */
 let styleInjected = false;
@@ -238,6 +249,7 @@ function Shell({ institutions, activeInst, onSwitchInstitution, onSignOut, userE
     institutionId: activeInst?.institution_id,
     filters, setFilters,
     config, cohortSummary, canManage, userId,
+    scopeLabel: describeFilters(filters, cohortSummary),
     reloadConfig: () => loadConfig(activeInst.institution_id),
   };
 
@@ -283,21 +295,11 @@ function Shell({ institutions, activeInst, onSwitchInstitution, onSignOut, userE
         <div className="ii-content ii-fade" key={view}>
           {config.error ? <div style={{ marginBottom: 16 }}><Alert tone="error">{config.error}</Alert></div> : null}
           {view === "overview" && <OverviewView ctx={ctx} />}
-          {view === "performance" && <AnalyticsView ctx={ctx} title="Performance" eyebrow="Interview performance"
-            sub="How your students actually perform in practice interviews — overall scores, readiness, and how that splits by round, format and cohort."
-            metricName="Interview-performance analytics" fetcher={api.getPerformance} />}
-          {view === "competencies" && <AnalyticsView ctx={ctx} title="Competencies" eyebrow="Competency performance"
-            sub="Cohort strength across the six competency dimensions every answer is scored on, with the strongest and weakest areas surfaced."
-            metricName="Competency analytics" fetcher={api.getCompetencies} />}
-          {view === "career" && <AnalyticsView ctx={ctx} title="Career Insights" eyebrow="Career-path performance"
-            sub="Where students are applying and how prepared they are for each career path, based on the roles behind their practice interviews."
-            metricName="Career-path analytics" fetcher={api.getCareerInsights} />}
-          {view === "development" && <AnalyticsView ctx={ctx} title="Development Areas" eyebrow="Cohort development opportunities"
-            sub="The specific, recurring things holding your students back — ranked by how many students they affect and how far below target they are."
-            metricName="Development-opportunity analytics" fetcher={api.getDevelopmentAreas} />}
-          {view === "improvement" && <AnalyticsView ctx={ctx} title="Improvement" eyebrow="Improvement over repeated practice"
-            sub="Whether students get better as they practise more — measured per student first, then averaged, so it is never a comparison of arbitrary interviews."
-            metricName="Improvement analytics" fetcher={api.getImprovement} />}
+          {view === "performance" && <PerformanceView ctx={ctx} />}
+          {view === "competencies" && <CompetenciesView ctx={ctx} />}
+          {view === "career" && <CareerView ctx={ctx} />}
+          {view === "development" && <DevelopmentView ctx={ctx} />}
+          {view === "improvement" && <ImprovementView ctx={ctx} />}
           {view === "cohorts" && <CohortsView ctx={ctx} />}
         </div>
       </div>
@@ -400,56 +402,246 @@ function DateRange({ filters, onChange }) {
 }
 
 /* =================================================================
- * OVERVIEW
+ * SECTION SCAFFOLDING
+ * ================================================================= */
+
+/** Fetch one analytics section for the current scope; re-runs on filter change. */
+function useSection(fetcher, ctx) {
+  const { institutionId, filters } = ctx;
+  const [state, setState] = useState({ loading: true, env: null, error: "" });
+  useEffect(() => {
+    let dead = false;
+    setState({ loading: true, env: null, error: "" });
+    fetcher(institutionId, { cohortIds: filters.cohortIds, from: filters.from, to: filters.to })
+      .then((env) => { if (!dead) setState({ loading: false, env, error: "" }); })
+      .catch((e) => { if (!dead) setState({ loading: false, env: null, error: e.message || "Failed to load." }); });
+    return () => { dead = true; };
+  }, [institutionId, filters, fetcher]);
+  return state;
+}
+
+/** Fetch every section in one parallel round (Overview synthesis). */
+function useAllSections(ctx) {
+  const { institutionId, filters } = ctx;
+  const [state, setState] = useState({ loading: true, data: null, error: "" });
+  useEffect(() => {
+    let dead = false;
+    setState({ loading: true, data: null, error: "" });
+    api.getAllAnalytics(institutionId, { cohortIds: filters.cohortIds, from: filters.from, to: filters.to })
+      .then((data) => { if (!dead) setState({ loading: false, data, error: "" }); })
+      .catch((e) => { if (!dead) setState({ loading: false, data: null, error: e.message || "Failed to load." }); });
+    return () => { dead = true; };
+  }, [institutionId, filters]);
+  return state;
+}
+
+function SectionHeader({ eyebrow, title, sub, ctx }) {
+  const scope = ctx.scopeLabel;
+  return (
+    <>
+      <PageHeader eyebrow={eyebrow} title={title} sub={sub} />
+      <div className="ii-spread" style={{ marginBottom: 18 }}>
+        <span className="ii-badge ii-badge-neutral"><Users size={12} /> {scope}</span>
+        <span className="ii-anon-note" style={{ marginTop: 0 }}><Lock size={11} /> aggregated · groups under {MIN_COHORT_N} students hidden</span>
+      </div>
+    </>
+  );
+}
+
+function LoadState({ label }) { return <Spinner label={label} />; }
+
+function ContractOrError({ error, env }) {
+  const issue = error || contractIssue(env);
+  if (!issue) return null;
+  return <Alert tone={error ? "error" : "warn"}>{issue}</Alert>;
+}
+
+/** Shown when a section's headline metric is withheld or empty. */
+function NoData({ env, whatFor }) {
+  const s = env?.scope || {};
+  return (
+    <Card>
+      <div className="ii-empty">
+        <div className="ii-empty-icon"><Lock size={22} /></div>
+        <h3 className="ii-h3">Not enough data to report {whatFor}</h3>
+        <p className="ii-text-sm" style={{ maxWidth: 460 }}>
+          Cohort figures need at least {MIN_COHORT_N} students with interview data in the selected
+          scope{s.students_with_data != null ? ` — currently ${s.students_with_data}` : ""}. This protects
+          individual students. Add more students to a cohort, widen the date range, or select more cohorts.
+        </p>
+      </div>
+    </Card>
+  );
+}
+
+/* =================================================================
+ * OVERVIEW  — executive summary across every section
  * ================================================================= */
 function OverviewView({ ctx }) {
-  const { cohortSummary, config, institution, filters } = ctx;
+  const { institution, cohortSummary } = ctx;
+  const { loading, data, error } = useAllSections(ctx);
   const t = cohortSummary.totals;
+
+  const findings = useMemo(() => {
+    if (!data) return [];
+    return rankFindings(deriveOverviewFindings({
+      overview: data.overview, competencies: data.competencies, improvement: data.improvement,
+      developmentAreas: data.developmentAreas, performance: data.performance,
+    }));
+  }, [data]);
+
+  const ov = data?.overview;
+  const perf = ov?.performance;
+  const act = ov?.activity;
 
   return (
     <>
       <PageHeader
         eyebrow="Executive summary"
         title={`How prepared are ${institution?.name || "your"} students for interviews?`}
-        sub="A single view of your students' interview readiness and where preparation support would move the needle. Usage is deliberately not the headline — this answers what practice reveals about employability."
+        sub="What your students' interview practice reveals about their employability — and where support would move the needle. Usage is shown, but it is not the headline."
       />
+      <div className="ii-spread" style={{ marginBottom: 18 }}>
+        <span className="ii-badge ii-badge-neutral"><Users size={12} /> {ctx.scopeLabel}</span>
+        <span className="ii-anon-note" style={{ marginTop: 0 }}><Lock size={11} /> aggregated · groups under {MIN_COHORT_N} students hidden</span>
+      </div>
 
-      {config.loading ? <Spinner label="Loading foundation…" /> : (
+      {loading ? <LoadState label="Building the executive summary…" /> : (
         <>
-          <div className="ii-section ii-grid ii-grid-4">
-            <Stat label="Cohorts" value={t.cohorts} />
-            <Stat label="Linked students" value={t.distinctLinkedStudents}
-              sub={t.pendingInvites ? `${t.pendingInvites} invite${t.pendingInvites > 1 ? "s" : ""} pending` : "all invites linked"} />
-            <Stat label="Organisations / societies" value={config.organisations.length} />
-            <Stat label="Reporting threshold" value={MIN_COHORT_N} unit="min"
-              sub="students per group" />
-          </div>
+          <ContractOrError error={error} env={ov} />
+
+          {perf && !perf.suppressed ? (
+            <KeyStatRow stats={[
+              { label: "Interview-ready", value: `${perf.pct_at_or_above_target ?? 0}%`,
+                sub: `mean ${perf.mean_overall} · median ${perf.median_overall}`,
+                tone: (perf.pct_at_or_above_target ?? 0) >= 50 ? "good" : (perf.pct_at_or_above_target ?? 0) >= 25 ? "warn" : "bad" },
+              { label: "Students with data", value: perf.n_students, sub: `of ${ov?.scope?.students_in_scope ?? "—"} in scope` },
+              { label: "Practised", value: act?.coverage_pct != null ? `${act.coverage_pct}%` : "—",
+                sub: `${act?.completed_interviews ?? 0} interviews` },
+              { label: "Cohorts", value: t.cohorts, sub: t.pendingInvites ? `${t.pendingInvites} invites pending` : "all linked" },
+            ]} />
+          ) : (
+            <KeyStatRow stats={[
+              { label: "Linked students", value: t.distinctLinkedStudents, sub: `${t.pendingInvites} pending` },
+              { label: "Cohorts", value: t.cohorts },
+              { label: "Organisations", value: ctx.config.organisations.length },
+              { label: "Reporting threshold", value: MIN_COHORT_N, unit: "min", sub: "students / group" },
+            ]} />
+          )}
 
           <Card className="ii-section">
-            <SectionTitle hint={describeFilters(filters, cohortSummary)}>Interview readiness</SectionTitle>
-            <EmptyState title="Readiness analytics arrive in Milestone 2">
-              Overall interview performance, readiness distribution, strongest and weakest
-              competencies and cohort development opportunities are computed by the
-              server-side analytics engine (Milestone 2). The institutional foundation —
-              institutions, organisations, cohorts and the link to existing JOB.READY
-              student accounts — is in place now.
-            </EmptyState>
-            <AnonNote min={MIN_COHORT_N} />
+            <SectionTitle hint="derived from this scope's interview data">What the data is telling you</SectionTitle>
+            {findings.length
+              ? <FindingList findings={findings} />
+              : <p className="ii-text-sm ii-muted">
+                  {t.cohorts === 0
+                    ? "No cohorts yet — add students in Cohorts & students to begin."
+                    : `Not enough students with interview data yet (need ${MIN_COHORT_N} per group). Findings appear as cohorts build up practice history.`}
+                </p>}
           </Card>
 
-          {t.cohorts === 0 ? (
-            <Alert tone="info">
-              No cohorts yet. Go to <strong>Cohorts &amp; students</strong> to create your first
-              cohort and add students by email — they connect automatically to their existing
-              JOB.READY accounts.
-            </Alert>
-          ) : t.distinctLinkedStudents < MIN_COHORT_N ? (
-            <Alert tone="warn">
-              Only {t.distinctLinkedStudents} student{t.distinctLinkedStudents === 1 ? "" : "s"} linked
-              so far. Cohort figures stay hidden until at least {MIN_COHORT_N} students in a group have
-              interview data, to protect individual students.
-            </Alert>
+          {data && isLive(data.developmentAreas) && (data.developmentAreas.opportunities || []).length ? (
+            <Card className="ii-section">
+              <SectionTitle hint="ranked by gap × students affected">Where to focus first</SectionTitle>
+              <OpportunityList
+                items={topOpportunities(data.developmentAreas, data.improvement, 3)}
+                target={data.developmentAreas.readiness_target}
+              />
+              <p className="ii-text-sm ii-muted" style={{ marginTop: 12 }}>
+                Full ranking and per-area detail in <strong>Development Areas</strong>.
+              </p>
+            </Card>
           ) : null}
+
+          <p className="ii-anon-note"><Lock size={11} /> Every figure is aggregated across students. Any group with fewer than {MIN_COHORT_N} students with data is hidden.</p>
+        </>
+      )}
+    </>
+  );
+}
+
+function topOpportunities(devEnv, improvementEnv, n) {
+  const improveIdx = {};
+  if (isLive(improvementEnv)) {
+    for (const d of improvementEnv.by_dimension || []) {
+      if (!d.suppressed && d.mean_delta != null) improveIdx[d.key] = d.mean_delta;
+    }
+  }
+  return (devEnv.opportunities || []).slice(0, n).map((o) => {
+    const label = o.kind === "question_category" ? `${categoryLabel(o.key)} questions` : dimensionLabel(o.key);
+    const delta = o.kind === "competency" ? improveIdx[o.key] : undefined;
+    let improvingLabel, improvingTone;
+    if (delta != null) {
+      if (delta >= 3) { improvingLabel = `improving ${delta > 0 ? "+" : ""}${Math.round(delta * 10) / 10}`; improvingTone = "good"; }
+      else if (delta <= -3) { improvingLabel = `declining ${Math.round(delta * 10) / 10}`; improvingTone = "bad"; }
+      else { improvingLabel = "flat with practice"; improvingTone = "neutral"; }
+    }
+    return { ...o, label, improvingLabel, improvingTone };
+  });
+}
+
+/* =================================================================
+ * PERFORMANCE
+ * ================================================================= */
+function PerformanceView({ ctx }) {
+  const { loading, env, error } = useSection(api.getPerformance, ctx);
+  const findings = useMemo(() => (env ? rankFindings(derivePerformanceFindings(env)) : []), [env]);
+
+  return (
+    <>
+      <SectionHeader ctx={ctx} eyebrow="Interview performance"
+        title="Performance"
+        sub="How your students actually perform in practice interviews — overall scores, the spread across the cohort, and how it breaks down by round, format and over time." />
+      {loading ? <LoadState label="Loading performance…" /> : (
+        <>
+          <ContractOrError error={error} env={env} />
+          {env && isLive(env) && env.overall && !env.overall.suppressed ? (
+            <>
+              <FindingList findings={findings} />
+              <KeyStatRow stats={[
+                { label: "Cohort mean", value: env.overall.mean, sub: `median ${env.overall.median}` },
+                { label: "Interview-ready", value: `${env.overall.pct_at_or_above_target}%`,
+                  tone: env.overall.pct_at_or_above_target >= 50 ? "good" : env.overall.pct_at_or_above_target >= 25 ? "warn" : "bad" },
+                { label: "Middle half", value: `${env.overall.p25}–${env.overall.p75}` },
+                { label: "Interviews", value: env.overall.n_interviews, sub: `${env.overall.n_students} students` },
+              ]} />
+
+              <Card className="ii-section">
+                <SectionTitle>Distribution</SectionTitle>
+                <DistributionBar
+                  n={env.distribution?.n}
+                  min={MIN_COHORT_N}
+                  segments={(env.distribution?.buckets || []).map((b) => ({
+                    label: bandLabel(b.label), count: b.count,
+                    tone: b.label === "strong" || b.label === "solid" ? "good" : b.label === "developing" ? "warn" : "bad",
+                  }))}
+                />
+              </Card>
+
+              <div className="ii-grid ii-grid-2 ii-section">
+                <Card>
+                  <SectionTitle>By interview round</SectionTitle>
+                  <ScoreBars target={env.readiness_target} rows={(env.by_stage || []).map((s) => ({
+                    key: s.key, label: stageLabel(s.key), mean: s.mean, suppressed: s.suppressed,
+                    n_students: s.n_students, min_n: MIN_COHORT_N,
+                  }))} />
+                </Card>
+                <Card>
+                  <SectionTitle>By format</SectionTitle>
+                  <ScoreBars target={env.readiness_target} rows={(env.by_format || []).map((s) => ({
+                    key: s.key, label: formatLabel(s.key), mean: s.mean, suppressed: s.suppressed,
+                    n_students: s.n_students, min_n: MIN_COHORT_N,
+                  }))} />
+                </Card>
+              </div>
+
+              <Card className="ii-section">
+                <SectionTitle hint="reportable months only">Trend over time</SectionTitle>
+                <TrendLine points={env.trend_monthly} target={env.readiness_target} />
+              </Card>
+            </>
+          ) : <NoData env={env} whatFor="interview performance" />}
+          <AnonNote min={MIN_COHORT_N} />
         </>
       )}
     </>
@@ -457,37 +649,229 @@ function OverviewView({ ctx }) {
 }
 
 /* =================================================================
- * GENERIC ANALYTICS VIEW (Milestone 2 fills these in)
+ * COMPETENCIES
  * ================================================================= */
-function AnalyticsView({ ctx, title, eyebrow, sub, metricName, fetcher }) {
-  const { institutionId, filters, cohortSummary } = ctx;
-  const [state, setState] = useState({ loading: true, data: null, error: "" });
+function CompetenciesView({ ctx }) {
+  const { loading, env, error } = useSection(api.getCompetencies, ctx);
+  const findings = useMemo(() => (env ? rankFindings(deriveCompetencyFindings(env)) : []), [env]);
 
-  useEffect(() => {
-    let cancelled = false;
-    setState({ loading: true, data: null, error: "" });
-    fetcher(institutionId, {
-      cohortIds: filters.cohortIds, from: filters.from, to: filters.to,
-    }).then((data) => {
-      if (!cancelled) setState({ loading: false, data, error: "" });
-    }).catch((e) => {
-      if (!cancelled) setState({ loading: false, data: null, error: e.message || "Failed to load." });
-    });
-    return () => { cancelled = true; };
-  }, [institutionId, filters, fetcher]);
+  const dims = (env?.dimensions || []);
+  const reportable = dims.filter((d) => !d.suppressed && d.mean != null);
+  const sorted = [...reportable].sort((a, b) => b.mean - a.mean);
+  const strongest = sorted[0];
+  const weakest = sorted[sorted.length - 1];
 
   return (
     <>
-      <PageHeader eyebrow={eyebrow} title={title} sub={sub} />
-      <div className="ii-spread" style={{ marginBottom: 14 }}>
-        <span className="ii-text-sm ii-muted">{describeFilters(filters, cohortSummary)}</span>
-      </div>
-      {state.loading ? <Spinner label={`Loading ${title.toLowerCase()}…`} />
-        : state.error ? <Alert tone="error">{state.error}</Alert>
-        : <PendingMetric what={metricName} />}
-      <div style={{ marginTop: 14 }}><AnonNote min={MIN_COHORT_N} /></div>
+      <SectionHeader ctx={ctx} eyebrow="Competency performance"
+        title="Competencies"
+        sub="Cohort strength across the six competency dimensions every interview answer is scored on. Each bar is the mean of students' own averages, so no one student dominates." />
+      {loading ? <LoadState label="Loading competencies…" /> : (
+        <>
+          <ContractOrError error={error} env={env} />
+          {env && isLive(env) && reportable.length >= 2 ? (
+            <>
+              <FindingList findings={findings} />
+              {strongest && weakest ? (
+                <div className="ii-section">
+                  <CalloutPair
+                    strong={{ label: dimensionLabel(strongest.key),
+                      detail: `Cohort mean ${strongest.mean}${env.competency_average != null ? ` — ${Math.abs(Math.round(strongest.mean - env.competency_average))} pts above the competency average` : ""}.` }}
+                    weak={{ label: dimensionLabel(weakest.key),
+                      detail: `Cohort mean ${weakest.mean} — ${Math.max(0, Math.round((env.readiness_target ?? 70) - weakest.mean))} pts below interview-ready.` }}
+                  />
+                </div>
+              ) : null}
+              <Card className="ii-section">
+                <SectionTitle hint={env.competency_average != null ? `competency average ${env.competency_average}` : null}>
+                  Six-dimension breakdown
+                </SectionTitle>
+                <ScoreBars target={env.readiness_target} rows={dims.map((d) => ({
+                  key: d.key, label: dimensionLabel(d.key), mean: d.mean, suppressed: d.suppressed,
+                  n_students: d.n_students, min_n: MIN_COHORT_N,
+                  deltaLabel: d.delta_vs_competency_avg != null
+                    ? `${d.delta_vs_competency_avg > 0 ? "+" : ""}${d.delta_vs_competency_avg} vs avg` : null,
+                  deltaTone: d.materially_below ? "bad" : d.delta_vs_competency_avg > 0 ? "good" : "neutral",
+                }))} />
+              </Card>
+            </>
+          ) : <NoData env={env} whatFor="competency performance" />}
+          <AnonNote min={MIN_COHORT_N} />
+        </>
+      )}
     </>
   );
+}
+
+/* =================================================================
+ * CAREER INSIGHTS
+ * ================================================================= */
+function CareerView({ ctx }) {
+  const { loading, env, error } = useSection(api.getCareerInsights, ctx);
+  const findings = useMemo(() => (env ? rankFindings(deriveCareerFindings(env)) : []), [env]);
+  const fams = env?.families || [];
+  const reportable = fams.filter((f) => !f.suppressed && f.mean != null);
+
+  return (
+    <>
+      <SectionHeader ctx={ctx} eyebrow="Career-path performance"
+        title="Career Insights"
+        sub="How prepared students are for each career path they are practising for. Paths are inferred from the role behind each interview — a documented keyword heuristic, not a definitive classification." />
+      {loading ? <LoadState label="Loading career insights…" /> : (
+        <>
+          <ContractOrError error={error} env={env} />
+          {env && isLive(env) ? (
+            <>
+              <FindingList findings={findings} emptyLabel="No career path has enough students with interview data to report on yet." />
+              {reportable.length ? (
+                <Card className="ii-section">
+                  <SectionTitle hint={env.cross_family_mean != null ? `average across reportable paths ${env.cross_family_mean}` : null}>
+                    Performance by career path
+                  </SectionTitle>
+                  <ScoreBars target={env.readiness_target} rows={fams.map((f) => ({
+                    key: f.key, label: roleFamilyLabel(f.key), mean: f.mean, suppressed: f.suppressed,
+                    n_students: f.n_students, min_n: MIN_COHORT_N,
+                    deltaLabel: f.delta_vs_cross_family != null
+                      ? `${f.delta_vs_cross_family > 0 ? "+" : ""}${f.delta_vs_cross_family} vs avg` : null,
+                    deltaTone: f.delta_vs_cross_family < 0 ? "bad" : f.delta_vs_cross_family > 0 ? "good" : "neutral",
+                  }))} />
+                  <p className="ii-text-sm ii-muted" style={{ marginTop: 10 }}>
+                    {env.families_reportable} of {env.families_total} career paths meet the {MIN_COHORT_N}-student reporting threshold.
+                  </p>
+                </Card>
+              ) : (
+                <NoData env={env} whatFor="career-path performance" />
+              )}
+            </>
+          ) : <NoData env={env} whatFor="career-path performance" />}
+          <AnonNote min={MIN_COHORT_N} />
+        </>
+      )}
+    </>
+  );
+}
+
+/* =================================================================
+ * DEVELOPMENT AREAS
+ * ================================================================= */
+function DevelopmentView({ ctx }) {
+  const dev = useSection(api.getDevelopmentAreas, ctx);
+  const imp = useSection(api.getImprovement, ctx);
+  const qp = useSection(api.getQuestionPerformance, ctx);
+  const loading = dev.loading || imp.loading;
+  const findings = useMemo(
+    () => (dev.env ? rankFindings(deriveDevelopmentFindings(dev.env, imp.env)) : []),
+    [dev.env, imp.env]
+  );
+  const qFindings = useMemo(() => (qp.env ? rankFindings(deriveQuestionFindings(qp.env)) : []), [qp.env]);
+
+  return (
+    <>
+      <SectionHeader ctx={ctx} eyebrow="Cohort development opportunities"
+        title="Development Areas"
+        sub="The specific, recurring things holding students back — competency dimensions and question types where the cohort is below interview-ready — ranked by how far below and how many students are affected." />
+      {loading ? <LoadState label="Loading development areas…" /> : (
+        <>
+          <ContractOrError error={dev.error} env={dev.env} />
+          {dev.env && isLive(dev.env) && (dev.env.opportunities || []).length ? (
+            <>
+              <FindingList findings={findings} />
+              <Card className="ii-section">
+                <SectionTitle hint={dev.env.method ? "gap × share of students below interview-ready" : null}>
+                  Ranked opportunities
+                </SectionTitle>
+                <OpportunityList
+                  items={topOpportunities(dev.env, imp.env, 20)}
+                  target={dev.env.readiness_target}
+                />
+              </Card>
+              {qFindings.length ? (
+                <Card className="ii-section">
+                  <SectionTitle hint="canonical question categories">Which question types are hardest</SectionTitle>
+                  <FindingList findings={qFindings} compact />
+                  {isLive(qp.env) ? (
+                    <div style={{ marginTop: 12 }}>
+                      <ScoreBars target={qp.env.readiness_target} rows={(qp.env.categories || []).map((c) => ({
+                        key: c.key, label: categoryLabel(c.key), mean: c.mean, suppressed: c.suppressed,
+                        n_students: c.n_students, min_n: MIN_COHORT_N,
+                      }))} />
+                    </div>
+                  ) : null}
+                </Card>
+              ) : null}
+            </>
+          ) : <NoData env={dev.env} whatFor="development opportunities" />}
+          <AnonNote min={MIN_COHORT_N} />
+        </>
+      )}
+    </>
+  );
+}
+
+/* =================================================================
+ * IMPROVEMENT
+ * ================================================================= */
+function ImprovementView({ ctx }) {
+  const { loading, env, error } = useSection(api.getImprovement, ctx);
+  const findings = useMemo(() => (env ? rankFindings(deriveImprovementFindings(env)) : []), [env]);
+  const o = env?.overall;
+  const s = env?.scope || {};
+
+  return (
+    <>
+      <SectionHeader ctx={ctx} eyebrow="Improvement over repeated practice"
+        title="Improvement"
+        sub="Whether students get better as they practise more. Measured per student first — the change from their first interview to their latest — then averaged. It is never a comparison of two arbitrary interviews." />
+      {loading ? <LoadState label="Loading improvement…" /> : (
+        <>
+          <ContractOrError error={error} env={env} />
+          {env && isLive(env) && o && !o.suppressed ? (
+            <>
+              <FindingList findings={findings} />
+              <KeyStatRow stats={[
+                { label: "Avg change (first → latest)", value: `${o.mean_delta > 0 ? "+" : ""}${o.mean_delta}`, unit: "pts",
+                  tone: o.mean_delta >= 3 ? "good" : o.mean_delta <= -3 ? "bad" : "neutral" },
+                { label: "Median change", value: `${o.median_delta > 0 ? "+" : ""}${o.median_delta}`, unit: "pts" },
+                { label: "Improving", value: `${o.pct_improving}%`, tone: o.pct_improving >= 50 ? "good" : "warn" },
+                { label: "Students measured", value: o.n_students, sub: `${s.students_with_repeat_practice} practised repeatedly` },
+              ]} />
+              <Card className="ii-section">
+                <SectionTitle hint="change across repeated practice, per dimension">By competency dimension</SectionTitle>
+                <DeltaBars rows={(env.by_dimension || []).map((d) => ({
+                  key: d.key, label: dimensionLabel(d.key), delta: d.mean_delta, suppressed: d.suppressed,
+                  n_students: d.n_students, min_n: MIN_COHORT_N,
+                }))} />
+              </Card>
+              <p className="ii-text-sm ii-muted">{env.method}</p>
+            </>
+          ) : (
+            <Card>
+              <div className="ii-empty">
+                <div className="ii-empty-icon"><LineChart size={22} /></div>
+                <h3 className="ii-h3">Not enough repeated practice to measure improvement</h3>
+                <p className="ii-text-sm" style={{ maxWidth: 480 }}>
+                  Improvement is measured within each student, across their own interviews.
+                  {" "}{s.students_with_repeat_practice ?? 0} student{(s.students_with_repeat_practice ?? 0) === 1 ? " has" : "s have"} completed
+                  more than one interview in this scope; {MIN_COHORT_N} are needed to report a cohort figure.
+                </p>
+              </div>
+            </Card>
+          )}
+          <AnonNote min={MIN_COHORT_N} />
+        </>
+      )}
+    </>
+  );
+}
+
+function bandLabel(k) {
+  return { strong: "Strong (75+)", solid: "Solid (60–74)", developing: "Developing (45–59)", priority: "Priority (<45)" }[k] || k;
+}
+function formatLabel(k) {
+  return {
+    asynchronous_video: "Async video", live_conversational: "Live conversation",
+    technical: "Technical", unspecified: "Unspecified",
+  }[k] || k;
 }
 
 /* =================================================================

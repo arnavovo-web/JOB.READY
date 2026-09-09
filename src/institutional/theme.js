@@ -136,6 +136,68 @@ export const INSTITUTIONAL_CSS = `
 .ii-spinner{ width:34px; height:34px; border-radius:50%; border:3px solid var(--ii-border); border-top-color:var(--ii-blue); animation:iiSpin .8s linear infinite; }
 .ii-loadwrap{ min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; color:var(--ii-text-dim); font-size:13px; }
 
+/* ---- findings ------------------------------------------------ */
+.ii-findings{ display:flex; flex-direction:column; gap:10px; }
+.ii-finding{ display:flex; gap:12px; align-items:flex-start; padding:13px 15px; border-radius:var(--ii-r-md); border:1px solid var(--ii-border); background:var(--ii-card); }
+.ii-finding-critical{ border-color:#F6C9C9; background:linear-gradient(180deg, var(--ii-bad-bg), var(--ii-card) 60%); }
+.ii-finding-watch{ border-color:#F5D9AE; background:linear-gradient(180deg, var(--ii-warn-bg), var(--ii-card) 60%); }
+.ii-finding-positive{ border-color:#BBEBD9; background:linear-gradient(180deg, var(--ii-good-bg), var(--ii-card) 62%); }
+.ii-finding-neutral{ border-color:var(--ii-border); }
+.ii-finding-tag{ flex-shrink:0; display:inline-flex; align-items:center; gap:4px; font-size:10.5px; font-weight:800; letter-spacing:0.03em; text-transform:uppercase; padding:3px 8px; border-radius:var(--ii-r-pill); margin-top:1px; }
+.ii-finding-head{ font-size:14px; font-weight:700; color:var(--ii-navy); line-height:1.35; }
+.ii-finding-detail{ font-size:12.5px; line-height:1.5; color:var(--ii-text-dim); margin-top:3px; }
+
+/* ---- score bars -------------------------------------------- */
+.ii-bars{ margin-top:4px; }
+.ii-bar-wrap{ flex:1; display:flex; align-items:center; }
+.ii-bar-tail{ min-width:104px; display:flex; align-items:center; justify-content:flex-end; gap:6px; }
+.ii-meter-target{ position:absolute; top:-2px; bottom:-2px; width:2px; background:var(--ii-navy); opacity:0.55; border-radius:2px; }
+.ii-delta{ display:inline-flex; align-items:center; gap:3px; font-size:11px; font-weight:800; padding:2px 6px; border-radius:var(--ii-r-pill); font-variant-numeric:tabular-nums; }
+.ii-delta-good{ background:var(--ii-good-bg); color:var(--ii-good); }
+.ii-delta-bad{ background:var(--ii-bad-bg); color:var(--ii-bad); }
+.ii-delta-neutral{ background:var(--ii-border-soft); color:var(--ii-text-dim); }
+.ii-legend{ display:flex; align-items:center; gap:7px; font-size:11.5px; color:var(--ii-text-faint); margin-top:8px; }
+.ii-legend-target{ display:inline-block; width:2px; height:12px; background:var(--ii-navy); opacity:0.55; }
+
+/* ---- distribution bar ------------------------------------- */
+.ii-distbar{ display:flex; height:26px; border-radius:var(--ii-r-sm); overflow:hidden; background:var(--ii-track); }
+.ii-distbar-seg{ height:100%; min-width:2px; }
+.ii-distlegend{ display:flex; flex-wrap:wrap; gap:14px; margin-top:10px; font-size:12px; color:var(--ii-text-dim); }
+.ii-distlegend-item{ display:inline-flex; align-items:center; gap:6px; }
+.ii-dot{ width:9px; height:9px; border-radius:var(--ii-r-pill); flex-shrink:0; }
+
+/* ---- diverging delta bars -------------------------------- */
+.ii-deltabars{ display:flex; flex-direction:column; gap:9px; }
+.ii-deltarow{ display:flex; align-items:center; gap:12px; }
+.ii-deltatrack{ position:relative; flex:1; height:14px; background:var(--ii-track); border-radius:var(--ii-r-pill); }
+.ii-deltamid{ position:absolute; left:50%; top:-3px; bottom:-3px; width:2px; background:var(--ii-text-faint); }
+.ii-deltafill{ position:absolute; top:0; bottom:0; border-radius:var(--ii-r-pill); }
+.ii-deltafill-up{ background:var(--ii-good); }
+.ii-deltafill-down{ background:var(--ii-bad); }
+
+/* ---- trend ---------------------------------------------- */
+.ii-trend{ width:100%; height:96px; display:block; }
+.ii-trend-area{ fill:rgba(37,99,235,0.10); stroke:none; }
+.ii-trend-line{ fill:none; stroke:var(--ii-blue); stroke-width:2; vector-effect:non-scaling-stroke; }
+.ii-trend-target{ stroke:var(--ii-navy); stroke-opacity:0.35; stroke-width:1; stroke-dasharray:3 3; vector-effect:non-scaling-stroke; }
+.ii-trend-dot{ fill:var(--ii-blue); }
+.ii-trend-axis{ display:flex; justify-content:space-between; font-size:11px; color:var(--ii-text-faint); margin-top:6px; }
+
+/* ---- opportunities ------------------------------------- */
+.ii-opps{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:12px; }
+.ii-opp{ display:flex; gap:14px; align-items:flex-start; }
+.ii-opp-rank{ flex-shrink:0; width:26px; height:26px; border-radius:var(--ii-r-pill); background:var(--ii-navy); color:#fff; font-size:12px; font-weight:800; display:flex; align-items:center; justify-content:center; }
+.ii-opp-body{ flex:1; min-width:0; display:flex; flex-direction:column; gap:6px; }
+.ii-opp-head{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-size:13.5px; color:var(--ii-navy); }
+.ii-opp-meter{ display:flex; align-items:center; gap:10px; }
+.ii-opp-facts{ margin:0; }
+
+/* ---- callouts / suppressed --------------------------- */
+.ii-callout{ border-radius:var(--ii-r-md); border:1px solid var(--ii-border); padding:14px 16px; }
+.ii-callout-good{ border-color:#BBEBD9; background:var(--ii-good-bg); }
+.ii-callout-bad{ border-color:#F6C9C9; background:var(--ii-bad-bg); }
+.ii-suppressed-block{ display:flex; align-items:center; gap:9px; padding:14px 16px; border-radius:var(--ii-r-md); border:1px dashed var(--ii-border); background:var(--ii-bg); color:var(--ii-text-dim); font-size:12.5px; }
+
 @keyframes iiFade{ from{ opacity:0; transform:translateY(6px); } to{ opacity:1; transform:translateY(0); } }
 @keyframes iiSpin{ to{ transform:rotate(360deg); } }
 
