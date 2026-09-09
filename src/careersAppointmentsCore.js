@@ -31,13 +31,40 @@ function dayKey(iso) {
 }
 
 export const STUDENT_STATUS = {
-  booked:    { label: "Booked",    tone: "info" },
-  completed: { label: "Completed", tone: "success" },
-  cancelled: { label: "Cancelled", tone: "neutral" },
-  no_show:   { label: "Missed",    tone: "warning" },
+  invited:   { label: "Invitation", tone: "info" },
+  booked:    { label: "Booked",     tone: "info" },
+  completed: { label: "Completed",  tone: "success" },
+  cancelled: { label: "Cancelled",  tone: "neutral" },
+  declined:  { label: "Declined",   tone: "neutral" },
+  no_show:   { label: "Missed",     tone: "warning" },
 };
 export function studentStatusMeta(s) {
   return STUDENT_STATUS[s] || { label: s || "—", tone: "neutral" };
+}
+
+/** A future, still-pending staff invitation the student can accept or decline. */
+export function canRespondToInvite(appt) {
+  return !!appt && appt.status === "invited" && !!appt.starts_at
+    && asDate(appt.starts_at).getTime() > Date.now();
+}
+
+/** Compact "2h ago" / "3d ago" / date for careers-message timestamps. */
+export function fmtRelative(iso) {
+  if (!iso) return "";
+  const then = asDate(iso).getTime();
+  const mins = Math.floor((Date.now() - then) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 7) return `${days}d ago`;
+  return fmtDayLong(iso);
+}
+
+/** How many of these careers messages are unread. */
+export function unreadCount(messages) {
+  return (messages || []).filter((m) => m && !m.read_at).length;
 }
 
 /**
@@ -70,15 +97,24 @@ export function canCancel(appt) {
   return !!appt && appt.status === "booked" && !!appt.starts_at && asDate(appt.starts_at).getTime() > Date.now();
 }
 
+/**
+ * Three buckets for the student's Careers Support hub:
+ *   invitations — a pending, still-future staff invitation (needs a reply)
+ *   upcoming    — a future booked appointment
+ *   past        — everything else (completed / cancelled / declined / past)
+ */
 export function splitAppointments(list) {
-  const upcoming = [], past = [];
+  const invitations = [], upcoming = [], past = [];
   for (const a of list || []) {
     const future = a.starts_at && asDate(a.starts_at).getTime() > Date.now();
-    (future && a.status === "booked" ? upcoming : past).push(a);
+    if (a.status === "invited" && future) invitations.push(a);
+    else if (a.status === "booked" && future) upcoming.push(a);
+    else past.push(a);
   }
+  invitations.sort((a, b) => String(a.starts_at).localeCompare(String(b.starts_at)));
   upcoming.sort((a, b) => String(a.starts_at).localeCompare(String(b.starts_at)));
   past.sort((a, b) => String(b.starts_at).localeCompare(String(a.starts_at)));
-  return { upcoming, past };
+  return { invitations, upcoming, past };
 }
 
 export const BOOKING_STEPS = ["type", "slot", "details", "review"];

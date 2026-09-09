@@ -14,13 +14,13 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   CalendarClock, ArrowLeft, ArrowRight, Clock, Check, X, MessageSquareText,
-  Building2, User, Briefcase,
+  Building2, User, Briefcase, Mail, BellRing,
 } from "lucide-react";
 import { getSupabase } from "./institutional/supabaseClient.js";
 import {
   BOOKING_STEPS, canAdvance, bookingArgs, slotsForType, groupSlotsByDay,
-  splitAppointments, canCancel, studentStatusMeta, fmtDayLong, fmtTime,
-  fmtTimeRange, fmtDateTime,
+  splitAppointments, canCancel, canRespondToInvite, studentStatusMeta,
+  fmtDayLong, fmtTime, fmtTimeRange, fmtDateTime, fmtRelative, unreadCount,
 } from "./careersAppointmentsCore.js";
 
 async function rpc(name, args) {
@@ -38,6 +38,8 @@ export default function CareersAppointmentsScreen({ user, applications = [], onB
   const [types, setTypes] = useState([]);
   const [slots, setSlots] = useState([]);
   const [mine, setMine] = useState([]);
+  const [messages, setMessages] = useState([]);
+  const [respondBusy, setRespondBusy] = useState("");
 
   const [mode, setMode] = useState("list"); // list | book | confirm
   const [step, setStep] = useState("type");
@@ -50,10 +52,11 @@ export default function CareersAppointmentsScreen({ user, applications = [], onB
   const load = useCallback(async () => {
     setPhase("loading"); setError("");
     try {
-      const [t, av, m] = await Promise.all([
+      const [t, av, m, msg] = await Promise.all([
         rpc("list_appointment_types"),
         rpc("list_careers_availability"),
         rpc("list_my_appointments"),
+        rpc("list_my_careers_messages"),
       ]);
       // de-dupe types by key (an institution's own label wins over the global)
       const byKey = new Map();
@@ -63,6 +66,7 @@ export default function CareersAppointmentsScreen({ user, applications = [], onB
       setTypes([...byKey.values()].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)));
       setSlots(Array.isArray(av) ? av : []);
       setMine(Array.isArray(m) ? m : []);
+      setMessages(Array.isArray(msg) ? msg : []);
       setPhase("ready");
     } catch (e) {
       setError(e.message || "Couldn't load careers appointments.");
@@ -71,8 +75,22 @@ export default function CareersAppointmentsScreen({ user, applications = [], onB
   }, []);
   useEffect(() => { load(); }, [load]);
 
-  const { upcoming, past } = useMemo(() => splitAppointments(mine), [mine]);
+  const { invitations, upcoming, past } = useMemo(() => splitAppointments(mine), [mine]);
   const hasAvailability = slots.length > 0;
+
+  async function respondToInvite(id, accept) {
+    setRespondBusy(id);
+    try {
+      await rpc("respond_to_appointment_invitation", { p_appointment_id: id, p_accept: accept });
+      const m = await rpc("list_my_appointments");
+      setMine(Array.isArray(m) ? m : []);
+    } catch (e) { setError(e.message || "Couldn't respond to the invitation."); }
+    setRespondBusy("");
+  }
+  async function markRead(id) {
+    setMessages((prev) => prev.map((m) => (m.id === id && !m.read_at ? { ...m, read_at: new Date().toISOString() } : m)));
+    try { await rpc("mark_careers_message_read", { p_message_id: id }); } catch { /* best-effort */ }
+  }
 
   function startBooking() {
     setDraft({ typeKey: "", typeId: null, slotId: null, applicationId: "", comment: "" });
@@ -143,8 +161,11 @@ export default function CareersAppointmentsScreen({ user, applications = [], onB
 
       {phase === "ready" && mode === "list" && (
         <ListView
-          upcoming={upcoming} past={past} hasAvailability={hasAvailability}
-          onBook={startBooking} onCancel={cancel} cancelBusy={cancelBusy} error={error}
+          invitations={invitations} upcoming={upcoming} past={past} messages={messages}
+          hasAvailability={hasAvailability}
+          onBook={startBooking} onCancel={cancel} cancelBusy={cancelBusy}
+          onRespond={respondToInvite} respondBusy={respondBusy} onMarkRead={markRead}
+          error={error}
         />
       )}
 
@@ -206,22 +227,25 @@ function AppointmentCard({ a, onCancel, cancelBusy }) {
   );
 }
 
-function ListView({ upcoming, past, hasAvailability, onBook, onCancel, cancelBusy, error }) {
+function ListView({ invitations, upcoming, past, messages, hasAvailability, onBook, onCancel, cancelBusy, onRespond, respondBusy, onMarkRead, error }) {
+  const unread = unreadCount(messages);
+  const nothing = !invitations.length && !upcoming.length && !past.length && !messages.length && !hasAvailability;
+
   return (
     <>
       {error ? <div className="jr-alert jr-alert-error" style={{ marginBottom: 16 }}>{error}</div> : null}
-      <div className="flex items-center gap-2" style={{ justifyContent: "space-between", marginBottom: 16, flexWrap: "wrap" }}>
-        <h3 className="jr-h2">Your appointments</h3>
+      <div className="flex items-center gap-2" style={{ justifyContent: "space-between", marginBottom: 20, flexWrap: "wrap" }}>
+        <h3 className="jr-h2">Careers support</h3>
         <Btn variant="accent" onClick={onBook} disabled={!hasAvailability}>
           <CalendarClock size={14} /> Book an appointment
         </Btn>
       </div>
 
-      {!hasAvailability && !upcoming.length && !past.length ? (
+      {nothing ? (
         <div className="jr-card" style={{ padding: 28 }}>
           <div className="jr-empty">
             <div className="jr-empty-icon"><CalendarClock size={22} /></div>
-            <h3 className="jr-h3">No careers appointments available yet</h3>
+            <h3 className="jr-h3">No careers activity yet</h3>
             <p className="jr-text-sm" style={{ maxWidth: 420 }}>
               Your university hasn't opened any careers appointment slots in JOB.READY yet, or
               you're not linked to a participating careers team. Check back soon.
@@ -230,27 +254,111 @@ function ListView({ upcoming, past, hasAvailability, onBook, onCancel, cancelBus
         </div>
       ) : (
         <>
-          {upcoming.length ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 24 }}>
-              {upcoming.map((a) => <AppointmentCard key={a.id} a={a} onCancel={onCancel} cancelBusy={cancelBusy} />)}
-            </div>
-          ) : (
-            <p className="jr-text-sm" style={{ marginBottom: 24 }}>
-              You have no upcoming appointments.{hasAvailability ? " Use “Book an appointment” to arrange one." : ""}
-            </p>
-          )}
+          {invitations.length ? (
+            <section style={{ marginBottom: 26 }}>
+              <h4 className="jr-h3" style={{ marginBottom: 10, display: "flex", alignItems: "center", gap: 7 }}>
+                <BellRing size={15} /> Action needed
+              </h4>
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                {invitations.map((a) => (
+                  <InvitationCard key={a.id} a={a} onRespond={onRespond} busy={respondBusy === a.id} />
+                ))}
+              </div>
+            </section>
+          ) : null}
+
+          {messages.length ? (
+            <section style={{ marginBottom: 26 }}>
+              <h4 className="jr-h3" style={{ marginBottom: 10, display: "flex", alignItems: "center", gap: 7 }}>
+                <Mail size={15} /> Messages{unread ? <span className="jr-badge jr-badge-info">{unread} new</span> : null}
+              </h4>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {messages.map((m) => <MessageCard key={m.id} m={m} onMarkRead={onMarkRead} />)}
+              </div>
+            </section>
+          ) : null}
+
+          <section style={{ marginBottom: 26 }}>
+            <h4 className="jr-h3" style={{ marginBottom: 10 }}>Upcoming appointments</h4>
+            {upcoming.length ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                {upcoming.map((a) => <AppointmentCard key={a.id} a={a} onCancel={onCancel} cancelBusy={cancelBusy} />)}
+              </div>
+            ) : (
+              <p className="jr-text-sm">
+                You have no upcoming appointments.{hasAvailability ? " Use “Book an appointment” to arrange one." : ""}
+              </p>
+            )}
+          </section>
 
           {past.length ? (
-            <>
-              <h3 className="jr-h3" style={{ marginBottom: 10 }}>Past &amp; cancelled</h3>
+            <section>
+              <h4 className="jr-h3" style={{ marginBottom: 10 }}>Previous support</h4>
               <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                 {past.map((a) => <AppointmentCard key={a.id} a={a} onCancel={onCancel} cancelBusy={cancelBusy} />)}
               </div>
-            </>
+            </section>
           ) : null}
         </>
       )}
     </>
+  );
+}
+
+function InvitationCard({ a, onRespond, busy }) {
+  return (
+    <div className="jr-card" style={{ padding: 16, display: "flex", flexDirection: "column", gap: 9, borderColor: "var(--blue)" }}>
+      <div className="flex items-center gap-2" style={{ justifyContent: "space-between", flexWrap: "wrap" }}>
+        <span style={{ fontWeight: 800, color: "var(--navy)", fontSize: 14 }}>Careers appointment invitation</span>
+        <span className="jr-badge jr-badge-info">Invitation</span>
+      </div>
+      <div style={{ fontWeight: 700, color: "var(--navy)", fontSize: 13.5 }}>{a.type_label}</div>
+      <div className="jr-text-sm" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <Clock size={13} /> {a.starts_at ? `${fmtDateTime(a.starts_at)}${a.ends_at ? `–${fmtTime(a.ends_at)}` : ""}` : "Time to be confirmed"}
+      </div>
+      {a.institution_name ? (
+        <div className="jr-text-sm" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <Building2 size={13} /> {a.institution_name}{a.invited_by_name ? ` · ${a.invited_by_name}` : ""}
+        </div>
+      ) : null}
+      {a.invite_message ? (
+        <div style={{ display: "flex", gap: 7, alignItems: "flex-start", background: "var(--surface-sunken)", borderRadius: "var(--r-sm)", padding: "9px 11px", fontSize: 12.5, color: "var(--text-dim)", lineHeight: 1.5 }}>
+          <MessageSquareText size={13} style={{ flexShrink: 0, marginTop: 1 }} />
+          <span><strong style={{ color: "var(--navy)" }}>Reason from your careers team:</strong> {a.invite_message}</span>
+        </div>
+      ) : null}
+      <div className="flex items-center gap-2" style={{ marginTop: 2 }}>
+        <Btn variant="accent" onClick={() => onRespond(a.id, true)} disabled={busy} style={{ fontSize: 12.5, padding: "7px 13px" }}>
+          <Check size={13} /> {busy ? "…" : "Accept"}
+        </Btn>
+        <Btn onClick={() => onRespond(a.id, false)} disabled={busy} style={{ fontSize: 12.5, padding: "7px 13px" }}>
+          <X size={12} /> Decline
+        </Btn>
+      </div>
+    </div>
+  );
+}
+
+function MessageCard({ m, onMarkRead }) {
+  const unread = !m.read_at;
+  return (
+    <div className="jr-card" style={{ padding: 14, display: "flex", flexDirection: "column", gap: 6, background: unread ? "var(--highlight)" : "#fff" }}
+      onClick={() => unread && onMarkRead(m.id)}>
+      <div className="flex items-center gap-2" style={{ justifyContent: "space-between" }}>
+        <span style={{ fontWeight: 700, color: "var(--navy)", fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}>
+          {unread ? <span style={{ width: 7, height: 7, borderRadius: 999, background: "var(--blue)", display: "inline-block" }} /> : null}
+          {m.sender_name || "Careers Team"}{m.institution_name ? ` · ${m.institution_name}` : ""}
+        </span>
+        <span className="jr-text-sm" style={{ color: "var(--text-faint)" }}>{fmtRelative(m.created_at)}</span>
+      </div>
+      <p className="jr-text-sm" style={{ margin: 0, lineHeight: 1.5, color: "var(--text-dim)" }}>{m.body}</p>
+      {m.related_appointment ? (
+        <div className="jr-text-sm" style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--text-faint)" }}>
+          <CalendarClock size={12} /> Related: {m.related_appointment.type_label}
+          {m.related_appointment.starts_at ? ` · ${fmtDateTime(m.related_appointment.starts_at)}` : ""}
+        </div>
+      ) : null}
+    </div>
   );
 }
 

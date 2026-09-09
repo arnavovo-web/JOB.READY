@@ -177,6 +177,54 @@ export async function getImprovement(institutionId, filters) {
   return callAnalytics("inst_improvement", institutionId, filters, "improvement");
 }
 
+/* ---------- Performance -> intervention workflow -------------- *
+ * eki_readiness_roster is authorised, institution-scoped, per-student
+ * readiness classification for the careers-team drill-in. It is NOT
+ * k-anonymised (it is the authorised individual-identification workflow,
+ * gated exactly like eki_student_briefing) but the aggregate `distribution`
+ * carries `suppressed` when fewer than MIN_COHORT_N students are assessed.
+ */
+export async function getReadinessRoster(institutionId, filters) {
+  return rpc("eki_readiness_roster", {
+    p_institution_id: institutionId,
+    p_cohort_ids: filters?.cohortIds || null,
+    p_from: filters?.from || null,
+    p_to: filters?.to || null,
+  });
+}
+
+/** The Student Careers Profile for a student with no appointment yet (roster drill-in). */
+export async function getStudentSnapshot(institutionId, studentId) {
+  return rpc("eki_student_snapshot", { p_institution_id: institutionId, p_student_id: studentId });
+}
+
+/** Staff sends a student an invitation into an existing open slot. */
+export async function inviteToAppointment({ slotId, studentId, appointmentTypeId, message, applicationId }) {
+  return rpc("eki_invite_to_appointment", {
+    p_slot_id: slotId,
+    p_student_id: studentId,
+    p_appointment_type_id: appointmentTypeId || null,
+    p_message: message || null,
+    p_application_id: applicationId || null,
+  });
+}
+
+/** Staff sends a student-facing careers message (never adviser notes / analytics). */
+export async function sendCareersMessage({ institutionId, studentId, body, relatedAppointmentId }) {
+  return rpc("send_careers_message", {
+    p_institution_id: institutionId,
+    p_student_id: studentId,
+    p_body: body,
+    p_related_appointment_id: relatedAppointmentId || null,
+  });
+}
+
+/** Staff-side: the messages already sent to one student (for the profile). */
+export async function listStudentMessages(institutionId, studentId) {
+  const data = await rpc("eki_list_student_messages", { p_institution_id: institutionId, p_student_id: studentId });
+  return Array.isArray(data) ? data : [];
+}
+
 /**
  * Every analytics section in one parallel round of RPCs — used by the Overview,
  * which synthesises across sections. Returns a keyed map; a per-section failure

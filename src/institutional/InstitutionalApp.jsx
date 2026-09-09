@@ -22,6 +22,7 @@ import {
 import { INSTITUTIONAL_CSS } from "./theme.js";
 import {
   MIN_COHORT_N, dimensionLabel, categoryLabel, roleFamilyLabel, stageLabel,
+  readinessGroupMeta,
 } from "./taxonomy.js";
 import {
   getSession, signInWithPassword, signOut, onAuthStateChange,
@@ -35,11 +36,11 @@ import {
 } from "./appointments.js";
 import * as insights from "./insights.js";
 import {
-  overviewCards, verdictFor, humanize, suggestedAction,
+  overviewCards, humanize, suggestedAction,
   plainDimension, bandWord as presentBandWord, bandTone as presentBandTone,
 } from "./present.js";
 import {
-  Disclosure, SuggestedAction, InsightPanel, OverviewCard, VerdictHeader,
+  Disclosure, SuggestedAction, InsightPanel, OverviewCard,
   QuietStat, JourneyEntry, FocusList, SectionQuestion,
 } from "./disclosure.jsx";
 import {
@@ -53,6 +54,9 @@ import {
 import {
   ScoreBars, DistributionBar, DeltaBars, TrendLine, OpportunityList,
 } from "./charts.jsx";
+import {
+  ReadinessDistribution, RosterPanel, ArrangeSupportModal, MessageStudentsModal,
+} from "./intervention.jsx";
 
 /* ---- style injection (once) ----------------------------------- */
 let styleInjected = false;
@@ -381,9 +385,10 @@ function NavLink({ item, active, onClick }) {
  * ================================================================= */
 const APPT_STATUS_FILTERS = [
   { key: "upcoming", label: "Upcoming", statuses: ["booked"], futureOnly: true },
+  { key: "invited", label: "Invited (awaiting reply)", statuses: ["invited"] },
   { key: "booked", label: "All booked", statuses: ["booked"] },
   { key: "completed", label: "Completed", statuses: ["completed"] },
-  { key: "cancelled", label: "Cancelled/missed", statuses: ["cancelled", "no_show"] },
+  { key: "cancelled", label: "Cancelled/missed", statuses: ["cancelled", "no_show", "declined"] },
   { key: "all", label: "Everything", statuses: null },
 ];
 
@@ -1211,58 +1216,219 @@ function InsightLayout({ findings, onCta, evidence, evidenceSummary }) {
 }
 
 /* =================================================================
- * PERFORMANCE — "How interview-ready are our students?"
+ * PERFORMANCE — "Where are our students in their interview readiness?"
+ * ----------------------------------------------------------------- *
+ * Readiness distribution (aggregate, k-anonymised) -> drill into a
+ * readiness group -> authorised student roster -> open the Student
+ * Careers Profile / arrange support / message. The old cohort-wide
+ * verdict and the detailed analytics move behind "Show the evidence".
  * ================================================================= */
 function PerformanceView({ ctx }) {
-  const { loading, env, error } = useSection(api.getPerformance, ctx);
+  const perf = useSection(api.getPerformance, ctx);
+  const roster = useSection(api.getReadinessRoster, ctx);
+  const env = perf.env;
+  const evLive = env && isLive(env) && env.overall && !env.overall.suppressed;
   const findings = useMemo(() => (env ? rankFindings(derivePerformanceFindings(env)) : []), [env]);
-  const live = env && isLive(env) && env.overall && !env.overall.suppressed;
-  const verdict = useMemo(() => (live ? verdictFor("performance", env, findings) : null), [live, env, findings]);
+
+  const [drill, setDrill] = useState({ mode: "distribution", groupKey: null, studentId: null });
+  useEffect(() => { setDrill({ mode: "distribution", groupKey: null, studentId: null }); }, [ctx.institutionId, ctx.filters]);
+
+  if (drill.mode === "profile" && drill.studentId) {
+    return (
+      <StudentCareersProfileView ctx={ctx} studentId={drill.studentId}
+        onBack={() => setDrill((d) => ({ ...d, mode: "roster", studentId: null }))} />
+    );
+  }
+  if (drill.mode === "roster" && drill.groupKey) {
+    return (
+      <>
+        <SectionHeader ctx={ctx} eyebrow="Performance" question="Who should we intervene with?" />
+        <RosterPanel ctx={ctx} roster={roster.env} groupKey={drill.groupKey}
+          onBack={() => setDrill({ mode: "distribution", groupKey: null, studentId: null })}
+          onOpenStudent={(id) => setDrill((d) => ({ ...d, mode: "profile", studentId: id }))} />
+      </>
+    );
+  }
 
   return (
     <>
-      <SectionHeader ctx={ctx} eyebrow="Performance" question="How interview-ready are our students?" />
-      {loading ? <LoadState label="Loading performance…" /> : !live ? <><ContractOrError error={error} env={env} /><NoData env={env} whatFor="interview performance" /></> : (
+      <SectionHeader ctx={ctx} eyebrow="Performance" question="Where are our students in their interview readiness?" />
+      {perf.loading || roster.loading ? <LoadState label="Loading readiness…" /> : (
         <>
-          <ContractOrError error={error} env={env} />
-          <VerdictHeader verdict={verdict} />
-          <InsightLayout findings={findings} onCta={ctx.goTo} evidenceSummary="Show the score breakdown"
-            evidence={
-              <>
-                <div className="ii-qstats">
-                  <QuietStat label="Cohort average" word={`${env.overall.mean}`} figure={`median ${env.overall.median}`} />
-                  <QuietStat label="Interview-ready" word={`${env.overall.pct_at_or_above_target}%`} tone={env.overall.pct_at_or_above_target >= 50 ? "good" : env.overall.pct_at_or_above_target >= 25 ? "warn" : "bad"} />
-                  <QuietStat label="Middle half" word={`${env.overall.p25}–${env.overall.p75}`} />
-                  <QuietStat label="Interviews" word={`${env.overall.n_interviews}`} figure={`${env.overall.n_students} students`} />
+          <ContractOrError error={roster.error || perf.error} env={env} />
+
+          <ReadinessDistribution roster={roster.env}
+            onOpenGroup={(k) => setDrill({ mode: "roster", groupKey: k, studentId: null })} />
+
+          {evLive ? (
+            <Disclosure summary="Show the evidence">
+              <div className="ii-qstats">
+                <QuietStat label="Cohort average" word={`${env.overall.mean}`} figure={`median ${env.overall.median}`} />
+                <QuietStat label="Interview-ready" word={`${env.overall.pct_at_or_above_target}%`} tone={env.overall.pct_at_or_above_target >= 50 ? "good" : env.overall.pct_at_or_above_target >= 25 ? "warn" : "bad"} />
+                <QuietStat label="Middle half" word={`${env.overall.p25}–${env.overall.p75}`} />
+                <QuietStat label="Interviews" word={`${env.overall.n_interviews}`} figure={`${env.overall.n_students} students`} />
+              </div>
+              {findings.length ? (
+                <div className="ii-section">
+                  {findings.slice(0, 3).map((f) => <SecondaryInsight key={f.id} finding={f} onCta={ctx.goTo} />)}
                 </div>
-                <SectionTitle>Where students sit</SectionTitle>
-                <DistributionBar n={env.distribution?.n} min={MIN_COHORT_N}
-                  segments={(env.distribution?.buckets || []).map((b) => ({
-                    label: bandLabel(b.label), count: b.count,
-                    tone: b.label === "strong" || b.label === "solid" ? "good" : b.label === "developing" ? "warn" : "bad",
-                  }))} />
-                <div className="ii-grid ii-grid-2" style={{ marginTop: 20 }}>
-                  <div>
-                    <SectionTitle>By interview round</SectionTitle>
-                    <ScoreBars target={env.readiness_target} rows={(env.by_stage || []).map((s) => ({
-                      key: s.key, label: stageLabel(s.key), mean: s.mean, suppressed: s.suppressed, n_students: s.n_students, min_n: MIN_COHORT_N }))} />
-                  </div>
-                  <div>
-                    <SectionTitle>By format</SectionTitle>
-                    <ScoreBars target={env.readiness_target} rows={(env.by_format || []).map((s) => ({
-                      key: s.key, label: formatLabel(s.key), mean: s.mean, suppressed: s.suppressed, n_students: s.n_students, min_n: MIN_COHORT_N }))} />
-                  </div>
+              ) : null}
+              <SectionTitle>Score distribution</SectionTitle>
+              <DistributionBar n={env.distribution?.n} min={MIN_COHORT_N}
+                segments={(env.distribution?.buckets || []).map((b) => ({
+                  label: bandLabel(b.label), count: b.count,
+                  tone: b.label === "strong" || b.label === "solid" ? "good" : b.label === "developing" ? "warn" : "bad",
+                }))} />
+              <div className="ii-grid ii-grid-2" style={{ marginTop: 20 }}>
+                <div>
+                  <SectionTitle>By interview round</SectionTitle>
+                  <ScoreBars target={env.readiness_target} rows={(env.by_stage || []).map((s) => ({
+                    key: s.key, label: stageLabel(s.key), mean: s.mean, suppressed: s.suppressed, n_students: s.n_students, min_n: MIN_COHORT_N }))} />
                 </div>
-                <div style={{ marginTop: 20 }}>
-                  <SectionTitle hint="reportable months only">Over time</SectionTitle>
-                  <TrendLine points={env.trend_monthly} target={env.readiness_target} />
+                <div>
+                  <SectionTitle>By format</SectionTitle>
+                  <ScoreBars target={env.readiness_target} rows={(env.by_format || []).map((s) => ({
+                    key: s.key, label: formatLabel(s.key), mean: s.mean, suppressed: s.suppressed, n_students: s.n_students, min_n: MIN_COHORT_N }))} />
                 </div>
-              </>
-            }
-          />
+              </div>
+              <div style={{ marginTop: 20 }}>
+                <SectionTitle hint="reportable months only">Over time</SectionTitle>
+                <TrendLine points={env.trend_monthly} target={env.readiness_target} />
+              </div>
+            </Disclosure>
+          ) : null}
           <AnonNote min={MIN_COHORT_N} />
         </>
       )}
+    </>
+  );
+}
+
+/* ---- Student Careers Profile opened from the readiness roster ---- *
+ * Same profile the adviser sees from an appointment, sourced for a
+ * student who has no appointment yet (eki_student_snapshot). No outcome
+ * form / mark-status (there is no appointment); adds "Arrange support"
+ * and "Message student" so the readiness workflow leads to an action.
+ * ================================================================= */
+function StudentCareersProfileView({ ctx, studentId, onBack }) {
+  const [state, setState] = useState({ loading: true, raw: null, error: "" });
+  const [modal, setModal] = useState(null);
+  const [notice, setNotice] = useState("");
+
+  useEffect(() => {
+    let dead = false;
+    setState({ loading: true, raw: null, error: "" });
+    api.getStudentSnapshot(ctx.institutionId, studentId)
+      .then((raw) => { if (!dead) setState({ loading: false, raw, error: "" }); })
+      .catch((e) => { if (!dead) setState({ loading: false, raw: null, error: e.message || "Couldn't load this student's profile." }); });
+    return () => { dead = true; };
+  }, [ctx.institutionId, studentId]);
+
+  const shaped = useMemo(() => shapeCareersProfile(state.raw), [state.raw]);
+  const summary = useMemo(() => deriveBriefingSummary(shaped), [shaped]);
+  const prev = useMemo(() => previousSupportModel(shaped), [shaped]);
+
+  const focusItems = useMemo(() => {
+    if (!shaped) return [];
+    return (shaped.dna?.development || []).slice(0, 3).map((x) => ({
+      label: `Help them ${plainDimension(x.key, "verb")}`,
+      note: `Currently ${x.mean} · interview-ready is ${shaped.target}`,
+    }));
+  }, [shaped]);
+  const strengthItems = useMemo(
+    () => (shaped?.dna?.strengths || []).slice(0, 3).map((x) => ({ label: x.label, note: `Averaging ${x.mean}` })),
+    [shaped]
+  );
+  const studentForModal = { student_id: studentId, name: shaped?.student?.name };
+
+  return (
+    <>
+      <button className="ii-btn ii-btn-ghost ii-btn-sm" style={{ marginBottom: 16 }} onClick={onBack}>
+        <ArrowLeft size={13} /> Back to students
+      </button>
+
+      {state.loading ? <Spinner label="Preparing the student careers profile…" />
+        : state.error ? <Alert tone="error">{state.error}</Alert>
+        : !shaped ? <Alert tone="warn">No profile data.</Alert>
+        : (
+          <>
+            <PageHeader
+              eyebrow="Student careers profile"
+              title={shaped.student.name || "Student careers profile"}
+              sub={`${shaped.student.institution || ""}${shaped.student.cohorts.length ? ` · ${shaped.student.cohorts.join(", ")}` : ""}`}
+            />
+            {notice ? <div style={{ marginBottom: 14 }}><Alert tone="info">{notice}</Alert></div> : null}
+
+            <div className="ii-row-wrap ii-section" style={{ gap: 8 }}>
+              <Btn size="sm" variant="accent" onClick={() => setModal("arrange")}><CalendarClock size={13} /> Arrange support</Btn>
+              <Btn size="sm" variant="primary" onClick={() => setModal("message")}><MessageSquareText size={13} /> Message student</Btn>
+            </div>
+
+            <div className="ii-section">
+              <SectionTitle>Why they're here</SectionTitle>
+              <p className="ii-text-sm ii-muted" style={{ margin: 0 }}>
+                Opened from the readiness review.{" "}
+                {summary.primaryDevelopmentArea
+                  ? `Their weakest area right now is ${summary.primaryDevelopmentArea.label.toLowerCase()} (${summary.primaryDevelopmentArea.mean}).`
+                  : (summary.hasData ? "No dimension is below the interview-ready threshold." : "Not enough practice data yet to pinpoint a focus.")}
+              </p>
+            </div>
+
+            {summary.hasData ? (
+              <div className="ii-grid ii-grid-2 ii-section">
+                <section className="ii-insight" style={{ "--ii-accent": "var(--ii-bad)" }}>
+                  <div className="ii-insight-eyebrow">What to focus on</div>
+                  <FocusList items={focusItems} ordered empty="No dimension is below the interview-ready threshold." />
+                </section>
+                <section className="ii-insight" style={{ "--ii-accent": "var(--ii-good)" }}>
+                  <div className="ii-insight-eyebrow">What they're already good at</div>
+                  <FocusList items={strengthItems} ordered={false} empty="No dimension is at the interview-ready threshold yet." />
+                </section>
+              </div>
+            ) : (
+              <Card className="ii-section">
+                <p className="ii-text-sm ii-muted" style={{ margin: 0 }}>
+                  This student hasn't completed enough JOB.READY practice interviews to build an interview picture yet.
+                </p>
+              </Card>
+            )}
+
+            <PreviousSupportCard prev={prev} />
+            <CareersJourney history={shaped.history} longitudinal={shaped.longitudinal} />
+
+            <div className="ii-section">
+              <SectionTitle>Interview performance</SectionTitle>
+              <p className="ii-text-sm ii-muted" style={{ marginTop: -4 }}>
+                {shaped.dna.hasEnoughData
+                  ? `${shaped.dna.nInterviews} completed interview${shaped.dna.nInterviews === 1 ? "" : "s"} · overall ${shaped.dna.overallMean ?? "—"} against an interview-ready mark of ${shaped.target}.`
+                  : "Not enough completed interviews yet to break this down."}
+              </p>
+              {shaped.dna.hasEnoughData ? (
+                <Disclosure summary="Show the competency detail">
+                  <InterviewDnaCard dna={shaped.dna} target={shaped.target} />
+                  <PatternsCard shaped={shaped} />
+                </Disclosure>
+              ) : null}
+            </div>
+
+            <p className="ii-anon-note">
+              <Lock size={11} /> Authorised, institution-scoped record for a student in your cohorts. Interview
+              intelligence is derived from this student's JOB.READY practice; adviser notes stay internal. No transcripts,
+              nothing from other institutions.
+            </p>
+
+            {modal === "arrange" ? (
+              <ArrangeSupportModal ctx={ctx} student={studentForModal}
+                onClose={() => setModal(null)}
+                onDone={(m) => { setModal(null); setNotice(m); }} />
+            ) : null}
+            {modal === "message" ? (
+              <MessageStudentsModal ctx={ctx} students={[studentForModal]}
+                onClose={() => setModal(null)}
+                onDone={(m) => { setModal(null); setNotice(m); }} />
+            ) : null}
+          </>
+        )}
     </>
   );
 }

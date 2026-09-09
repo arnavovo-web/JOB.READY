@@ -132,6 +132,41 @@ export function scoreBand(score) {
   return { key: "priority", label: "Priority", tone: "bad" };
 }
 
+/* ---- Readiness distribution groups ------------------------- *
+ * A cohort is not one verdict. Each student's mean practice score places them
+ * in one of three supportive groups. Thresholds are the ones already used
+ * end-to-end: READINESS_TARGET (70, interview-ready) and READINESS_SUPPORT_FLOOR
+ * (55 = target − 15, the "priority" cutoff eki_student_briefing already uses per
+ * dimension). Language is deliberately non-judgemental — this is PRACTICE
+ * performance, never a prediction of employment outcomes.
+ * Mirrored server-side in eki_readiness_roster().
+ */
+export const READINESS_TARGET = 70;
+export const READINESS_SUPPORT_FLOOR = 55;
+
+export const READINESS_GROUPS = [
+  { key: "ready", label: "Interview-ready", tone: "good",
+    blurb: "Students consistently demonstrating interview-ready practice performance." },
+  { key: "developing", label: "Developing", tone: "warn",
+    blurb: "Students making progress, with identifiable development opportunities." },
+  { key: "needs_support", label: "Needs support", tone: "bad",
+    blurb: "Students whose recent practice suggests they may benefit from targeted careers support." },
+];
+
+/** Place a mean practice score in a readiness group key (null when there is no score). */
+export function readinessGroup(meanScore, target = READINESS_TARGET, supportFloor = READINESS_SUPPORT_FLOOR) {
+  if (meanScore == null || Number.isNaN(Number(meanScore))) return null;
+  const n = Number(meanScore);
+  if (n >= target) return "ready";
+  if (n >= supportFloor) return "developing";
+  return "needs_support";
+}
+
+export function readinessGroupMeta(key) {
+  return READINESS_GROUPS.find((g) => g.key === key)
+    || { key: key || "unknown", label: key || "Unknown", tone: "neutral", blurb: "" };
+}
+
 /* ---- Career-path role families ---------------------------- *
  * applications.company / applications.role are free text. This is an
  * EXPLICIT, DOCUMENTED heuristic — keyword match on the role string,

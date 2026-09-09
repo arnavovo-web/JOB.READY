@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   slotsForType, groupSlotsByDay, canCancel, splitAppointments,
   canAdvance, bookingArgs, BOOKING_STEPS, studentStatusMeta,
-  fmtTimeRange, fmtDayLong,
+  fmtTimeRange, fmtDayLong, canRespondToInvite, fmtRelative, unreadCount,
 } from "./careersAppointmentsCore.js";
 
 const future = (h) => new Date(Date.now() + h * 3600e3).toISOString();
@@ -49,16 +49,42 @@ describe("canCancel", () => {
 });
 
 describe("splitAppointments", () => {
-  it("upcoming = future booked; everything else is past", () => {
+  it("splits into invitations (future invited) / upcoming (future booked) / past (everything else)", () => {
     const list = [
       { id: 1, status: "booked", starts_at: future(10) },
       { id: 2, status: "booked", starts_at: past(10) },
       { id: 3, status: "completed", starts_at: past(5) },
       { id: 4, status: "cancelled", starts_at: future(5) },
+      { id: 5, status: "invited", starts_at: future(20) },
+      { id: 6, status: "invited", starts_at: past(20) },   // stale invite -> past
+      { id: 7, status: "declined", starts_at: future(30) },
     ];
-    const { upcoming, past: p } = splitAppointments(list);
+    const { invitations, upcoming, past: p } = splitAppointments(list);
+    expect(invitations.map((a) => a.id)).toEqual([5]);
     expect(upcoming.map((a) => a.id)).toEqual([1]);
-    expect(p.map((a) => a.id).sort()).toEqual([2, 3, 4]);
+    expect(p.map((a) => a.id).sort()).toEqual([2, 3, 4, 6, 7]);
+  });
+});
+
+describe("careers-support hub helpers", () => {
+  it("canRespondToInvite — only a future, still-pending invitation", () => {
+    expect(canRespondToInvite({ status: "invited", starts_at: future(3) })).toBe(true);
+    expect(canRespondToInvite({ status: "invited", starts_at: past(3) })).toBe(false);
+    expect(canRespondToInvite({ status: "booked", starts_at: future(3) })).toBe(false);
+    expect(canRespondToInvite(null)).toBe(false);
+  });
+  it("fmtRelative — compact, deterministic buckets", () => {
+    expect(fmtRelative(new Date(Date.now() - 30 * 1000).toISOString())).toBe("just now");
+    expect(fmtRelative(new Date(Date.now() - 5 * 60000).toISOString())).toBe("5m ago");
+    expect(fmtRelative(new Date(Date.now() - 3 * 3600e3).toISOString())).toBe("3h ago");
+    expect(fmtRelative(new Date(Date.now() - 2 * 24 * 3600e3).toISOString())).toBe("2d ago");
+    expect(fmtRelative(new Date(Date.now() - 20 * 24 * 3600e3).toISOString())).toMatch(/^\w+ \d+ \w+ \d{4}$/);
+    expect(fmtRelative(null)).toBe("");
+  });
+  it("unreadCount — counts messages without read_at", () => {
+    expect(unreadCount([{ read_at: null }, { read_at: "2026-01-01" }, {}])).toBe(2);
+    expect(unreadCount([])).toBe(0);
+    expect(unreadCount(null)).toBe(0);
   });
 });
 
@@ -89,6 +115,8 @@ describe("status + formatting", () => {
   it("student status labels", () => {
     expect(studentStatusMeta("booked").label).toBe("Booked");
     expect(studentStatusMeta("no_show").label).toBe("Missed");
+    expect(studentStatusMeta("invited").label).toBe("Invitation");
+    expect(studentStatusMeta("declined").label).toBe("Declined");
     expect(studentStatusMeta("weird").label).toBe("weird");
   });
   it("time range + long day are deterministic", () => {

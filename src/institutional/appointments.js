@@ -11,9 +11,11 @@
 import { dimensionLabel, categoryLabel } from "./taxonomy.js";
 
 export const APPOINTMENT_STATUS = {
+  invited:   { label: "Invited",   tone: "info" },
   booked:    { label: "Booked",    tone: "info" },
   completed: { label: "Completed", tone: "good" },
   cancelled: { label: "Cancelled", tone: "neutral" },
+  declined:  { label: "Declined",  tone: "neutral" },
   no_show:   { label: "No-show",   tone: "warn" },
 };
 export function statusMeta(s) {

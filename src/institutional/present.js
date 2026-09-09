@@ -397,6 +397,50 @@ export function verdictFor(kind, env, findings) {
   return null;
 }
 
+/* ================================================================= *
+ * readinessRecommendation(distribution) → { headline, body, cta } | null
+ * ----------------------------------------------------------------- *
+ * The "Where should we focus?" insight under the readiness distribution.
+ * `distribution` is eki_readiness_roster().distribution:
+ *   { assessed, suppressed, groups: [{ key, count, pct }] }
+ * Deterministic. Supportive language only — this is PRACTICE performance,
+ * never a claim about a student's ability or employability. Returns null
+ * when the distribution is suppressed / empty (the page shows its honest
+ * insufficient-data state instead).
+ * ================================================================= */
+export function readinessRecommendation(distribution) {
+  const d = distribution || {};
+  if (d.suppressed || !d.assessed) return null;
+  const by = {};
+  for (const g of d.groups || []) by[g.key] = g;
+  const need = by.needs_support || { count: 0, pct: 0 };
+  const dev = by.developing || { count: 0, pct: 0 };
+  const ready = by.ready || { count: 0, pct: 0 };
+  const REVIEW = (group) => ({ label: "Review students", group });
+
+  if (need.pct >= 15 && need.count > 0) {
+    return {
+      headline: `${need.pct}% of students are currently in the “Needs support” group.`,
+      body: "Consider targeted careers support for students in this group — for example interview-preparation "
+          + "appointments focused on the development area each student is weakest in.",
+      cta: REVIEW("needs_support"),
+    };
+  }
+  if (dev.pct >= ready.pct && dev.count > 0) {
+    return {
+      headline: "Most students are still developing their interview readiness.",
+      body: "A group session or targeted practice prompts could help move the developing group toward "
+          + "interview-ready. Students in “Needs support” would benefit from a one-to-one.",
+      cta: REVIEW(need.count > 0 ? "needs_support" : "developing"),
+    };
+  }
+  return {
+    headline: "Most students are demonstrating interview-ready practice performance.",
+    body: "Keep the current support running, and check in with the smaller groups who would benefit most.",
+    cta: need.count > 0 ? REVIEW("needs_support") : dev.count > 0 ? REVIEW("developing") : null,
+  };
+}
+
 /* ---- a compact "one word + one line" for any section header ----- */
 export function sectionVerdictLine(findings) {
   const ranked = rankFindings(findings || []);

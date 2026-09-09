@@ -37,7 +37,7 @@ describe("the screen is self-contained and additive", () => {
   it("talks to Supabase only through the shared browser client + the appointment RPCs", () => {
     expect(SCREEN).toMatch(/from "\.\/institutional\/supabaseClient\.js"/);
     const rpcs = [...SCREEN.matchAll(/rpc\(["'](\w+)["']/g)].map((m) => m[1]);
-    const OK = /^(list_appointment_types|list_careers_availability|list_my_appointments|book_appointment|cancel_appointment)$/;
+    const OK = /^(list_appointment_types|list_careers_availability|list_my_appointments|book_appointment|cancel_appointment|list_my_careers_messages|respond_to_appointment_invitation|mark_careers_message_read)$/;
     for (const r of rpcs) expect(OK.test(r), `unexpected rpc ${r}`).toBe(true);
     // no direct table reads of student data from the student screen
     expect(SCREEN).not.toMatch(/\.from\(["'](interviews|evaluations|answers|interview_reports|profiles)["']\)/);

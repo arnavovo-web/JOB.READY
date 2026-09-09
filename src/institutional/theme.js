@@ -372,6 +372,48 @@ export const INSTITUTIONAL_CSS = `
 .ii-journey-longitudinal{ margin-top:14px; padding-top:14px; border-top:1px solid var(--ii-border-soft); display:flex; flex-direction:column; gap:6px; }
 .ii-journey-longitudinal p{ margin:0; display:flex; gap:7px; align-items:flex-start; font-variant-numeric:tabular-nums; }
 
+/* ================================================================== *
+ * Performance -> intervention workflow
+ * ================================================================== */
+
+/* readiness distribution — one clean segmented bar */
+.ii-readbar{ display:flex; height:16px; width:100%; border-radius:var(--ii-r-pill); overflow:hidden; background:var(--ii-border-soft); margin-bottom:16px; }
+.ii-readbar-seg{ height:100%; }
+.ii-readbar-seg + .ii-readbar-seg{ box-shadow:inset 1px 0 0 rgba(255,255,255,0.6); }
+
+.ii-readcards{ display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:12px; margin-bottom:12px; }
+.ii-readcard{ position:relative; display:flex; flex-direction:column; gap:5px; text-align:left; padding:16px 18px; border-radius:var(--ii-r-lg); background:var(--ii-card); border:1px solid var(--ii-border-soft); cursor:pointer; font-family:var(--ii-font); transition:box-shadow 140ms var(--ii-ease), border-color 140ms var(--ii-ease); }
+.ii-readcard:hover{ box-shadow:var(--ii-shadow-sm); border-color:var(--ii-border); }
+.ii-readcard::before{ content:""; position:absolute; left:0; top:14px; bottom:14px; width:3px; border-radius:3px; }
+.ii-readcard-good::before{ background:var(--ii-good); }
+.ii-readcard-warn::before{ background:var(--ii-warn); }
+.ii-readcard-bad::before{ background:var(--ii-bad); }
+.ii-readcard-label{ font-size:11px; font-weight:800; letter-spacing:0.06em; text-transform:uppercase; color:var(--ii-text-faint); }
+.ii-readcard-pct{ font-size:26px; font-weight:800; letter-spacing:-0.02em; color:var(--ii-navy); line-height:1; }
+.ii-readcard-blurb{ font-size:12.5px; line-height:1.45; color:var(--ii-text-dim); }
+.ii-readcard-link{ display:inline-flex; align-items:center; gap:4px; margin-top:2px; font-size:12px; font-weight:700; color:var(--ii-blue-dark); }
+
+/* roster table — Student | Readiness | Main development area | Latest practice */
+.ii-roster{ border:1px solid var(--ii-border-soft); border-radius:var(--ii-r-md); overflow:hidden; }
+.ii-roster-head, .ii-roster-row{ display:grid; grid-template-columns:34px 1.4fr 0.9fr 1.1fr 1fr 0; gap:12px; align-items:center; padding:10px 14px; }
+.ii-roster-head{ font-size:10.5px; font-weight:800; letter-spacing:0.05em; text-transform:uppercase; color:var(--ii-text-faint); background:var(--ii-bg); border-bottom:1px solid var(--ii-border-soft); }
+.ii-roster-row + .ii-roster-row{ border-top:1px solid var(--ii-border-soft); }
+.ii-roster-row:hover{ background:var(--ii-bg); }
+.ii-roster-check{ display:inline-flex; align-items:center; }
+.ii-roster-name{ display:inline-flex; align-items:center; gap:5px; font-family:var(--ii-font); font-size:13.5px; font-weight:700; color:var(--ii-navy); background:transparent; border:none; padding:0; cursor:pointer; text-align:left; }
+.ii-roster-name:hover{ color:var(--ii-blue-dark); text-decoration:underline; }
+.ii-roster-actions{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:14px; }
+
+/* lightweight modal */
+.ii-modal-scrim{ position:fixed; inset:0; background:rgba(15,23,42,0.44); display:flex; align-items:flex-start; justify-content:center; padding:6vh 16px; z-index:60; }
+.ii-modal{ width:100%; max-width:520px; background:var(--ii-card); border-radius:var(--ii-r-lg); box-shadow:0 24px 60px rgba(15,23,42,0.28); max-height:88vh; display:flex; flex-direction:column; }
+.ii-modal-head{ display:flex; align-items:center; justify-content:space-between; padding:16px 18px; border-bottom:1px solid var(--ii-border-soft); }
+.ii-modal-x{ background:transparent; border:none; cursor:pointer; color:var(--ii-text-faint); display:inline-flex; padding:4px; border-radius:var(--ii-r-sm); }
+.ii-modal-x:hover{ color:var(--ii-navy); background:var(--ii-bg); }
+.ii-modal-body{ padding:18px; overflow-y:auto; }
+.ii-modal-foot{ display:flex; justify-content:flex-end; gap:8px; padding:14px 18px; border-top:1px solid var(--ii-border-soft); }
+.ii-field{ display:block; margin-bottom:14px; }
+
 
 @keyframes iiFade{ from{ opacity:0; transform:translateY(6px); } to{ opacity:1; transform:translateY(0); } }
 @keyframes iiSpin{ to{ transform:rotate(360deg); } }
@@ -394,6 +436,12 @@ export const INSTITUTIONAL_CSS = `
   .ii-authbrand{ padding:28px 22px; }
   .ii-authbrand-short{ font-size:34px; margin-bottom:12px; }
   .ii-authbrand-points{ display:none; }
+}
+@media (max-width:820px){
+  .ii-readcards{ grid-template-columns:minmax(0,1fr); }
+  .ii-roster-head{ display:none; }
+  .ii-roster-row{ grid-template-columns:28px 1fr; row-gap:4px; }
+  .ii-roster-row > span:nth-child(3), .ii-roster-row > span:nth-child(4), .ii-roster-row > span:nth-child(5){ grid-column:2; }
 }
 @media (max-width:640px){
   .ii-grid-2, .ii-grid-3, .ii-grid-4{ grid-template-columns:minmax(0,1fr); }

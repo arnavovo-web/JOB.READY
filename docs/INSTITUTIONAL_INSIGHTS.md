@@ -200,6 +200,70 @@ no per-field revision history).
   student can't read outcomes / call the profile / write outcomes, cancel keeps the
   outcome, empty-history first appointment.
 
+## Performance → intervention → student communication
+
+The Performance page is an **intervention workflow**, not a single cohort-wide verdict.
+
+**Readiness distribution (aggregate, k-anonymised).** Each student's mean practice
+score places them in one of three supportive groups — thresholds are the ones already
+used end-to-end: `ready` (`ms ≥ 70`, interview-ready), `developing` (`55 ≤ ms < 70`),
+`needs_support` (`ms < 55` — `70 − 15`, the same per-dimension "priority" cutoff
+`eki_student_briefing` uses). The distribution is shown only when **≥ 5 students are
+assessed** (`distribution.suppressed`); below that the page shows the honest
+insufficient-data state. `taxonomy.readinessGroup` / `present.readinessRecommendation`
+mirror the SQL; language is deliberately non-judgemental (this is *practice*
+performance, never a prediction of employment outcomes).
+
+**`eki_readiness_roster(institution, cohort_ids[], from, to)`** — the authorised
+drill-in. Staff-gated + scope-gated through `jr_inst_scope_student_ids` (raises `42501`
+for a non-staff or wrong-institution caller). It returns the aggregate `distribution`
+**and** a per-student `students[]` roster (name, readiness group, mean + latest score,
+main development area). Individual identification here is the authorised careers-team
+workflow — exactly the gate `eki_student_briefing` uses — and is only reachable by a
+deliberate group drill-in; the aggregate k-anonymity on analytics surfaces is
+unchanged. No transcript, no free-text competency, nothing cross-institution.
+
+**`eki_student_snapshot(institution, student)`** — the Student Careers Profile for a
+student **with no appointment yet** (opened from the roster). Double-gated like the
+briefing; same shape family the frontend already shapes (`shapeCareersProfile`), minus
+the appointment / outcome blocks. Reuses the existing profile view — no duplicate
+student model.
+
+**Acting on the roster** (`src/institutional/intervention.jsx`):
+* **Arrange support** → `eki_invite_to_appointment(slot, student, type, message, application)`
+  creates an `appointments` row with `status = 'invited'` in one of the *staff member's
+  own* open slots (the slot flips to `booked` so it can't be double-taken). One
+  student at a time — it needs a specific slot. Widens the `appointments.status` domain
+  with `invited` / `declined` and adds `invited_by` / `invited_at` / `invite_message`
+  (student-visible) / `responded_at`. **No second appointment model.**
+* **Message students** → `send_careers_message(institution, student, body, related?)`
+  writes one `careers_messages` row per selected student. `careers_messages` is a
+  minimal, institution-scoped model: student reads **only their own**
+  (`student_id = auth.uid()`), staff read their institution's, **no client
+  insert/update** — `send_careers_message` / `mark_careers_message_read` (SECURITY
+  DEFINER) are the only write paths.
+
+**The student side** (`src/careersAppointments.jsx`, unchanged branding). `Careers
+support` becomes the communication hub: **Action needed** (a pending invitation with
+the careers-team reason + Accept / Decline → `respond_to_appointment_invitation`;
+decline reopens a future slot), **Messages** (`list_my_careers_messages`, unread dot,
+`mark_careers_message_read` on view), **Upcoming appointments**, **Previous support**.
+No institutional terminology, no analytics, no adviser notes — only what a staff
+member deliberately sent.
+
+**Three information types stay separate**: (A) institutional intelligence — the
+k-anonymised analytics; (B) internal careers records — `appointment_outcomes`
+(staff-only, RPC-write); (C) student-facing communication — `appointments.invite_message`
++ `careers_messages`. A student can retrieve only (C).
+
+Verified by a live role-simulated battery (staff roster + distribution math; non-staff
+→ 42501; cross-institution staff-B → 42501 on roster / snapshot / message / invite;
+invite → `invited` row + `booked` slot; student accept → `booked`; student decline →
+`declined` + slot reopened; another student can't accept or read the messages;
+distribution `suppressed` when assessed < 5) plus source-inspection guards
+(`careersPerformanceInterventionMigration.test.js`, `readiness.test.js`,
+`interventionWiring.test.js`).
+
 ## Deployment
 
 **No new environment variables. No new Edge Functions.** Only database migrations and
@@ -214,6 +278,7 @@ the front-end bundle.
    * `20260909180000_careers_appointments.sql` — appointment tables, RLS, 9 RPCs incl. `eki_student_briefing`
    * `20260909190000_careers_appointments_policy_merge.sql` — one SELECT policy per appointment table (perf)
    * `20260909200000_careers_relationship_history.sql` — `appointment_outcomes` + `save_appointment_outcome` + `eki_student_careers_profile`
+   * `20260909210000_careers_performance_intervention.sql` — `invited`/`declined` appointment statuses + invite columns, `careers_messages` (+RLS), `eki_readiness_roster`, `eki_student_snapshot`, `eki_invite_to_appointment`, `respond_to_appointment_invitation`, `send_careers_message` + list/mark-read, re-created `list_my_appointments` / `list_institution_appointments` for invite context
    All are idempotent (`create ... if not exists`, `create or replace`, `drop policy if
    exists` + recreate) and additive. The live project also carries a few folded-in
    hot-fix migrations in its ledger (`..._can_manage_bool`, `..._pin_helper_search_path`,
@@ -284,11 +349,16 @@ delete from public.institutions where slug = 'northgate-demo';
 ## Test surface
 
 `src/institutional/*.test.js` + `src/careersAppointments*.test.js` (node env, no DOM —
-consistent with the rest of the repo): `taxonomy`, `analytics`, `insights`,
-`insightsNoFabrication`, `present` (humanize / suggestedAction / overviewCards / verdictFor —
-no fabricated number, no causal language), `appointments`, `chartsRender` (react-dom/server),
-`appStructure` (route gate, isolation, insight-first UX ordering, adviser-first profile),
-`foundationMigration`, `analyticsMigration`, `hardeningMigrations`,
-`careersMigration`, `careersAppointmentsCore`, `careersAppointmentsWiring`. Plus the
-live SQL batteries (RLS/permission matrix, appointment isolation + privacy matrix,
-calculation spot-checks vs hand computation, `EXPLAIN`, query timing).
+consistent with the rest of the repo): `taxonomy`, `readiness` (3-group thresholds +
+`readinessRecommendation` — supportive, non-judgemental, null when suppressed),
+`analytics`, `insights`, `insightsNoFabrication`, `present` (humanize / suggestedAction
+/ overviewCards / verdictFor — no fabricated number, no causal language), `appointments`,
+`chartsRender` (react-dom/server), `appStructure` (route gate, isolation, insight-first
+UX ordering, adviser-first profile, readiness-first Performance),
+`interventionWiring` (distribution → roster → profile → arrange/message; student hub),
+`foundationMigration`, `analyticsMigration`, `hardeningMigrations`, `careersMigration`,
+`careersHistoryMigration`, `careersPerformanceInterventionMigration`,
+`careersAppointmentsCore`, `careersAppointmentsWiring`. Plus the live SQL batteries
+(RLS/permission matrix, appointment isolation + privacy matrix, readiness-roster
+role-simulated matrix, calculation spot-checks vs hand computation, `EXPLAIN`, query
+timing).

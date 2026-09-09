@@ -125,6 +125,18 @@ describe("dashboard shell — the six insight sections + setup", () => {
     expect(read("charts.jsx")).toMatch(/SuppressedBlock|Suppressed/);
     expect(read("charts.jsx")).toMatch(/fewer than \{min \|\| 5\}/);
   });
+  it("Performance leads with the readiness distribution, not a single cohort-wide verdict", () => {
+    // primary question is the distribution one
+    expect(APP).toMatch(/Where are our students in their interview readiness\?/);
+    expect(APP).toMatch(/getReadinessRoster/);
+    expect(APP).toMatch(/<ReadinessDistribution/);
+    // the old detailed analytics move behind progressive disclosure
+    expect(APP).toMatch(/<Disclosure summary="Show the evidence">/);
+    // drill-in: group -> roster -> student profile
+    expect(APP).toMatch(/<RosterPanel/);
+    expect(APP).toMatch(/<StudentCareersProfileView/);
+    expect(APP).toMatch(/getStudentSnapshot/);
+  });
 });
 
 describe("auth gate", () => {
@@ -173,7 +185,7 @@ describe("no parallel student store in the data layer", () => {
     // every RPC is a SECURITY DEFINER function that self-enforces institution-staff /
     // student-link authorisation — never a raw student table read from the client.
     const rpcs = [...API.matchAll(/\brpc\(["'](\w+)["']/g)].map((m) => m[1]);
-    const RPC_OK = /^(inst_|get_my_institutions|jr_inst_|inst_reconcile_cohort_members|list_institution_appointments|eki_student_briefing|eki_student_careers_profile|save_appointment_outcome|set_appointment_status|list_appointment_types)$/;
+    const RPC_OK = /^(inst_.+|get_my_institutions|jr_inst_.+|inst_reconcile_cohort_members|list_institution_appointments|eki_student_briefing|eki_student_careers_profile|eki_student_snapshot|eki_readiness_roster|eki_list_student_messages|eki_invite_to_appointment|send_careers_message|save_appointment_outcome|set_appointment_status|list_appointment_types)$/;
     for (const r of rpcs) expect(RPC_OK.test(r), `unexpected rpc: ${r}`).toBe(true);
   });
   it("the appointment RPCs the client calls are the authorised set (no direct student-table reads)", () => {
