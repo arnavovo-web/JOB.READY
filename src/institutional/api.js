@@ -225,6 +225,76 @@ export async function listStudentMessages(institutionId, studentId) {
   return Array.isArray(data) ? data : [];
 }
 
+/* ---------- Intelligence platform ---------------------------- *
+ * One deterministic per-student engine (eki_student_intelligence) powers
+ * No-Contact / Stuck / trajectory / movement. Programme pulse + follow-up
+ * queue are separate k-anonymised / staff-authorised aggregates. All
+ * institution-scoped, all self-authorising in SQL.
+ */
+export async function getStudentIntelligence(institutionId, filters) {
+  return rpc("eki_student_intelligence", {
+    p_institution_id: institutionId,
+    p_cohort_ids: filters?.cohortIds || null,
+    p_from: filters?.from || null,
+    p_to: filters?.to || null,
+  });
+}
+export async function getProgrammePulse(institutionId, filters) {
+  return rpc("eki_programme_pulse", {
+    p_institution_id: institutionId,
+    p_from: filters?.from || null,
+    p_to: filters?.to || null,
+  });
+}
+export async function getFollowUpQueue(institutionId, filters) {
+  const data = await rpc("eki_follow_up_queue", {
+    p_institution_id: institutionId,
+    p_cohort_ids: filters?.cohortIds || null,
+  });
+  return Array.isArray(data) ? data : [];
+}
+export async function listResources(institutionId, competency, careerPath) {
+  const data = await rpc("list_resources", {
+    p_institution_id: institutionId || null,
+    p_competency: competency || null,
+    p_career_path: careerPath || null,
+  });
+  return Array.isArray(data) ? data : [];
+}
+
+/* ---------- Development plans (staff writes) ----------------- */
+export async function saveDevelopmentPlan(args) { return rpc("save_development_plan", args); }
+export async function setDevelopmentPlanStatus(planId, status) {
+  return rpc("set_development_plan_status", { p_plan_id: planId, p_status: status });
+}
+export async function upsertDevelopmentPlanItem({ planId, kind, label, itemId, status }) {
+  return rpc("upsert_development_plan_item", {
+    p_plan_id: planId, p_kind: kind, p_label: label, p_item_id: itemId || null, p_status: status || "todo",
+  });
+}
+export async function markFollowUpDone(appointmentId) {
+  return rpc("mark_follow_up_done", { p_appointment_id: appointmentId });
+}
+export async function saveAdviserBriefing(args) { return rpc("save_adviser_briefing", args); }
+
+/* ---------- AI Careers Adviser Briefing (optional) ---------- *
+ * Thin synthesis via an Edge Function. Re-authorises via
+ * eki_student_snapshot server-side. Returns { ok:false, reason } when AI
+ * is not configured / fails — the caller keeps its deterministic briefing.
+ */
+export async function requestAdviserBriefing({ institutionId, studentId }) {
+  try {
+    const supabase = await getSupabase();
+    const { data, error } = await supabase.functions.invoke("eki-adviser-briefing", {
+      body: { institution_id: institutionId, student_id: studentId },
+    });
+    if (error) return { ok: false, reason: "unavailable" };
+    return data && typeof data === "object" ? data : { ok: false, reason: "unavailable" };
+  } catch {
+    return { ok: false, reason: "unavailable" };
+  }
+}
+
 /**
  * Every analytics section in one parallel round of RPCs — used by the Overview,
  * which synthesises across sections. Returns a keyed map; a per-section failure

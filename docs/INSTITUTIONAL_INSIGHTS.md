@@ -264,10 +264,50 @@ distribution `suppressed` when assessed < 5) plus source-inspection guards
 (`careersPerformanceInterventionMigration.test.js`, `readiness.test.js`,
 `interventionWiring.test.js`).
 
+## Intelligence platform (deterministic engine + one optional AI feature)
+
+One deterministic per-student engine feeds ten connected capabilities. **No LLM is
+called from SQL or the client for any figure** — the only AI is the adviser briefing,
+an isolated, optional Edge Function.
+
+**Shared engine.** `jr_classify_trajectory(n, first, last, recent_delta, last3_span)`
+is the single trajectory definition — mirrored exactly in `trajectory.classifyTrajectory`
+so the DB and UI never disagree. Thresholds (documented in both): `improving` = gained
+≥ 6 overall **and** still rising (recent ≥ +2); `declining` = lost ≥ 6 **or** a sharp
+recent drop (≤ −4); `plateauing` = ≥ 4 attempts, flat recently (|recent| < 3) **and**
+last-3 span < 4 (the `42 → 51 → 58 → 58 → 59` case); `stable` otherwise;
+`insufficient_data` < 3. `jr_student_trajectory_rows` / `jr_student_dna_rows` are the
+reusable per-student series (overall from `interviews`, per-competency from
+`competency_history`).
+
+| Feature | Where it lives | Source |
+|---|---|---|
+| **No Contact Yet** / **Stuck Students** | Performance → drill-in queues | `eki_student_intelligence` (staff-authorised, per-student; NOT k-anon — same gate as `eki_student_briefing`). Rules: no-contact = ≥ 3 interviews, ≥ 5 pts below target, no completed appointment/outcome; stuck = ≥ 3 interviews, below target, trajectory ∈ {plateauing, stable, declining}, recent change < 3, still practising after/without support. Prioritised by gap × ln(interviews). |
+| **Student Trajectory** | Student Careers Profile (prominent) + Improvement (institutional movement) + student's Careers Support | shared engine; `trajectory` block on the snapshot / profile / `eki_my_development` |
+| **Interview DNA Evolution** | Profile (behind "Show Interview DNA + how it has changed") + student's Careers Support | `jr_student_dna_rows` → `dna_evolution` (earliest vs latest per dimension, strongest improvement, persistent weakness). The six controlled dimensions only. |
+| **Programme Employability Pulse** + **Programme-Level Intelligence** | Career Insights + Overview "what needs attention" | `eki_programme_pulse` — programme = cohort (documented heuristic; the only membership-backed grouping). **k-anonymised**: any programme with < 5 assessed students → `{ suppressed: true }`; per-competency figures also require ≥ 5. `programmes.programmeIntelligence()` synthesises the "so what?" list deterministically (no employment-outcome language). |
+| **Resource Recommendation Layer** | Profile + Development Areas + student's Careers Support | `resources` (14 seeded global rows; `institution_id` nullable for university-specific). Matched deterministically to the weakest below-target dimension. `list_resources` / snapshot `recommended_resources`. |
+| **Personalised Development Plans** | Profile (`DevelopmentPlanCard`, adviser-editable) + student's Careers Support (read-only) | `development_plans` + `development_plan_items`. RLS: student reads **own**, staff read their institution's, **no client write**. `save_development_plan` / `set_development_plan_status` / `upsert_development_plan_item` (SECURITY DEFINER, double-gated). `developmentPlan.suggestPlan()` is the deterministic default. |
+| **Follow-up Automation** | Appointments → Follow-ups tab | `eki_follow_up_queue` — **derived**, no duplicated state: outcome flagged `follow_up_required` (+ new `follow_up_due` / `follow_up_completed_at` columns), development-plan review date passed, or still below target after support. `mark_follow_up_done` clears an outcome follow-up. |
+| **AI Careers Adviser Briefing** | Profile — "Brief me" | `briefing.deterministicBriefing()` runs instantly with **no AI** and is what the button shows. "Use AI synthesis" calls the `eki-adviser-briefing` Edge Function, which re-authorises via `eki_student_snapshot` (the RPC's own gate), sends a **compact fact set only** (no transcript, no adviser notes), and applies a strict hallucination-resistant prompt (only supplied facts, no diagnosis, no causality, no employment prediction). If `ANTHROPIC_API_KEY` is unset or the model fails, it returns `{ ok:false }` and the client keeps the deterministic briefing — **EKI² never depends on it**. `adviser_briefings` persists the last briefing (staff-only) to avoid re-cost. |
+
+**Three information types, still strictly separated**: (A) institutional aggregate
+analytics — k-anonymised; (B) internal careers records — `appointment_outcomes`,
+`adviser_briefings` (staff-only, RPC-write); (C) student-facing —
+`appointments.invite_message`, `careers_messages`, `development_plans`,
+`resources`, `eki_my_development`. A student retrieves only (C), and only their own.
+
+**AI cost.** One ~600-token request **only** when an adviser clicks "Use AI synthesis"
+and no briefing is cached; model defaults to a small, cheap model
+(`EKI_BRIEFING_MODEL`, default `claude-haiku-4-5`). With no key configured the cost is
+exactly zero and every feature still works.
+
 ## Deployment
 
-**No new environment variables. No new Edge Functions.** Only database migrations and
-the front-end bundle.
+**One optional Edge Function** (`eki-adviser-briefing`) — needs `ANTHROPIC_API_KEY`
+(and optionally `EKI_BRIEFING_MODEL`) to do AI synthesis; without it, it degrades
+cleanly and EKI² is unaffected. Otherwise: database migrations and the front-end
+bundle only.
 
 1. **Apply the migrations** (repo files under `supabase/migrations/`, or via the
    Supabase MCP `apply_migration`). Repo files, in order:
@@ -279,6 +319,7 @@ the front-end bundle.
    * `20260909190000_careers_appointments_policy_merge.sql` — one SELECT policy per appointment table (perf)
    * `20260909200000_careers_relationship_history.sql` — `appointment_outcomes` + `save_appointment_outcome` + `eki_student_careers_profile`
    * `20260909210000_careers_performance_intervention.sql` — `invited`/`declined` appointment statuses + invite columns, `careers_messages` (+RLS), `eki_readiness_roster`, `eki_student_snapshot`, `eki_invite_to_appointment`, `respond_to_appointment_invitation`, `send_careers_message` + list/mark-read, re-created `list_my_appointments` / `list_institution_appointments` for invite context
+   * `20260909220000_careers_intelligence_platform.sql` — `resources`, `development_plans`, `development_plan_items`, `adviser_briefings` (+RLS); `appointment_outcomes` follow-up columns; the shared trajectory/DNA helpers; `eki_student_intelligence`, `eki_programme_pulse`, `eki_follow_up_queue`, `eki_my_development`, `list_resources`; `save_development_plan` / `set_development_plan_status` / `upsert_development_plan_item` / `mark_follow_up_done` / `save_adviser_briefing`; `eki_student_snapshot` + `eki_student_careers_profile` extended with trajectory / DNA evolution / resources / flags / plan / last briefing
    All are idempotent (`create ... if not exists`, `create or replace`, `drop policy if
    exists` + recreate) and additive. The live project also carries a few folded-in
    hot-fix migrations in its ledger (`..._can_manage_bool`, `..._pin_helper_search_path`,
@@ -356,9 +397,15 @@ consistent with the rest of the repo): `taxonomy`, `readiness` (3-group threshol
 `chartsRender` (react-dom/server), `appStructure` (route gate, isolation, insight-first
 UX ordering, adviser-first profile, readiness-first Performance),
 `interventionWiring` (distribution → roster → profile → arrange/message; student hub),
+`trajectory` (the one classifier + DNA-evolution shaping),
+`programmes` (programme intelligence synthesis, suppression respected, no employment claims),
+`developmentPlan` (deterministic plan generation + shaping),
+`briefing` (deterministic briefing — no fabricated fact, evidence vs suggestion, AI rules),
+`adviserBriefingFunction` (Edge Function: re-auth, minimal payload, safe fallback),
 `foundationMigration`, `analyticsMigration`, `hardeningMigrations`, `careersMigration`,
 `careersHistoryMigration`, `careersPerformanceInterventionMigration`,
+`careersIntelligenceMigration` (k-anon on programme pulse, double gates, RLS, no LLM in SQL),
 `careersAppointmentsCore`, `careersAppointmentsWiring`. Plus the live SQL batteries
-(RLS/permission matrix, appointment isolation + privacy matrix, readiness-roster
-role-simulated matrix, calculation spot-checks vs hand computation, `EXPLAIN`, query
-timing).
+(RLS/permission matrix, appointment isolation + privacy matrix, readiness-roster + intelligence
+role-simulated matrix, cross-institution / student-isolation checks, programme k-anon
+suppression, calculation spot-checks vs hand computation, `EXPLAIN`, query timing).

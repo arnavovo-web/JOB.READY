@@ -9,6 +9,8 @@
  * ================================================================== */
 
 import { dimensionLabel, categoryLabel } from "./taxonomy.js";
+import { shapeTrajectory, shapeDnaEvolution } from "./trajectory.js";
+import { shapeDevelopmentPlan } from "./developmentPlan.js";
 
 export const APPOINTMENT_STATUS = {
   invited:   { label: "Invited",   tone: "info" },
@@ -225,6 +227,27 @@ export function shapeCareersProfile(raw) {
     previousSupport: shapePreviousSupport(raw?.previous_support),
     history: (Array.isArray(raw?.history) ? raw.history : []).map(shapeHistoryEntry),
     longitudinal: (Array.isArray(raw?.longitudinal) ? raw.longitudinal : []).map(shapeLongitudinal),
+    // intelligence-platform blocks (present on eki_student_snapshot; null-safe elsewhere)
+    trajectory: raw?.trajectory ? shapeTrajectory(raw.trajectory) : null,
+    dnaEvolution: raw?.dna_evolution ? shapeDnaEvolution(raw.dna_evolution) : null,
+    recommendedResources: (Array.isArray(raw?.recommended_resources) ? raw.recommended_resources : []).map((r) => ({
+      id: r.id, title: r.title, description: r.description, type: r.type,
+      competency: r.competency, durationMinutes: r.duration_minutes ?? null, url: r.url || null,
+    })),
+    flags: {
+      isStuck: !!raw?.flags?.is_stuck,
+      noPriorContact: !!raw?.flags?.no_prior_contact,
+    },
+    developmentPlan: shapeDevelopmentPlan(raw?.development_plan),
+    lastBriefing: raw?.last_briefing && typeof raw.last_briefing === "object"
+      ? {
+          focus: raw.last_briefing.briefing_text || "",
+          discussion: Array.isArray(raw.last_briefing.discussion_points) ? raw.last_briefing.discussion_points : [],
+          generatedBy: raw.last_briefing.generated_by || "deterministic",
+          model: raw.last_briefing.model || null,
+          createdAt: raw.last_briefing.created_at || null,
+        }
+      : null,
   };
 }
 

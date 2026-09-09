@@ -125,6 +125,25 @@ describe("dashboard shell — the six insight sections + setup", () => {
     expect(read("charts.jsx")).toMatch(/SuppressedBlock|Suppressed/);
     expect(read("charts.jsx")).toMatch(/fewer than \{min \|\| 5\}/);
   });
+  it("integrates the intelligence platform without adding ten nav items", () => {
+    // NAV still has exactly the established sections (+ appointments, cohorts) — no new top-level items
+    const nav = APP.slice(APP.indexOf("const NAV = ["), APP.indexOf("];", APP.indexOf("const NAV = [")));
+    const navKeys = [...nav.matchAll(/key:\s*"([a-z]+)"/g)].map((m) => m[1]);
+    expect(new Set(navKeys)).toEqual(new Set(["overview", "performance", "competencies", "career", "development", "improvement", "appointments", "cohorts"]));
+    // features land inside existing views
+    expect(APP).toMatch(/<InterventionQueuePanel/);       // No Contact Yet / Stuck -> Performance
+    expect(APP).toMatch(/<ProgrammePulseGrid/);           // Programme pulse -> Career Insights
+    expect(APP).toMatch(/<ProgrammeIntelligenceList/);    // Programme intelligence -> Career Insights + Overview
+    expect(APP).toMatch(/<FollowUpQueue/);                // follow-ups -> Appointments
+    expect(APP).toMatch(/<BriefMe/);                      // adviser briefing -> profile
+    expect(APP).toMatch(/<TrajectoryBlock/);              // trajectory -> profile
+    expect(APP).toMatch(/<DevelopmentPlanCard/);          // dev plan -> profile
+  });
+  it("the trajectory engine + DNA evolution are shared, not recomputed per feature", () => {
+    expect(read("appointments.js")).toMatch(/import \{ shapeTrajectory, shapeDnaEvolution \} from "\.\/trajectory\.js"/);
+    // Stuck / No-contact / snapshot all read the same eki_student_intelligence / snapshot payloads
+    expect(APP).toMatch(/api\.getStudentIntelligence/);
+  });
   it("Performance leads with the readiness distribution, not a single cohort-wide verdict", () => {
     // primary question is the distribution one
     expect(APP).toMatch(/Where are our students in their interview readiness\?/);
@@ -185,7 +204,7 @@ describe("no parallel student store in the data layer", () => {
     // every RPC is a SECURITY DEFINER function that self-enforces institution-staff /
     // student-link authorisation — never a raw student table read from the client.
     const rpcs = [...API.matchAll(/\brpc\(["'](\w+)["']/g)].map((m) => m[1]);
-    const RPC_OK = /^(inst_.+|get_my_institutions|jr_inst_.+|inst_reconcile_cohort_members|list_institution_appointments|eki_student_briefing|eki_student_careers_profile|eki_student_snapshot|eki_readiness_roster|eki_list_student_messages|eki_invite_to_appointment|send_careers_message|save_appointment_outcome|set_appointment_status|list_appointment_types)$/;
+    const RPC_OK = /^(inst_.+|get_my_institutions|jr_inst_.+|inst_reconcile_cohort_members|list_institution_appointments|eki_.+|send_careers_message|save_appointment_outcome|set_appointment_status|list_appointment_types|save_development_plan|set_development_plan_status|upsert_development_plan_item|mark_follow_up_done|list_resources|save_adviser_briefing)$/;
     for (const r of rpcs) expect(RPC_OK.test(r), `unexpected rpc: ${r}`).toBe(true);
   });
   it("the appointment RPCs the client calls are the authorised set (no direct student-table reads)", () => {
@@ -225,7 +244,7 @@ describe("Student Careers Profile (relationship history)", () => {
     expect(iFocus).toBeGreaterThan(iWhy);
     expect(iPerf).toBeGreaterThan(iFocus);
     // the competency detail is behind progressive disclosure, not shown by default
-    expect(APP).toMatch(/Show the competency detail/);
+    expect(APP).toMatch(/Show Interview DNA \+ how it has changed/);
   });
   it("the outcome form captures the required fields and saves via the RPC", () => {
     for (const f of ["What was discussed", "Actions agreed", "Recommended next steps", "Follow-up required"]) {

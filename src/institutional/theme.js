@@ -317,6 +317,11 @@ export const INSTITUTIONAL_CSS = `
 .ii-ovcard-good::before{ background:var(--ii-good); }
 .ii-ovcard-info::before{ background:var(--ii-blue); }
 .ii-ovcard-neutral::before{ background:var(--ii-text-faint); }
+.ii-ovcard-warn{ background:linear-gradient(180deg, var(--ii-warn-bg), var(--ii-card) 55%); }
+.ii-ovcard-bad{ background:linear-gradient(180deg, var(--ii-bad-bg), var(--ii-card) 55%); }
+.ii-ovcard-good{ background:linear-gradient(180deg, var(--ii-good-bg), var(--ii-card) 55%); }
+.ii-ovcard-info{ background:linear-gradient(180deg, var(--ii-info-bg), var(--ii-card) 55%); }
+.ii-ovcard-neutral{ background:var(--ii-card); }
 .ii-ovcard-head{ display:inline-flex; align-items:center; gap:6px; font-size:11px; font-weight:800; letter-spacing:0.06em; text-transform:uppercase; color:var(--ii-text-faint); }
 .ii-ovcard-insight{ font-size:14.5px; font-weight:700; line-height:1.4; color:var(--ii-navy); }
 .ii-ovcard-figure{ font-size:12.5px; font-weight:700; color:var(--ii-text-dim); font-variant-numeric:tabular-nums; }

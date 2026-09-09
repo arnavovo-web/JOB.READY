@@ -16,7 +16,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   LayoutDashboard, BarChart3, Radar, Compass, Target, LineChart,
   Users, LogOut, Building2, ChevronDown, ShieldCheck, RefreshCw, Lock,
-  CalendarClock, Clock, ArrowLeft, CheckCircle2, XCircle, Briefcase, MessageSquareText,
+  CalendarClock, Clock, ArrowLeft, ArrowRight, CheckCircle2, XCircle, Briefcase, MessageSquareText,
   Plus, Trash2, History, Save, TrendingUp,
 } from "lucide-react";
 import { INSTITUTIONAL_CSS } from "./theme.js";
@@ -57,6 +57,11 @@ import {
 import {
   ReadinessDistribution, RosterPanel, ArrangeSupportModal, MessageStudentsModal,
 } from "./intervention.jsx";
+import {
+  InterventionQueuePanel, ProgrammePulseGrid, ProgrammeIntelligenceList, FollowUpQueue,
+  DevelopmentPlanCard, BriefMe, TrajectoryBlock, DnaEvolutionBlock, ResourceList,
+} from "./intelligence.jsx";
+import { topInstitutionalInsight } from "./programmes.js";
 
 /* ---- style injection (once) ----------------------------------- */
 let styleInjected = false;
@@ -396,10 +401,17 @@ function AppointmentsView({ ctx }) {
   const { institutionId, institution, userId } = ctx;
   const [tab, setTab] = useState("schedule");
   const [selected, setSelected] = useState(null); // appointment id
+  const [studentSel, setStudentSel] = useState(null); // student id (from follow-ups)
+  const follow = useSection(api.getFollowUpQueue, ctx);
 
+  if (studentSel) {
+    return <StudentCareersProfileView ctx={ctx} studentId={studentSel} onBack={() => setStudentSel(null)} />;
+  }
   if (selected) {
     return <AppointmentDetail ctx={ctx} appointmentId={selected} onBack={() => setSelected(null)} />;
   }
+
+  const fuCount = Array.isArray(follow.env) ? follow.env.length : 0;
 
   return (
     <>
@@ -409,6 +421,7 @@ function AppointmentsView({ ctx }) {
         actions={
           <div className="ii-row" style={{ gap: 6 }}>
             <Btn size="sm" variant={tab === "schedule" ? "primary" : "ghost"} onClick={() => setTab("schedule")}>Schedule</Btn>
+            <Btn size="sm" variant={tab === "followups" ? "primary" : "ghost"} onClick={() => setTab("followups")}>Follow-ups{fuCount ? ` (${fuCount})` : ""}</Btn>
             <Btn size="sm" variant={tab === "availability" ? "primary" : "ghost"} onClick={() => setTab("availability")}>My availability</Btn>
           </div>
         }
@@ -416,10 +429,16 @@ function AppointmentsView({ ctx }) {
       <SectionQuestion>
         {tab === "schedule"
           ? `Who am I seeing, when, and why are they coming? Open any appointment for that student's careers profile — ${institution?.name || "your institution"} only.`
-          : "Publish the times students can book with you."}
+          : tab === "followups"
+            ? "Where does a previous intervention need another step?"
+            : "Publish the times students can book with you."}
       </SectionQuestion>
       {tab === "schedule"
         ? <ScheduleTab institutionId={institutionId} onOpen={setSelected} />
+        : tab === "followups"
+          ? (follow.loading ? <LoadState label="Loading follow-ups…" />
+            : <FollowUpQueue ctx={ctx} items={follow.env || []} onReload={follow.reload}
+                onOpenStudent={(id) => setStudentSel(id)} />)
         : <AvailabilityTab institutionId={institutionId} userId={userId} />}
     </>
   );
@@ -557,12 +576,20 @@ function AppointmentDetail({ ctx, appointmentId, onBack }) {
             />
             {notice ? <div style={{ marginBottom: 14 }}><Alert tone="info">{notice}</Alert></div> : null}
 
+            {shaped.student.id ? <BriefMe ctx={ctx} shaped={shaped} studentId={shaped.student.id} appointmentId={appointmentId} /> : null}
+
             {/* 1 — why they're here */}
             <div className="ii-section">
               <SectionTitle>Why they're here</SectionTitle>
               {shaped.appointment.comment
                 ? <p className="ii-profile-why">“{shaped.appointment.comment}”</p>
                 : <p className="ii-text-sm ii-muted">The student didn't add a reason when booking. {summary.hasData ? "Use their development areas below to steer the conversation." : ""}</p>}
+              {shaped.flags?.isStuck || shaped.flags?.noPriorContact ? (
+                <p className="ii-text-sm ii-muted" style={{ marginTop: 8 }}>
+                  {shaped.flags.noPriorContact ? "First recorded careers contact. " : ""}
+                  {shaped.flags.isStuck ? "Flagged as stuck — limited recent improvement despite practice." : ""}
+                </p>
+              ) : null}
               {summary.relevantApplication ? (
                 <p className="ii-text-sm ii-muted" style={{ marginTop: 8 }}>
                   <Briefcase size={12} /> In context of an application to{" "}
@@ -593,14 +620,27 @@ function AppointmentDetail({ ctx, appointmentId, onBack }) {
               </Card>
             )}
 
-            {/* 3 — the careers journey so far */}
+            {/* 3 — trajectory + development plan */}
+            <div className="ii-section">
+              <SectionTitle>Trajectory — where is this student going?</SectionTitle>
+              <TrajectoryBlock trajectory={shaped.trajectory} />
+            </div>
+            {shaped.student.id ? <DevelopmentPlanCard ctx={ctx} shaped={shaped} studentId={shaped.student.id} onSaved={load} /> : null}
+            {(shaped.recommendedResources || []).length ? (
+              <div className="ii-section">
+                <ResourceList resources={shaped.recommendedResources} heading="Recommended resources for this student"
+                  note="Matched to their current development area." />
+              </div>
+            ) : null}
+
+            {/* 4 — the careers journey so far */}
             <PreviousSupportCard prev={prev} />
             <CareersJourney history={shaped.history} longitudinal={shaped.longitudinal} />
 
-            {/* 4 — record this appointment's outcome */}
+            {/* 5 — record this appointment's outcome */}
             <OutcomeForm appointmentId={appointmentId} shaped={shaped} onSaved={load} />
 
-            {/* 5 — interview performance detail, deliberately lower */}
+            {/* 6 — interview performance detail, deliberately lower */}
             <div className="ii-section">
               <SectionTitle>Interview performance</SectionTitle>
               <p className="ii-text-sm ii-muted" style={{ marginTop: -4 }}>
@@ -609,8 +649,14 @@ function AppointmentDetail({ ctx, appointmentId, onBack }) {
                   : "Not enough completed interviews yet to break this down."}
               </p>
               {shaped.dna.hasEnoughData ? (
-                <Disclosure summary="Show the competency detail">
+                <Disclosure summary="Show Interview DNA + how it has changed">
                   <InterviewDnaCard dna={shaped.dna} target={shaped.target} />
+                  {shaped.dnaEvolution?.hasData ? (
+                    <div style={{ marginTop: 16 }}>
+                      <SectionTitle>How the profile has changed</SectionTitle>
+                      <DnaEvolutionBlock evolution={shaped.dnaEvolution} />
+                    </div>
+                  ) : null}
                   <PatternsCard shaped={shaped} />
                   <ApplicationCard app={shaped.application} />
                 </Disclosure>
@@ -1048,15 +1094,16 @@ function DateRange({ filters, onChange }) {
 function useSection(fetcher, ctx) {
   const { institutionId, filters } = ctx;
   const [state, setState] = useState({ loading: true, env: null, error: "" });
+  const [tick, setTick] = useState(0);
   useEffect(() => {
     let dead = false;
-    setState({ loading: true, env: null, error: "" });
+    setState((s) => ({ loading: true, env: tick === 0 ? null : s.env, error: "" }));
     fetcher(institutionId, { cohortIds: filters.cohortIds, from: filters.from, to: filters.to })
       .then((env) => { if (!dead) setState({ loading: false, env, error: "" }); })
       .catch((e) => { if (!dead) setState({ loading: false, env: null, error: e.message || "Failed to load." }); });
     return () => { dead = true; };
-  }, [institutionId, filters, fetcher]);
-  return state;
+  }, [institutionId, filters, fetcher, tick]);
+  return { ...state, reload: () => setTick((t) => t + 1) };
 }
 
 /** Fetch every section in one parallel round (Overview synthesis). */
@@ -1136,7 +1183,17 @@ function NoData({ env, whatFor }) {
 function OverviewView({ ctx }) {
   const { institution, cohortSummary } = ctx;
   const { loading, data, error } = useAllSections(ctx);
+  const intel = useSection(api.getStudentIntelligence, ctx);
+  const pulse = useSection(api.getProgrammePulse, ctx);
+  const follow = useSection(api.getFollowUpQueue, ctx);
   const t = cohortSummary.totals;
+
+  const summary = intel.env?.summary || {};
+  const movement = intel.env?.movement || {};
+  const topInsight = useMemo(() => topInstitutionalInsight({
+    pulse: pulse.env || [], summary, movement,
+    followUpCount: Array.isArray(follow.env) ? follow.env.length : 0,
+  }), [pulse.env, summary, movement, follow.env]);
 
   const cards = useMemo(() => (data ? overviewCards(data, insights) : []), [data]);
   const ov = data?.overview;
@@ -1173,6 +1230,27 @@ function OverviewView({ ctx }) {
               </div>
             </Card>
           )}
+
+          {!intel.loading && (summary.no_contact || summary.stuck || (Array.isArray(follow.env) && follow.env.length) || topInsight) ? (
+            <div className="ii-section">
+              <SectionTitle>What needs attention</SectionTitle>
+              {topInsight ? (
+                <section className="ii-insight" style={{ "--ii-accent": topInsight.kind === "positive_movement" ? "var(--ii-good)" : "var(--ii-blue)" }}>
+                  <div className="ii-insight-eyebrow">Key institutional insight</div>
+                  <h3 className="ii-insight-lead" style={{ fontSize: 15 }}>{topInsight.headline}</h3>
+                  {topInsight.detail ? <p className="ii-insight-why">{topInsight.detail}</p> : null}
+                  {topInsight.cta ? <button className="ii-action-cta" onClick={() => ctx.goTo(topInsight.cta.target)}>{topInsight.cta.label} <ArrowRight size={13} /></button> : null}
+                </section>
+              ) : null}
+              <div className="ii-qstats">
+                {summary.no_contact ? <QuietStat label="No contact yet" word={`${summary.no_contact}`} tone="warn" figure="below target, no recorded support" /> : null}
+                {summary.stuck ? <QuietStat label="Stuck" word={`${summary.stuck}`} tone="bad" figure="practising without improvement" /> : null}
+                {Array.isArray(follow.env) && follow.env.length ? <QuietStat label="Follow-ups due" word={`${follow.env.length}`} tone="warn" figure="interventions to progress" /> : null}
+                {(movement.developing_to_ready || movement.needs_support_to_developing)
+                  ? <QuietStat label="Moved up a group" word={`${(movement.developing_to_ready || 0) + (movement.needs_support_to_developing || 0)}`} tone="good" figure="this period" /> : null}
+              </div>
+            </div>
+          ) : null}
 
           {readyWord ? (
             <div className="ii-qstats">
@@ -1226,17 +1304,22 @@ function InsightLayout({ findings, onCta, evidence, evidenceSummary }) {
 function PerformanceView({ ctx }) {
   const perf = useSection(api.getPerformance, ctx);
   const roster = useSection(api.getReadinessRoster, ctx);
+  const intel = useSection(api.getStudentIntelligence, ctx);
   const env = perf.env;
   const evLive = env && isLive(env) && env.overall && !env.overall.suppressed;
   const findings = useMemo(() => (env ? rankFindings(derivePerformanceFindings(env)) : []), [env]);
+  const intelStudents = intel.env?.students || [];
+  const summary = intel.env?.summary || {};
 
   const [drill, setDrill] = useState({ mode: "distribution", groupKey: null, studentId: null });
   useEffect(() => { setDrill({ mode: "distribution", groupKey: null, studentId: null }); }, [ctx.institutionId, ctx.filters]);
 
+  const openStudent = (id) => setDrill((d) => ({ ...d, mode: "profile", studentId: id, from: d.mode }));
+
   if (drill.mode === "profile" && drill.studentId) {
     return (
       <StudentCareersProfileView ctx={ctx} studentId={drill.studentId}
-        onBack={() => setDrill((d) => ({ ...d, mode: "roster", studentId: null }))} />
+        onBack={() => setDrill((d) => ({ ...d, mode: d.from || "roster", studentId: null }))} />
     );
   }
   if (drill.mode === "roster" && drill.groupKey) {
@@ -1245,7 +1328,17 @@ function PerformanceView({ ctx }) {
         <SectionHeader ctx={ctx} eyebrow="Performance" question="Who should we intervene with?" />
         <RosterPanel ctx={ctx} roster={roster.env} groupKey={drill.groupKey}
           onBack={() => setDrill({ mode: "distribution", groupKey: null, studentId: null })}
-          onOpenStudent={(id) => setDrill((d) => ({ ...d, mode: "profile", studentId: id }))} />
+          onOpenStudent={(id) => setDrill((d) => ({ ...d, mode: "profile", studentId: id, from: "roster" }))} />
+      </>
+    );
+  }
+  if (drill.mode === "nocontact" || drill.mode === "stuck") {
+    return (
+      <>
+        <SectionHeader ctx={ctx} eyebrow="Performance" question={drill.mode === "stuck" ? "Who is stuck despite practising?" : "Who needs a first careers conversation?"} />
+        <InterventionQueuePanel ctx={ctx} kind={drill.mode} students={intelStudents}
+          onBack={() => setDrill({ mode: "distribution", groupKey: null, studentId: null })}
+          onOpenStudent={(id) => setDrill((d) => ({ ...d, mode: "profile", studentId: id, from: drill.mode }))} />
       </>
     );
   }
@@ -1259,6 +1352,25 @@ function PerformanceView({ ctx }) {
 
           <ReadinessDistribution roster={roster.env}
             onOpenGroup={(k) => setDrill({ mode: "roster", groupKey: k, studentId: null })} />
+
+          {!intel.loading && (summary.no_contact || summary.stuck) ? (
+            <div className="ii-ovcards ii-section">
+              {summary.no_contact ? (
+                <button className="ii-ovcard ii-ovcard-warn" onClick={() => setDrill({ mode: "nocontact", groupKey: null, studentId: null })}>
+                  <span className="ii-ovcard-head"><RefreshCw size={13} /> No contact yet</span>
+                  <span className="ii-ovcard-insight">{summary.no_contact} student{summary.no_contact === 1 ? "" : "s"} below target with no recorded careers support</span>
+                  <span className="ii-ovcard-link">Review students <ArrowRight size={12} /></span>
+                </button>
+              ) : null}
+              {summary.stuck ? (
+                <button className="ii-ovcard ii-ovcard-bad" onClick={() => setDrill({ mode: "stuck", groupKey: null, studentId: null })}>
+                  <span className="ii-ovcard-head"><TrendingUp size={13} /> Stuck students</span>
+                  <span className="ii-ovcard-insight">{summary.stuck} student{summary.stuck === 1 ? "" : "s"} practising with limited recent improvement</span>
+                  <span className="ii-ovcard-link">Review support <ArrowRight size={12} /></span>
+                </button>
+              ) : null}
+            </div>
+          ) : null}
 
           {evLive ? (
             <Disclosure summary="Show the evidence">
@@ -1315,14 +1427,13 @@ function StudentCareersProfileView({ ctx, studentId, onBack }) {
   const [modal, setModal] = useState(null);
   const [notice, setNotice] = useState("");
 
-  useEffect(() => {
-    let dead = false;
-    setState({ loading: true, raw: null, error: "" });
+  const load = useCallback(() => {
+    setState((s) => ({ ...s, loading: s.raw == null }));
     api.getStudentSnapshot(ctx.institutionId, studentId)
-      .then((raw) => { if (!dead) setState({ loading: false, raw, error: "" }); })
-      .catch((e) => { if (!dead) setState({ loading: false, raw: null, error: e.message || "Couldn't load this student's profile." }); });
-    return () => { dead = true; };
+      .then((raw) => setState({ loading: false, raw, error: "" }))
+      .catch((e) => setState({ loading: false, raw: null, error: e.message || "Couldn't load this student's profile." }));
   }, [ctx.institutionId, studentId]);
+  useEffect(() => { setState({ loading: true, raw: null, error: "" }); load(); }, [load]);
 
   const shaped = useMemo(() => shapeCareersProfile(state.raw), [state.raw]);
   const summary = useMemo(() => deriveBriefingSummary(shaped), [shaped]);
@@ -1364,12 +1475,16 @@ function StudentCareersProfileView({ ctx, studentId, onBack }) {
               <Btn size="sm" variant="primary" onClick={() => setModal("message")}><MessageSquareText size={13} /> Message student</Btn>
             </div>
 
+            <BriefMe ctx={ctx} shaped={shaped} studentId={studentId} />
+
             <div className="ii-section">
               <SectionTitle>Why they're here</SectionTitle>
               <p className="ii-text-sm ii-muted" style={{ margin: 0 }}>
                 Opened from the readiness review.{" "}
+                {shaped.flags?.noPriorContact ? "No recorded careers contact yet. " : ""}
+                {shaped.flags?.isStuck ? "Appears stuck — limited recent improvement despite practice. " : ""}
                 {summary.primaryDevelopmentArea
-                  ? `Their weakest area right now is ${summary.primaryDevelopmentArea.label.toLowerCase()} (${summary.primaryDevelopmentArea.mean}).`
+                  ? `Weakest area right now is ${summary.primaryDevelopmentArea.label.toLowerCase()} (${summary.primaryDevelopmentArea.mean}).`
                   : (summary.hasData ? "No dimension is below the interview-ready threshold." : "Not enough practice data yet to pinpoint a focus.")}
               </p>
             </div>
@@ -1393,6 +1508,20 @@ function StudentCareersProfileView({ ctx, studentId, onBack }) {
               </Card>
             )}
 
+            <div className="ii-section">
+              <SectionTitle>Trajectory — where is this student going?</SectionTitle>
+              <TrajectoryBlock trajectory={shaped.trajectory} />
+            </div>
+
+            <DevelopmentPlanCard ctx={ctx} shaped={shaped} studentId={studentId} onSaved={load} />
+
+            {(shaped.recommendedResources || []).length ? (
+              <div className="ii-section">
+                <ResourceList resources={shaped.recommendedResources} heading="Recommended resources for this student"
+                  note={`Matched to their current development area${shaped.dnaEvolution?.persistentWeakness ? ` (${dimensionLabel(shaped.dnaEvolution.persistentWeakness)})` : ""}.`} />
+              </div>
+            ) : null}
+
             <PreviousSupportCard prev={prev} />
             <CareersJourney history={shaped.history} longitudinal={shaped.longitudinal} />
 
@@ -1404,8 +1533,14 @@ function StudentCareersProfileView({ ctx, studentId, onBack }) {
                   : "Not enough completed interviews yet to break this down."}
               </p>
               {shaped.dna.hasEnoughData ? (
-                <Disclosure summary="Show the competency detail">
+                <Disclosure summary="Show Interview DNA + how it has changed">
                   <InterviewDnaCard dna={shaped.dna} target={shaped.target} />
+                  {shaped.dnaEvolution?.hasData ? (
+                    <div style={{ marginTop: 16 }}>
+                      <SectionTitle>How the profile has changed</SectionTitle>
+                      <DnaEvolutionBlock evolution={shaped.dnaEvolution} />
+                    </div>
+                  ) : null}
                   <PatternsCard shaped={shaped} />
                 </Disclosure>
               ) : null}
@@ -1495,14 +1630,38 @@ function CompetenciesView({ ctx }) {
  * ================================================================= */
 function CareerView({ ctx }) {
   const { loading, env, error } = useSection(api.getCareerInsights, ctx);
+  const pulse = useSection(api.getProgrammePulse, ctx);
+  const intel = useSection(api.getStudentIntelligence, ctx);
+  const followUps = useSection(api.getFollowUpQueue, ctx);
   const findings = useMemo(() => (env ? rankFindings(deriveCareerFindings(env)) : []), [env]);
   const fams = env?.families || [];
   const reportable = fams.filter((f) => !f.suppressed && f.mean != null);
   const live = env && isLive(env);
 
+  const intelEnv = useMemo(() => ({
+    pulse: pulse.env || [],
+    summary: intel.env?.summary || {},
+    movement: intel.env?.movement || {},
+    followUpCount: Array.isArray(followUps.env) ? followUps.env.length : 0,
+  }), [pulse.env, intel.env, followUps.env]);
+
   return (
     <>
-      <SectionHeader ctx={ctx} eyebrow="Career Insights" question="What are we seeing across different career paths?" />
+      <SectionHeader ctx={ctx} eyebrow="Career Insights" question="What should the careers team pay attention to?" />
+
+      {!pulse.loading ? (
+        <>
+          <SectionTitle>What needs attention</SectionTitle>
+          <ProgrammeIntelligenceList env={intelEnv} onCta={ctx.goTo} />
+          <div style={{ marginTop: 24 }}>
+            <SectionTitle>Programme employability pulse</SectionTitle>
+            <ProgrammePulseGrid pulse={pulse.env || []} />
+          </div>
+        </>
+      ) : <LoadState label="Loading programme intelligence…" />}
+
+      <div style={{ marginTop: 8 }}>
+      <SectionQuestion>How prepared are students for each career path they're practising for?</SectionQuestion>
       {loading ? <LoadState label="Loading career insights…" /> : !live ? <><ContractOrError error={error} env={env} /><NoData env={env} whatFor="career-path performance" /></> : (
         <>
           <ContractOrError error={error} env={env} />
@@ -1537,6 +1696,7 @@ function CareerView({ ctx }) {
           <AnonNote min={MIN_COHORT_N} />
         </>
       )}
+      </div>
     </>
   );
 }
@@ -1552,6 +1712,15 @@ function DevelopmentView({ ctx }) {
   const findings = useMemo(() => (dev.env ? rankFindings(deriveDevelopmentFindings(dev.env, imp.env)) : []), [dev.env, imp.env]);
   const qFindings = useMemo(() => (qp.env ? rankFindings(deriveQuestionFindings(qp.env)) : []), [qp.env]);
   const live = dev.env && isLive(dev.env) && (dev.env.opportunities || []).length;
+
+  const topGapKey = (dev.env?.opportunities || []).find((o) => o.kind === "competency")?.key || null;
+  const [resources, setResources] = useState([]);
+  useEffect(() => {
+    let dead = false;
+    if (!topGapKey) { setResources([]); return; }
+    api.listResources(ctx.institutionId, topGapKey).then((r) => { if (!dead) setResources(r); }).catch(() => {});
+    return () => { dead = true; };
+  }, [ctx.institutionId, topGapKey]);
 
   return (
     <>
@@ -1575,8 +1744,20 @@ function DevelopmentView({ ctx }) {
               </>
             }
           />
+
+          {resources.length ? (
+            <div className="ii-section">
+              <ResourceList resources={resources.map((r) => ({ ...r, durationMinutes: r.duration_minutes }))}
+                heading={`Resources for the top gap${topGapKey ? ` — ${dimensionLabel(topGapKey)}` : ""}`}
+                note="Point students at these from their development plan, or run a workshop for a whole cohort." />
+              <p className="ii-text-sm ii-muted" style={{ marginTop: 8 }}>
+                Where several students share this gap, an <strong>{topGapKey ? dimensionLabel(topGapKey) : "targeted"}</strong> workshop reaches them at once.
+              </p>
+            </div>
+          ) : null}
+
           <p className="ii-text-sm ii-muted">
-            EKI² can't identify individual students to you here — cohort figures stay aggregated. Use appointments to work with students directly.
+            EKI² can't identify individual students to you here — cohort figures stay aggregated. Use Performance → the readiness roster to work with students directly.
           </p>
           <AnonNote min={MIN_COHORT_N} />
         </>
@@ -1610,14 +1791,33 @@ function topOpportunities(devEnv, improvementEnv, n) {
  * ================================================================= */
 function ImprovementView({ ctx }) {
   const { loading, env, error } = useSection(api.getImprovement, ctx);
+  const intel = useSection(api.getStudentIntelligence, ctx);
   const findings = useMemo(() => (env ? rankFindings(deriveImprovementFindings(env)) : []), [env]);
   const o = env?.overall;
   const s = env?.scope || {};
   const live = env && isLive(env) && o && !o.suppressed;
+  const mv = intel.env?.movement || {};
+  const sm = intel.env?.summary || {};
 
   return (
     <>
       <SectionHeader ctx={ctx} eyebrow="Improvement" question="Are students getting better with practice?" />
+
+      {!intel.loading && intel.env ? (
+        <div className="ii-section">
+          <SectionTitle>Institutional movement this period</SectionTitle>
+          <div className="ii-qstats">
+            <QuietStat label="Moved into interview-ready" word={`${mv.developing_to_ready || 0}`} tone="good" />
+            <QuietStat label="Moved up from needs-support" word={`${mv.needs_support_to_developing || 0}`} tone="good" />
+            <QuietStat label="Slipped back a group" word={`${mv.slipped_back || 0}`} tone={mv.slipped_back ? "warn" : "neutral"} />
+            <QuietStat label="Improving trajectory" word={`${sm.improving || 0}`} figure={`${sm.plateauing || 0} plateauing · ${sm.declining || 0} declining`} />
+          </div>
+          <p className="ii-text-sm ii-muted" style={{ marginTop: -4 }}>
+            Movement compares each student's first and latest readiness group in this scope. Trajectory is the deterministic
+            per-student classification used across EKI².
+          </p>
+        </div>
+      ) : null}
       {loading ? <LoadState label="Loading improvement…" /> : !live ? (
         <>
           <ContractOrError error={error} env={env} />

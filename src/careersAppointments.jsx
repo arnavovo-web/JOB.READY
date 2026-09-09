@@ -14,9 +14,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   CalendarClock, ArrowLeft, ArrowRight, Clock, Check, X, MessageSquareText,
-  Building2, User, Briefcase, Mail, BellRing,
+  Building2, User, Briefcase, Mail, BellRing, TrendingUp, TrendingDown, Minus, BookOpen, Target,
 } from "lucide-react";
 import { getSupabase } from "./institutional/supabaseClient.js";
+import { dimensionLabel } from "./institutional/taxonomy.js";
 import {
   BOOKING_STEPS, canAdvance, bookingArgs, slotsForType, groupSlotsByDay,
   splitAppointments, canCancel, canRespondToInvite, studentStatusMeta,
@@ -39,6 +40,7 @@ export default function CareersAppointmentsScreen({ user, applications = [], onB
   const [slots, setSlots] = useState([]);
   const [mine, setMine] = useState([]);
   const [messages, setMessages] = useState([]);
+  const [development, setDevelopment] = useState(null);
   const [respondBusy, setRespondBusy] = useState("");
 
   const [mode, setMode] = useState("list"); // list | book | confirm
@@ -52,11 +54,12 @@ export default function CareersAppointmentsScreen({ user, applications = [], onB
   const load = useCallback(async () => {
     setPhase("loading"); setError("");
     try {
-      const [t, av, m, msg] = await Promise.all([
+      const [t, av, m, msg, dev] = await Promise.all([
         rpc("list_appointment_types"),
         rpc("list_careers_availability"),
         rpc("list_my_appointments"),
         rpc("list_my_careers_messages"),
+        rpc("eki_my_development").catch(() => null),
       ]);
       // de-dupe types by key (an institution's own label wins over the global)
       const byKey = new Map();
@@ -67,6 +70,7 @@ export default function CareersAppointmentsScreen({ user, applications = [], onB
       setSlots(Array.isArray(av) ? av : []);
       setMine(Array.isArray(m) ? m : []);
       setMessages(Array.isArray(msg) ? msg : []);
+      setDevelopment(dev && typeof dev === "object" ? dev : null);
       setPhase("ready");
     } catch (e) {
       setError(e.message || "Couldn't load careers appointments.");
@@ -161,7 +165,7 @@ export default function CareersAppointmentsScreen({ user, applications = [], onB
 
       {phase === "ready" && mode === "list" && (
         <ListView
-          invitations={invitations} upcoming={upcoming} past={past} messages={messages}
+          invitations={invitations} upcoming={upcoming} past={past} messages={messages} development={development}
           hasAvailability={hasAvailability}
           onBook={startBooking} onCancel={cancel} cancelBusy={cancelBusy}
           onRespond={respondToInvite} respondBusy={respondBusy} onMarkRead={markRead}
@@ -227,7 +231,7 @@ function AppointmentCard({ a, onCancel, cancelBusy }) {
   );
 }
 
-function ListView({ invitations, upcoming, past, messages, hasAvailability, onBook, onCancel, cancelBusy, onRespond, respondBusy, onMarkRead, error }) {
+function ListView({ invitations, upcoming, past, messages, development, hasAvailability, onBook, onCancel, cancelBusy, onRespond, respondBusy, onMarkRead, error }) {
   const unread = unreadCount(messages);
   const nothing = !invitations.length && !upcoming.length && !past.length && !messages.length && !hasAvailability;
 
@@ -291,6 +295,8 @@ function ListView({ invitations, upcoming, past, messages, hasAvailability, onBo
             )}
           </section>
 
+          {development ? <MyDevelopment dev={development} /> : null}
+
           {past.length ? (
             <section>
               <h4 className="jr-h3" style={{ marginBottom: 10 }}>Previous support</h4>
@@ -302,6 +308,106 @@ function ListView({ invitations, upcoming, past, messages, hasAvailability, onBo
         </>
       )}
     </>
+  );
+}
+
+const TRAJ_STUDENT = {
+  improving: "You're improving with practice.",
+  stable: "Your practice scores are broadly stable.",
+  plateauing: "Your recent scores have levelled off — a new focus could help.",
+  declining: "Your recent scores have dipped a little.",
+  insufficient_data: "Do a few more practice interviews to see your trajectory.",
+};
+
+function MyDevelopment({ dev }) {
+  const traj = dev.trajectory || {};
+  const ev = dev.dna_evolution || {};
+  const plan = dev.development_plan || null;
+  const resources = dev.recommended_resources || [];
+  const cardBase = { padding: 14, display: "flex", flexDirection: "column", gap: 6 };
+
+  return (
+    <section style={{ marginBottom: 26 }}>
+      <h4 className="jr-h3" style={{ marginBottom: 10 }}>My development</h4>
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+
+        <div className="jr-card" style={cardBase}>
+          <span style={{ fontWeight: 800, color: "var(--navy)", fontSize: 13 }}>My trajectory</span>
+          <p className="jr-text-sm" style={{ margin: 0 }}>{TRAJ_STUDENT[traj.classification] || TRAJ_STUDENT.insufficient_data}</p>
+          {(traj.series || []).length >= 2 ? (
+            <p className="jr-text-sm" style={{ margin: 0, color: "var(--text-dim)", fontVariantNumeric: "tabular-nums" }}>
+              Overall readiness: {traj.series.join(" → ")}
+            </p>
+          ) : null}
+        </div>
+
+        {ev.has_data ? (
+          <div className="jr-card" style={cardBase}>
+            <span style={{ fontWeight: 800, color: "var(--navy)", fontSize: 13 }}>How my Interview DNA has changed</span>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 2 }}>
+              {(ev.dimensions || []).map((d) => {
+                const up = (d.delta ?? 0) > 0, down = (d.delta ?? 0) < 0;
+                return (
+                  <div key={d.key} className="jr-text-sm" style={{ display: "flex", justifyContent: "space-between", fontVariantNumeric: "tabular-nums" }}>
+                    <span>{dimensionLabel(d.key)}</span>
+                    <span style={{ color: up ? "var(--good)" : down ? "var(--bad)" : "var(--text-faint)" }}>
+                      {d.earliest} → {d.latest} {up ? <TrendingUp size={11} /> : down ? <TrendingDown size={11} /> : <Minus size={11} />}
+                      {" "}{up ? "+" : down ? "−" : ""}{Math.abs(Math.round(d.delta ?? 0))}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+            {ev.strongest_improvement ? (
+              <p className="jr-text-sm" style={{ margin: "4px 0 0", color: "var(--text-dim)" }}>
+                <TrendingUp size={12} /> Biggest gain: <strong>{dimensionLabel(ev.strongest_improvement)}</strong>
+                {ev.persistent_weakness ? <> · <Target size={12} /> keep working on <strong>{dimensionLabel(ev.persistent_weakness)}</strong></> : null}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+
+        {plan ? (
+          <div className="jr-card" style={cardBase}>
+            <span style={{ fontWeight: 800, color: "var(--navy)", fontSize: 13 }}>My development plan</span>
+            <span style={{ fontWeight: 700, color: "var(--navy)", fontSize: 13 }}>{plan.title}</span>
+            {plan.description ? <p className="jr-text-sm" style={{ margin: 0, color: "var(--text-dim)" }}>{plan.description}</p> : null}
+            <p className="jr-text-sm" style={{ margin: 0, color: "var(--text-faint)" }}>
+              {plan.development_area ? `Priority: ${dimensionLabel(plan.development_area)}. ` : ""}
+              {plan.goal_target != null ? `Target: move toward ${plan.goal_target}. ` : ""}
+              Status: {plan.status === "completed" ? "Completed" : plan.status === "in_progress" ? "In progress" : "Not started"}.
+            </p>
+            {(plan.items || []).length ? (
+              <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+                {plan.items.map((it) => (
+                  <li key={it.id} className="jr-text-sm" style={{ color: it.status === "done" ? "var(--text-faint)" : "var(--navy)", textDecoration: it.status === "done" ? "line-through" : "none" }}>
+                    {it.label}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+        ) : null}
+
+        {resources.length ? (
+          <div className="jr-card" style={cardBase}>
+            <span style={{ fontWeight: 800, color: "var(--navy)", fontSize: 13 }}>Recommended for you</span>
+            {resources[0]?.competency ? (
+              <p className="jr-text-sm" style={{ margin: 0, color: "var(--text-dim)" }}>
+                Your biggest current development area is <strong>{dimensionLabel(resources[0].competency)}</strong>. Try:
+              </p>
+            ) : null}
+            {resources.slice(0, 3).map((r) => (
+              <div key={r.id} className="jr-text-sm" style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
+                <BookOpen size={13} style={{ flexShrink: 0, marginTop: 2 }} />
+                <span><strong>{r.title}</strong>{r.duration_minutes ? ` · ${r.duration_minutes} min` : ""}
+                  {r.description ? <span style={{ color: "var(--text-dim)" }}> — {r.description}</span> : null}</span>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    </section>
   );
 }
 

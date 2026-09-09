@@ -8,10 +8,19 @@ import {
 const future = (h) => new Date(Date.now() + h * 3600e3).toISOString();
 const past = (h) => new Date(Date.now() - h * 3600e3).toISOString();
 
+// Anchored to a fixed local day so the "same day / next day" grouping does not
+// depend on the wall-clock hour the suite happens to run at.
+const dayAt = (dayOffset, hh, mm = 0) => {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() + 7 + dayOffset);
+  d.setHours(hh, mm, 0, 0);
+  return d.toISOString();
+};
 const SLOTS = [
-  { slot_id: "a", type_key: "interview_prep", starts_at: future(24), ends_at: future(24.5), staff_name: "A. Adviser" },
-  { slot_id: "b", type_key: null, starts_at: future(25), ends_at: future(25.5), staff_name: "B. Adviser" },
-  { slot_id: "c", type_key: "cv_review", starts_at: future(48), ends_at: future(48.5) },
+  { slot_id: "a", type_key: "interview_prep", starts_at: dayAt(0, 10), ends_at: dayAt(0, 10, 30), staff_name: "A. Adviser" },
+  { slot_id: "b", type_key: null, starts_at: dayAt(0, 11), ends_at: dayAt(0, 11, 30), staff_name: "B. Adviser" },
+  { slot_id: "c", type_key: "cv_review", starts_at: dayAt(1, 10), ends_at: dayAt(1, 10, 30) },
 ];
 
 describe("slotsForType", () => {
