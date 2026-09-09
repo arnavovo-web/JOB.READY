@@ -167,11 +167,34 @@ export async function getCompetencies(institutionId, filters) {
 export async function getCareerInsights(institutionId, filters) {
   return callAnalytics("inst_career_insights", institutionId, filters, "career_insights");
 }
+export async function getQuestionPerformance(institutionId, filters) {
+  return callAnalytics("inst_question_performance", institutionId, filters, "question_performance");
+}
 export async function getDevelopmentAreas(institutionId, filters) {
   return callAnalytics("inst_development_areas", institutionId, filters, "development_areas");
 }
 export async function getImprovement(institutionId, filters) {
   return callAnalytics("inst_improvement", institutionId, filters, "improvement");
+}
+
+/**
+ * Every analytics section in one parallel round of RPCs — used by the Overview,
+ * which synthesises across sections. Returns a keyed map; a per-section failure
+ * is isolated (that key holds an { supported:false } stub), the rest still load.
+ */
+export async function getAllAnalytics(institutionId, filters) {
+  const jobs = {
+    overview: getOverview, performance: getPerformance, competencies: getCompetencies,
+    career: getCareerInsights, questions: getQuestionPerformance,
+    developmentAreas: getDevelopmentAreas, improvement: getImprovement,
+  };
+  const entries = await Promise.all(
+    Object.entries(jobs).map(async ([k, fn]) => {
+      try { return [k, await fn(institutionId, filters)]; }
+      catch (e) { return [k, { supported: false, error: e.message || "failed", reason: "section_error" }]; }
+    })
+  );
+  return Object.fromEntries(entries);
 }
 
 async function callAnalytics(fnName, institutionId, filters, metric) {
