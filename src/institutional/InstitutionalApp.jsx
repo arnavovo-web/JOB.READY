@@ -15,9 +15,9 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   LayoutDashboard, BarChart3, Radar, Compass, Target, LineChart,
-  Users, LogOut, Building2, ChevronDown, ChevronRight, ShieldCheck, RefreshCw, Lock,
-  CalendarClock, Clock, ArrowLeft, CheckCircle2, XCircle, Sparkles, Briefcase, MessageSquareText,
-  Plus, Trash2, History, ClipboardList, Save, TrendingUp,
+  Users, LogOut, Building2, ChevronDown, ShieldCheck, RefreshCw, Lock,
+  CalendarClock, Clock, ArrowLeft, CheckCircle2, XCircle, Briefcase, MessageSquareText,
+  Plus, Trash2, History, Save, TrendingUp,
 } from "lucide-react";
 import { INSTITUTIONAL_CSS } from "./theme.js";
 import {
@@ -29,12 +29,21 @@ import {
 import * as api from "./api.js";
 import { summariseCohorts, emptyFilters, describeFilters } from "./analytics.js";
 import {
-  shapeBriefing, shapeCareersProfile, deriveBriefingSummary, groupAppointmentsByDay, statusMeta,
-  bandTone, bandWord, dateTimeLabel, timeRange, repeatedDevelopmentSentence, trendSentence,
+  shapeCareersProfile, deriveBriefingSummary, groupAppointmentsByDay, statusMeta,
+  dateTimeLabel, timeRange, repeatedDevelopmentSentence, trendSentence,
   previousSupportModel, longitudinalStatement, outcomeFormValues, outcomeFormToRpcArgs, dayLabel,
 } from "./appointments.js";
+import * as insights from "./insights.js";
 import {
-  deriveOverviewFindings, derivePerformanceFindings, deriveCompetencyFindings,
+  overviewCards, verdictFor, humanize, suggestedAction,
+  plainDimension, bandWord as presentBandWord, bandTone as presentBandTone,
+} from "./present.js";
+import {
+  Disclosure, SuggestedAction, InsightPanel, OverviewCard, VerdictHeader,
+  QuietStat, JourneyEntry, FocusList, SectionQuestion,
+} from "./disclosure.jsx";
+import {
+  derivePerformanceFindings, deriveCompetencyFindings,
   deriveCareerFindings, deriveQuestionFindings, deriveImprovementFindings,
   deriveDevelopmentFindings, contractIssue, isLive, rankFindings,
 } from "./insights.js";
@@ -42,8 +51,7 @@ import {
   Btn, Card, PageHeader, SectionTitle, Alert, EmptyState, Spinner, Field, AnonNote, Badge,
 } from "./ui.jsx";
 import {
-  FindingList, ScoreBars, DistributionBar, DeltaBars, TrendLine,
-  OpportunityList, KeyStatRow, CalloutPair,
+  ScoreBars, DistributionBar, DeltaBars, TrendLine, OpportunityList,
 } from "./charts.jsx";
 
 /* ---- style injection (once) ----------------------------------- */
@@ -295,6 +303,7 @@ function Shell({ institutions, activeInst, onSwitchInstitution, onSignOut, userE
     filters, setFilters,
     config, cohortSummary, canManage, userId,
     scopeLabel: describeFilters(filters, cohortSummary),
+    goTo: setView,
     reloadConfig: () => loadConfig(activeInst.institution_id),
   };
 
@@ -392,7 +401,6 @@ function AppointmentsView({ ctx }) {
       <PageHeader
         eyebrow="Careers work"
         title="Appointments"
-        sub={`Students book careers appointments from JOB.READY. Open one to see a focused, authorised preparation briefing for that student — ${institution?.name || "your institution"} only.`}
         actions={
           <div className="ii-row" style={{ gap: 6 }}>
             <Btn size="sm" variant={tab === "schedule" ? "primary" : "ghost"} onClick={() => setTab("schedule")}>Schedule</Btn>
@@ -400,6 +408,11 @@ function AppointmentsView({ ctx }) {
           </div>
         }
       />
+      <SectionQuestion>
+        {tab === "schedule"
+          ? `Who am I seeing, when, and why are they coming? Open any appointment for that student's careers profile — ${institution?.name || "your institution"} only.`
+          : "Publish the times students can book with you."}
+      </SectionQuestion>
       {tab === "schedule"
         ? <ScheduleTab institutionId={institutionId} onOpen={setSelected} />
         : <AvailabilityTab institutionId={institutionId} userId={userId} />}
@@ -451,15 +464,18 @@ function ScheduleTab({ institutionId, onOpen }) {
                 <div className="ii-appt-list">
                   {g.items.map((a) => {
                     const st = statusMeta(a.status);
+                    const reason = (a.comment_preview || "").trim();
                     return (
                       <button key={a.id} className="ii-appt-row" onClick={() => onOpen(a.id)}>
                         <span className="ii-appt-time"><Clock size={13} /> {timeRange(a.starts_at, a.ends_at)}</span>
                         <span className="ii-appt-student">{a.student_name || "Student"}</span>
                         <span className="ii-appt-type">{a.type_label}</span>
-                        {a.has_application ? <span className="ii-badge ii-badge-info"><Briefcase size={11} /> application</span> : null}
-                        <span className="ii-nav-spacer" />
+                        <span className="ii-appt-reason" title={reason || undefined}>
+                          {reason || <span className="ii-muted">No reason given</span>}
+                          {a.has_application ? <span className="ii-badge ii-badge-info" style={{ marginLeft: 6 }}><Briefcase size={11} /> application</span> : null}
+                        </span>
                         <span className={`ii-badge ii-badge-${st.tone === "info" ? "info" : st.tone === "good" ? "good" : st.tone === "warn" ? "warn" : "neutral"}`}>{st.label}</span>
-                        <span className="ii-appt-open">Open briefing →</span>
+                        <span className="ii-appt-open">Open profile →</span>
                       </button>
                     );
                   })}
@@ -500,6 +516,24 @@ function AppointmentDetail({ ctx, appointmentId, onBack }) {
     setActionBusy("");
   }
 
+  const focusItems = useMemo(() => {
+    if (!shaped) return [];
+    const dev = (shaped.dna?.development || []).slice(0, 3).map((x) => ({
+      label: `Help them ${plainDimension(x.key, "verb")}`,
+      note: `Currently ${x.mean} · interview-ready is ${shaped.target}`,
+    }));
+    const rep = shaped.patterns?.repeatedDevelopmentArea;
+    if (rep && !dev.some((d) => d.label.includes(plainDimension(rep.key, "verb")))) {
+      dev.push({ label: `Address ${rep.label.toLowerCase()}`, note: `Below target across the last ${rep.recentInterviews} interviews` });
+    }
+    return dev;
+  }, [shaped]);
+
+  const strengthItems = useMemo(
+    () => (shaped?.dna?.strengths || []).slice(0, 3).map((x) => ({ label: x.label, note: `Averaging ${x.mean}` })),
+    [shaped]
+  );
+
   return (
     <>
       <button className="ii-btn ii-btn-ghost ii-btn-sm" style={{ marginBottom: 16 }} onClick={onBack}>
@@ -514,28 +548,69 @@ function AppointmentDetail({ ctx, appointmentId, onBack }) {
             <PageHeader
               eyebrow="Student careers profile"
               title={shaped.student.name || "Student careers profile"}
-              sub={`${shaped.appointment.typeLabel}${shaped.appointment.startsAt ? ` · ${dateTimeLabel(shaped.appointment.startsAt)}` : ""} · ${shaped.student.institution || ""}`}
+              sub={`${shaped.appointment.typeLabel}${shaped.appointment.startsAt ? ` · ${dateTimeLabel(shaped.appointment.startsAt)}` : ""}${shaped.student.institution ? ` · ${shaped.student.institution}` : ""}${shaped.student.cohorts.length ? ` · ${shaped.student.cohorts.join(", ")}` : ""}`}
             />
             {notice ? <div style={{ marginBottom: 14 }}><Alert tone="info">{notice}</Alert></div> : null}
 
-            <PreviousSupportCard prev={prev} />
-
-            <BriefingSummaryCard summary={summary} shaped={shaped} />
-
-            <div className="ii-grid ii-grid-2 ii-section">
-              <StudentOverviewCard shaped={shaped} />
-              <ApplicationCard app={shaped.application} />
+            {/* 1 — why they're here */}
+            <div className="ii-section">
+              <SectionTitle>Why they're here</SectionTitle>
+              {shaped.appointment.comment
+                ? <p className="ii-profile-why">“{shaped.appointment.comment}”</p>
+                : <p className="ii-text-sm ii-muted">The student didn't add a reason when booking. {summary.hasData ? "Use their development areas below to steer the conversation." : ""}</p>}
+              {summary.relevantApplication ? (
+                <p className="ii-text-sm ii-muted" style={{ marginTop: 8 }}>
+                  <Briefcase size={12} /> In context of an application to{" "}
+                  <strong>{[summary.relevantApplication.company, summary.relevantApplication.role].filter(Boolean).join(" — ")}</strong>
+                  {summary.relevantApplication.stage ? ` (${summary.relevantApplication.stage})` : ""}.
+                </p>
+              ) : null}
             </div>
 
-            <InterviewDnaCard dna={shaped.dna} target={shaped.target} />
+            {/* 2 — what to focus on / what's already working */}
+            {summary.hasData ? (
+              <div className="ii-grid ii-grid-2 ii-section">
+                <section className="ii-insight" style={{ "--ii-accent": "var(--ii-bad)" }}>
+                  <div className="ii-insight-eyebrow">What to focus on</div>
+                  <FocusList items={focusItems} ordered empty="No dimension is below the interview-ready threshold." />
+                </section>
+                <section className="ii-insight" style={{ "--ii-accent": "var(--ii-good)" }}>
+                  <div className="ii-insight-eyebrow">What they're already good at</div>
+                  <FocusList items={strengthItems} ordered={false} empty="No dimension is at the interview-ready threshold yet — keep encouragement broad." />
+                </section>
+              </div>
+            ) : (
+              <Card className="ii-section">
+                <p className="ii-text-sm ii-muted" style={{ margin: 0 }}>
+                  This student hasn't completed enough JOB.READY practice interviews to build an interview picture yet.
+                  Use the appointment to understand their goals and point them at relevant practice.
+                </p>
+              </Card>
+            )}
 
-            <PatternsCard shaped={shaped} />
+            {/* 3 — the careers journey so far */}
+            <PreviousSupportCard prev={prev} />
+            <CareersJourney history={shaped.history} longitudinal={shaped.longitudinal} />
 
-            <LongitudinalCard entries={shaped.longitudinal} />
-
+            {/* 4 — record this appointment's outcome */}
             <OutcomeForm appointmentId={appointmentId} shaped={shaped} onSaved={load} />
 
-            <HistoryList history={shaped.history} />
+            {/* 5 — interview performance detail, deliberately lower */}
+            <div className="ii-section">
+              <SectionTitle>Interview performance</SectionTitle>
+              <p className="ii-text-sm ii-muted" style={{ marginTop: -4 }}>
+                {shaped.dna.hasEnoughData
+                  ? `${shaped.dna.nInterviews} completed interview${shaped.dna.nInterviews === 1 ? "" : "s"} · overall ${shaped.dna.overallMean ?? "—"} against an interview-ready mark of ${shaped.target}.`
+                  : "Not enough completed interviews yet to break this down."}
+              </p>
+              {shaped.dna.hasEnoughData ? (
+                <Disclosure summary="Show the competency detail">
+                  <InterviewDnaCard dna={shaped.dna} target={shaped.target} />
+                  <PatternsCard shaped={shaped} />
+                  <ApplicationCard app={shaped.application} />
+                </Disclosure>
+              ) : null}
+            </div>
 
             <Card className="ii-section">
               <SectionTitle hint="does not notify the student">Mark this appointment</SectionTitle>
@@ -554,6 +629,68 @@ function AppointmentDetail({ ctx, appointmentId, onBack }) {
           </>
         )}
     </>
+  );
+}
+
+/** The student's careers-support history as one continuous, scannable journey. */
+function CareersJourney({ history, longitudinal }) {
+  const entries = useMemo(
+    () => [...(history || [])].sort((a, b) => String(a.startsAt).localeCompare(String(b.startsAt))),
+    [history]
+  );
+  const longText = (longitudinal || []).map(longitudinalStatement).filter(Boolean);
+
+  return (
+    <div className="ii-section">
+      <SectionTitle hint={entries.length ? `${entries.length} previous appointment${entries.length === 1 ? "" : "s"} at your institution` : null}>
+        Careers journey
+      </SectionTitle>
+      {!entries.length ? (
+        <p className="ii-text-sm ii-muted">This is the student's first recorded careers appointment at your institution.</p>
+      ) : (
+        <div className="ii-journeylist">
+          {entries.map((h) => {
+            const st = statusMeta(h.status);
+            return (
+              <JourneyEntry
+                key={h.appointmentId}
+                dateLabel={h.startsAt ? dayLabel(h.startsAt) : "—"}
+                typeLabel={h.typeLabel}
+                statusLabel={st.label}
+                statusTone={st.tone}
+                discussed={h.hasOutcome ? h.discussed : null}
+                actionsAgreed={h.hasOutcome ? h.actionsAgreed : null}
+                nextSteps={h.hasOutcome ? h.nextSteps : null}
+                followUpRequired={h.followUpRequired}
+                extra={
+                  (h.studentComment || h.followUpNotes || h.adviserName || h.outcomeUpdatedAt) ? (
+                    <>
+                      {h.studentComment ? <p className="ii-journey-line"><b>Their reason</b> “{h.studentComment}”</p> : null}
+                      {h.followUpNotes ? <p className="ii-journey-line"><b>Follow-up</b> {h.followUpNotes}</p> : null}
+                      {h.adviserName || h.outcomeUpdatedAt ? (
+                        <p className="ii-text-sm ii-muted">
+                          {h.adviserName ? `Adviser: ${h.adviserName}` : ""}
+                          {h.adviserName && h.outcomeUpdatedAt ? " · " : ""}
+                          {h.outcomeUpdatedAt ? `Recorded ${dateTimeLabel(h.outcomeUpdatedAt).split(" · ")[0]}` : ""}
+                        </p>
+                      ) : null}
+                    </>
+                  ) : null
+                }
+              />
+            );
+          })}
+        </div>
+      )}
+      {longText.length ? (
+        <div className="ii-journey-longitudinal">
+          {longText.map((s, i) => (
+            <p key={i} className="ii-text-sm"><TrendingUp size={13} /> {s}</p>
+          ))}
+          <p className="ii-text-sm ii-muted">Factual change over time — not a causal claim.</p>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -584,22 +721,6 @@ function PreviousSupportCard({ prev }) {
         </>
       )}
     </div>
-  );
-}
-
-function LongitudinalCard({ entries }) {
-  if (!entries || !entries.length) return null;
-  return (
-    <Card className="ii-section">
-      <SectionTitle hint="factual — not a causal claim">Interview performance around previous support</SectionTitle>
-      <ul className="ii-pattern-list">
-        {entries.map((l, i) => (
-          <li key={i} className="ii-pattern">
-            <TrendingUp size={13} /> <span>{longitudinalStatement(l)}</span>
-          </li>
-        ))}
-      </ul>
-    </Card>
   );
 }
 
@@ -651,122 +772,6 @@ function OutcomeForm({ appointmentId, shaped, onSaved }) {
       <p className="ii-text-sm ii-muted" style={{ marginTop: 12 }}>
         Internal institutional record — the student cannot see this. It becomes part of their careers history for the next adviser.
       </p>
-    </Card>
-  );
-}
-
-function HistoryList({ history }) {
-  const [openId, setOpenId] = useState(null);
-  return (
-    <Card className="ii-section">
-      <SectionTitle hint={`${history.length} previous appointment${history.length === 1 ? "" : "s"}`}>Appointment history</SectionTitle>
-      {!history.length ? (
-        <p className="ii-text-sm ii-muted">This is the student's first recorded careers appointment at your institution.</p>
-      ) : (
-        <div className="ii-hist">
-          {history.map((h) => {
-            const open = openId === h.appointmentId;
-            const st = statusMeta(h.status);
-            return (
-              <div key={h.appointmentId} className="ii-histitem">
-                <button className="ii-hist-toggle" onClick={() => setOpenId(open ? null : h.appointmentId)}>
-                  {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                  <span className="ii-hist-date">{h.startsAt ? dayLabel(h.startsAt) : "—"}</span>
-                  <span className="ii-hist-type">{h.typeLabel}</span>
-                  {h.adviserName ? <span className="ii-text-sm ii-muted">{h.adviserName}</span> : null}
-                  <span className="ii-nav-spacer" />
-                  {h.followUpRequired ? <span className="ii-badge ii-badge-warn">follow-up</span> : null}
-                  <span className={`ii-badge ii-badge-${st.tone === "info" ? "info" : st.tone === "good" ? "good" : "neutral"}`}>{st.label}</span>
-                </button>
-                {open ? (
-                  <div className="ii-hist-body">
-                    {h.studentComment ? <HistRow label="Student's reason" value={`“${h.studentComment}”`} /> : null}
-                    {h.hasOutcome ? (
-                      <>
-                        <HistRow label="What was discussed" value={h.discussed} />
-                        <HistRow label="Actions agreed" value={h.actionsAgreed} />
-                        <HistRow label="Recommended next steps" value={h.nextSteps} />
-                        <HistRow label="Follow-up required" value={h.followUpRequired ? "Yes" : "No"} />
-                        {h.followUpNotes ? <HistRow label="Follow-up notes" value={h.followUpNotes} /> : null}
-                        {h.outcomeUpdatedAt ? (
-                          <p className="ii-text-sm ii-muted" style={{ marginTop: 8 }}>
-                            Recorded{h.outcomeBy ? ` by ${h.outcomeBy}` : ""} · {dateTimeLabel(h.outcomeUpdatedAt).split(" · ")[0]}
-                          </p>
-                        ) : null}
-                      </>
-                    ) : (
-                      <p className="ii-text-sm ii-muted">No outcome was recorded for this appointment.</p>
-                    )}
-                  </div>
-                ) : null}
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </Card>
-  );
-}
-function HistRow({ label, value }) {
-  return (
-    <div className="ii-hist-row">
-      <span className="ii-briefing-label">{label}</span>
-      <span className="ii-text-sm" style={{ color: "var(--ii-navy)" }}>{value || <span className="ii-muted">—</span>}</span>
-    </div>
-  );
-}
-
-function BriefingSummaryCard({ summary, shaped }) {
-  return (
-    <div className="ii-briefing ii-section">
-      <div className="ii-briefing-head"><Sparkles size={14} /> Briefing</div>
-      <div className="ii-briefing-grid">
-        <BriefingRow label="Primary development area"
-          value={summary.primaryDevelopmentArea
-            ? `${summary.primaryDevelopmentArea.label} — ${summary.primaryDevelopmentArea.mean} (below ${summary.primaryDevelopmentArea.target})`
-            : (summary.hasData ? "None below target" : "Not enough interview data yet")}
-          tone={summary.primaryDevelopmentArea ? "bad" : "neutral"} />
-        <BriefingRow label="Strongest area"
-          value={summary.strongestArea ? `${summary.strongestArea.label} — ${summary.strongestArea.mean}` : "—"}
-          tone={summary.strongestArea ? "good" : "neutral"} />
-        <BriefingRow label="Relevant application"
-          value={summary.relevantApplication
-            ? [summary.relevantApplication.company, summary.relevantApplication.role].filter(Boolean).join(" — ")
-            : "No specific application selected"} />
-        <BriefingRow label="Student's reason for the appointment"
-          value={summary.studentReason || "— (none given)"} wide />
-      </div>
-      {summary.repeatedConcern ? (
-        <div className="ii-briefing-flag"><Target size={12} /> Repeated concern: {summary.repeatedConcern} has been below target across recent interviews.</div>
-      ) : null}
-    </div>
-  );
-}
-function BriefingRow({ label, value, tone, wide }) {
-  return (
-    <div className={`ii-briefing-cell ${wide ? "ii-briefing-cell-wide" : ""}`}>
-      <span className="ii-briefing-label">{label}</span>
-      <span className={`ii-briefing-value ${tone === "bad" ? "ii-tone-bad" : tone === "good" ? "ii-tone-good" : ""}`}>{value}</span>
-    </div>
-  );
-}
-
-function StudentOverviewCard({ shaped }) {
-  const s = shaped.student, a = shaped.appointment;
-  return (
-    <Card>
-      <SectionTitle>Student overview</SectionTitle>
-      <dl className="ii-kv">
-        <div><dt>Name</dt><dd>{s.name || "—"}</dd></div>
-        <div><dt>Institution</dt><dd>{s.institution || "—"}</dd></div>
-        <div><dt>Cohort</dt><dd>{s.cohorts.length ? s.cohorts.join(", ") : "—"}</dd></div>
-        <div><dt>Appointment</dt><dd>{a.typeLabel}</dd></div>
-        <div><dt>When</dt><dd>{a.startsAt ? `${dateTimeLabel(a.startsAt)}${a.endsAt ? `–${timeRange(a.startsAt, a.endsAt).split(" – ")[1] || ""}` : ""}` : "—"}</dd></div>
-        <div><dt>Status</dt><dd><span className={`ii-badge ii-badge-${statusMeta(a.status).tone === "info" ? "info" : statusMeta(a.status).tone === "good" ? "good" : "neutral"}`}>{statusMeta(a.status).label}</span></dd></div>
-      </dl>
-      {a.comment ? (
-        <div className="ii-quote"><MessageSquareText size={13} /> <span>{a.comment}</span></div>
-      ) : null}
     </Card>
   );
 }
@@ -1064,17 +1069,34 @@ function useAllSections(ctx) {
   return state;
 }
 
-function SectionHeader({ eyebrow, title, sub, ctx }) {
-  const scope = ctx.scopeLabel;
+/** One-question section header — no chrome, no stat strip. */
+function SectionHeader({ eyebrow, title, question, ctx }) {
   return (
     <>
-      <PageHeader eyebrow={eyebrow} title={title} sub={sub} />
-      <div className="ii-spread" style={{ marginBottom: 18 }}>
-        <span className="ii-badge ii-badge-neutral"><Users size={12} /> {scope}</span>
-        <span className="ii-anon-note" style={{ marginTop: 0 }}><Lock size={11} /> aggregated · groups under {MIN_COHORT_N} students hidden</span>
+      <PageHeader eyebrow={eyebrow} title={title} />
+      {question ? <SectionQuestion>{question}</SectionQuestion> : null}
+      <div className="ii-anon-note" style={{ marginTop: -8, marginBottom: 18 }}>
+        <Lock size={11} /> {ctx.scopeLabel} · aggregated, groups under {MIN_COHORT_N} students hidden
       </div>
     </>
   );
+}
+
+/** Compact "one insight → one figure → one action" line for the secondary findings. */
+function SecondaryInsight({ finding, onCta }) {
+  const h = humanize(finding);
+  const act = suggestedAction(finding);
+  return (
+    <div className="ii-insight" style={{ "--ii-accent": ({ bad: "var(--ii-bad)", warn: "var(--ii-warn)", good: "var(--ii-good)", info: "var(--ii-blue)" }[h.tone] || "var(--ii-text-faint)") }}>
+      <div className="ii-insight-eyebrow">{severityLabel(finding.severity)}</div>
+      <h3 className="ii-insight-lead" style={{ fontSize: 14.5 }}>{h.lead}</h3>
+      {h.figure ? <p className="ii-insight-figure">{h.figure}</p> : null}
+      {act ? <SuggestedAction text={act.text} cta={act.cta} onCta={onCta} /> : null}
+    </div>
+  );
+}
+function severityLabel(sev) {
+  return { critical: "Needs attention", watch: "Keep an eye on", neutral: "Key insight", positive: "What’s working" }[sev] || "Note";
 }
 
 function LoadState({ label }) { return <Spinner label={label} />; }
@@ -1104,85 +1126,293 @@ function NoData({ env, whatFor }) {
 }
 
 /* =================================================================
- * OVERVIEW  — executive summary across every section
+ * OVERVIEW  — "What matters, and what should we do?"
  * ================================================================= */
 function OverviewView({ ctx }) {
   const { institution, cohortSummary } = ctx;
   const { loading, data, error } = useAllSections(ctx);
   const t = cohortSummary.totals;
 
-  const findings = useMemo(() => {
-    if (!data) return [];
-    return rankFindings(deriveOverviewFindings({
-      overview: data.overview, competencies: data.competencies, improvement: data.improvement,
-      developmentAreas: data.developmentAreas, performance: data.performance,
-    }));
-  }, [data]);
-
+  const cards = useMemo(() => (data ? overviewCards(data, insights) : []), [data]);
   const ov = data?.overview;
   const perf = ov?.performance;
-  const act = ov?.activity;
+  const readyPct = perf && !perf.suppressed ? (perf.pct_at_or_above_target ?? 0) : null;
+  const readyWord = readyPct != null ? presentBandWord(perf.mean_overall, ov?.readiness_target ?? 70) : null;
 
   return (
     <>
       <PageHeader
-        eyebrow="Executive summary"
-        title={`How prepared are ${institution?.name || "your"} students for interviews?`}
-        sub="What your students' interview practice reveals about their employability — and where support would move the needle. Usage is shown, but it is not the headline."
+        eyebrow="EKI² · Overview"
+        title={`How prepared are ${institution?.name || "your"} students?`}
       />
-      <div className="ii-spread" style={{ marginBottom: 18 }}>
-        <span className="ii-badge ii-badge-neutral"><Users size={12} /> {ctx.scopeLabel}</span>
-        <span className="ii-anon-note" style={{ marginTop: 0 }}><Lock size={11} /> aggregated · groups under {MIN_COHORT_N} students hidden</span>
-      </div>
+      <SectionQuestion>The most important things to know right now — and what your team can do about them.</SectionQuestion>
 
-      {loading ? <LoadState label="Building the executive summary…" /> : (
+      {loading ? <LoadState label="Preparing your briefing…" /> : (
         <>
           <ContractOrError error={error} env={ov} />
 
-          {perf && !perf.suppressed ? (
-            <KeyStatRow stats={[
-              { label: "Interview-ready", value: `${perf.pct_at_or_above_target ?? 0}%`,
-                sub: `mean ${perf.mean_overall} · median ${perf.median_overall}`,
-                tone: (perf.pct_at_or_above_target ?? 0) >= 50 ? "good" : (perf.pct_at_or_above_target ?? 0) >= 25 ? "warn" : "bad" },
-              { label: "Students with data", value: perf.n_students, sub: `of ${ov?.scope?.students_in_scope ?? "—"} in scope` },
-              { label: "Practised", value: act?.coverage_pct != null ? `${act.coverage_pct}%` : "—",
-                sub: `${act?.completed_interviews ?? 0} interviews` },
-              { label: "Cohorts", value: t.cohorts, sub: t.pendingInvites ? `${t.pendingInvites} invites pending` : "all linked" },
-            ]} />
+          {cards.length ? (
+            <div className="ii-ovcards">
+              {cards.map((c) => <OverviewCard key={c.bucket + c.findingId} card={c} onOpen={ctx.goTo} />)}
+            </div>
           ) : (
-            <KeyStatRow stats={[
-              { label: "Linked students", value: t.distinctLinkedStudents, sub: `${t.pendingInvites} pending` },
-              { label: "Cohorts", value: t.cohorts },
-              { label: "Organisations", value: ctx.config.organisations.length },
-              { label: "Reporting threshold", value: MIN_COHORT_N, unit: "min", sub: "students / group" },
-            ]} />
+            <Card className="ii-section">
+              <div className="ii-empty">
+                <div className="ii-empty-icon"><Lock size={22} /></div>
+                <h3 className="ii-h3">Not enough interview data to brief you yet</h3>
+                <p className="ii-text-sm" style={{ maxWidth: 460 }}>
+                  {t.cohorts === 0
+                    ? "Add cohorts and students under Cohorts & students to begin — insights appear as students practise."
+                    : `Cohort insights need at least ${MIN_COHORT_N} students with interview data in a group. This protects individual students.`}
+                </p>
+              </div>
+            </Card>
           )}
 
-          <Card className="ii-section">
-            <SectionTitle hint="derived from this scope's interview data">What the data is telling you</SectionTitle>
-            {findings.length
-              ? <FindingList findings={findings} />
-              : <p className="ii-text-sm ii-muted">
-                  {t.cohorts === 0
-                    ? "No cohorts yet — add students in Cohorts & students to begin."
-                    : `Not enough students with interview data yet (need ${MIN_COHORT_N} per group). Findings appear as cohorts build up practice history.`}
-                </p>}
-          </Card>
-
-          {data && isLive(data.developmentAreas) && (data.developmentAreas.opportunities || []).length ? (
-            <Card className="ii-section">
-              <SectionTitle hint="ranked by gap × students affected">Where to focus first</SectionTitle>
-              <OpportunityList
-                items={topOpportunities(data.developmentAreas, data.improvement, 3)}
-                target={data.developmentAreas.readiness_target}
-              />
-              <p className="ii-text-sm ii-muted" style={{ marginTop: 12 }}>
-                Full ranking and per-area detail in <strong>Development Areas</strong>.
-              </p>
-            </Card>
+          {readyWord ? (
+            <div className="ii-qstats">
+              <QuietStat label="Interview readiness" word={readyWord} tone={presentBandTone(readyWord)} figure={`${readyPct}% interview-ready`} />
+              <QuietStat label="Students with data" word={`${perf.n_students}`} figure={`of ${ov?.scope?.students_in_scope ?? "—"} in scope`} />
+              <QuietStat label="Have practised" word={ov?.activity?.coverage_pct != null ? `${ov.activity.coverage_pct}%` : "—"} figure={`${ov?.activity?.completed_interviews ?? 0} interviews`} />
+              <QuietStat label="Cohorts" word={`${t.cohorts}`} figure={t.pendingInvites ? `${t.pendingInvites} invites pending` : "all linked"} />
+            </div>
           ) : null}
 
-          <p className="ii-anon-note"><Lock size={11} /> Every figure is aggregated across students. Any group with fewer than {MIN_COHORT_N} students with data is hidden.</p>
+          <p className="ii-anon-note"><Lock size={11} /> Every figure is aggregated across students; any group under {MIN_COHORT_N} students is hidden.</p>
+        </>
+      )}
+    </>
+  );
+}
+
+/** Turn a section's ranked findings into a lead InsightPanel (+ its evidence) and secondary lines. */
+function InsightLayout({ findings, onCta, evidence, evidenceSummary }) {
+  const [lead, ...rest] = findings;
+  if (!lead) return evidence || null;
+  const h = humanize(lead);
+  const act = suggestedAction(lead);
+  return (
+    <>
+      <InsightPanel
+        eyebrow={severityLabel(lead.severity)}
+        tone={h.tone}
+        lead={h.lead} why={h.why} figure={h.figure}
+        action={act}
+        onCta={onCta}
+        evidenceSummary={evidenceSummary}
+      >
+        {evidence}
+      </InsightPanel>
+      {rest.filter((f) => humanize(f).lead && humanize(f).lead !== h.lead).slice(0, 3).map((f) => (
+        <SecondaryInsight key={f.id} finding={f} onCta={onCta} />
+      ))}
+    </>
+  );
+}
+
+/* =================================================================
+ * PERFORMANCE — "How interview-ready are our students?"
+ * ================================================================= */
+function PerformanceView({ ctx }) {
+  const { loading, env, error } = useSection(api.getPerformance, ctx);
+  const findings = useMemo(() => (env ? rankFindings(derivePerformanceFindings(env)) : []), [env]);
+  const live = env && isLive(env) && env.overall && !env.overall.suppressed;
+  const verdict = useMemo(() => (live ? verdictFor("performance", env, findings) : null), [live, env, findings]);
+
+  return (
+    <>
+      <SectionHeader ctx={ctx} eyebrow="Performance" question="How interview-ready are our students?" />
+      {loading ? <LoadState label="Loading performance…" /> : !live ? <><ContractOrError error={error} env={env} /><NoData env={env} whatFor="interview performance" /></> : (
+        <>
+          <ContractOrError error={error} env={env} />
+          <VerdictHeader verdict={verdict} />
+          <InsightLayout findings={findings} onCta={ctx.goTo} evidenceSummary="Show the score breakdown"
+            evidence={
+              <>
+                <div className="ii-qstats">
+                  <QuietStat label="Cohort average" word={`${env.overall.mean}`} figure={`median ${env.overall.median}`} />
+                  <QuietStat label="Interview-ready" word={`${env.overall.pct_at_or_above_target}%`} tone={env.overall.pct_at_or_above_target >= 50 ? "good" : env.overall.pct_at_or_above_target >= 25 ? "warn" : "bad"} />
+                  <QuietStat label="Middle half" word={`${env.overall.p25}–${env.overall.p75}`} />
+                  <QuietStat label="Interviews" word={`${env.overall.n_interviews}`} figure={`${env.overall.n_students} students`} />
+                </div>
+                <SectionTitle>Where students sit</SectionTitle>
+                <DistributionBar n={env.distribution?.n} min={MIN_COHORT_N}
+                  segments={(env.distribution?.buckets || []).map((b) => ({
+                    label: bandLabel(b.label), count: b.count,
+                    tone: b.label === "strong" || b.label === "solid" ? "good" : b.label === "developing" ? "warn" : "bad",
+                  }))} />
+                <div className="ii-grid ii-grid-2" style={{ marginTop: 20 }}>
+                  <div>
+                    <SectionTitle>By interview round</SectionTitle>
+                    <ScoreBars target={env.readiness_target} rows={(env.by_stage || []).map((s) => ({
+                      key: s.key, label: stageLabel(s.key), mean: s.mean, suppressed: s.suppressed, n_students: s.n_students, min_n: MIN_COHORT_N }))} />
+                  </div>
+                  <div>
+                    <SectionTitle>By format</SectionTitle>
+                    <ScoreBars target={env.readiness_target} rows={(env.by_format || []).map((s) => ({
+                      key: s.key, label: formatLabel(s.key), mean: s.mean, suppressed: s.suppressed, n_students: s.n_students, min_n: MIN_COHORT_N }))} />
+                  </div>
+                </div>
+                <div style={{ marginTop: 20 }}>
+                  <SectionTitle hint="reportable months only">Over time</SectionTitle>
+                  <TrendLine points={env.trend_monthly} target={env.readiness_target} />
+                </div>
+              </>
+            }
+          />
+          <AnonNote min={MIN_COHORT_N} />
+        </>
+      )}
+    </>
+  );
+}
+
+/* =================================================================
+ * COMPETENCIES — "Where are students strongest, and where do they need support?"
+ * ================================================================= */
+function CompetenciesView({ ctx }) {
+  const { loading, env, error } = useSection(api.getCompetencies, ctx);
+  const findings = useMemo(() => (env ? rankFindings(deriveCompetencyFindings(env)) : []), [env]);
+  const dims = (env?.dimensions || []);
+  const reportable = dims.filter((d) => !d.suppressed && d.mean != null);
+  const sorted = [...reportable].sort((a, b) => b.mean - a.mean);
+  const strongest = sorted[0], weakest = sorted[sorted.length - 1];
+  const live = env && isLive(env) && reportable.length >= 2;
+  const weakAction = live && weakest ? suggestedAction({ section: "competencies", severity: weakest.mean < (env.readiness_target ?? 70) ? "critical" : "watch", headline: "weakest competency", evidence: { key: weakest.key } }) : null;
+
+  return (
+    <>
+      <SectionHeader ctx={ctx} eyebrow="Competencies" question="Where are students strongest, and where do they need support?" />
+      {loading ? <LoadState label="Loading competencies…" /> : !live ? <><ContractOrError error={error} env={env} /><NoData env={env} whatFor="competency performance" /></> : (
+        <>
+          <ContractOrError error={error} env={env} />
+
+          <div className="ii-grid ii-grid-2 ii-section">
+            <section className="ii-insight" style={{ "--ii-accent": "var(--ii-good)" }}>
+              <div className="ii-insight-eyebrow">Strongest area</div>
+              <h3 className="ii-insight-lead">{dimensionLabel(strongest.key)}</h3>
+              <p className="ii-insight-why">Students are best at {plainDimension(strongest.key, "noun")}.</p>
+              <p className="ii-insight-figure">
+                {env.competency_average != null ? `${Math.abs(Math.round(strongest.mean - env.competency_average))} pts above the cohort's competency average` : `Cohort mean ${strongest.mean}`}
+              </p>
+            </section>
+            <section className="ii-insight" style={{ "--ii-accent": "var(--ii-bad)" }}>
+              <div className="ii-insight-eyebrow">Development opportunity</div>
+              <h3 className="ii-insight-lead">{dimensionLabel(weakest.key)}</h3>
+              <p className="ii-insight-why">Students find it hardest to {plainDimension(weakest.key, "verb")}.</p>
+              <p className="ii-insight-figure">{Math.max(0, Math.round((env.readiness_target ?? 70) - weakest.mean))} pts below interview-ready</p>
+              {weakAction ? <SuggestedAction text={weakAction.text} cta={weakAction.cta} onCta={ctx.goTo} /> : null}
+            </section>
+          </div>
+
+          <InsightLayout findings={findings} onCta={ctx.goTo} evidenceSummary="Show all six competencies"
+            evidence={
+              <>
+                <SectionTitle hint={env.competency_average != null ? `competency average ${env.competency_average}` : null}>The six dimensions</SectionTitle>
+                <ScoreBars target={env.readiness_target} rows={dims.map((d) => ({
+                  key: d.key, label: dimensionLabel(d.key), mean: d.mean, suppressed: d.suppressed, n_students: d.n_students, min_n: MIN_COHORT_N,
+                  deltaLabel: d.delta_vs_competency_avg != null ? `${d.delta_vs_competency_avg > 0 ? "+" : ""}${d.delta_vs_competency_avg} vs avg` : null,
+                  deltaTone: d.materially_below ? "bad" : d.delta_vs_competency_avg > 0 ? "good" : "neutral",
+                }))} />
+              </>
+            }
+          />
+          <AnonNote min={MIN_COHORT_N} />
+        </>
+      )}
+    </>
+  );
+}
+
+/* =================================================================
+ * CAREER INSIGHTS — "What are we seeing across career paths?"
+ * ================================================================= */
+function CareerView({ ctx }) {
+  const { loading, env, error } = useSection(api.getCareerInsights, ctx);
+  const findings = useMemo(() => (env ? rankFindings(deriveCareerFindings(env)) : []), [env]);
+  const fams = env?.families || [];
+  const reportable = fams.filter((f) => !f.suppressed && f.mean != null);
+  const live = env && isLive(env);
+
+  return (
+    <>
+      <SectionHeader ctx={ctx} eyebrow="Career Insights" question="What are we seeing across different career paths?" />
+      {loading ? <LoadState label="Loading career insights…" /> : !live ? <><ContractOrError error={error} env={env} /><NoData env={env} whatFor="career-path performance" /></> : (
+        <>
+          <ContractOrError error={error} env={env} />
+          {!reportable.length ? (
+            <Card>
+              <div className="ii-empty">
+                <div className="ii-empty-icon"><Compass size={22} /></div>
+                <h3 className="ii-h3">No career path has enough students to report on yet</h3>
+                <p className="ii-text-sm" style={{ maxWidth: 460 }}>
+                  {(env.families_total ?? 0)} path(s) appear in the data; a path needs {MIN_COHORT_N} students with interview
+                  activity before EKI² will report on it. This keeps individual students anonymous.
+                </p>
+              </div>
+            </Card>
+          ) : (
+            <InsightLayout findings={findings} onCta={ctx.goTo} evidenceSummary="Show every career path"
+              evidence={
+                <>
+                  <SectionTitle hint={env.cross_family_mean != null ? `average across reportable paths ${env.cross_family_mean}` : null}>Readiness by career path</SectionTitle>
+                  <ScoreBars target={env.readiness_target} rows={fams.map((f) => ({
+                    key: f.key, label: roleFamilyLabel(f.key), mean: f.mean, suppressed: f.suppressed, n_students: f.n_students, min_n: MIN_COHORT_N,
+                    deltaLabel: f.delta_vs_cross_family != null ? `${f.delta_vs_cross_family > 0 ? "+" : ""}${f.delta_vs_cross_family} vs avg` : null,
+                    deltaTone: f.delta_vs_cross_family < 0 ? "bad" : f.delta_vs_cross_family > 0 ? "good" : "neutral",
+                  }))} />
+                  <p className="ii-text-sm ii-muted" style={{ marginTop: 10 }}>
+                    {env.families_reportable} of {env.families_total} paths meet the {MIN_COHORT_N}-student threshold.
+                  </p>
+                </>
+              }
+            />
+          )}
+          <AnonNote min={MIN_COHORT_N} />
+        </>
+      )}
+    </>
+  );
+}
+
+/* =================================================================
+ * DEVELOPMENT AREAS — "What should we help students with, and how?"
+ * ================================================================= */
+function DevelopmentView({ ctx }) {
+  const dev = useSection(api.getDevelopmentAreas, ctx);
+  const imp = useSection(api.getImprovement, ctx);
+  const qp = useSection(api.getQuestionPerformance, ctx);
+  const loading = dev.loading || imp.loading;
+  const findings = useMemo(() => (dev.env ? rankFindings(deriveDevelopmentFindings(dev.env, imp.env)) : []), [dev.env, imp.env]);
+  const qFindings = useMemo(() => (qp.env ? rankFindings(deriveQuestionFindings(qp.env)) : []), [qp.env]);
+  const live = dev.env && isLive(dev.env) && (dev.env.opportunities || []).length;
+
+  return (
+    <>
+      <SectionHeader ctx={ctx} eyebrow="Development Areas" question="What should we help students with — and how?" />
+      {loading ? <LoadState label="Loading development areas…" /> : !live ? <><ContractOrError error={dev.error} env={dev.env} /><NoData env={dev.env} whatFor="development opportunities" /></> : (
+        <>
+          <ContractOrError error={dev.error} env={dev.env} />
+
+          <InsightLayout findings={findings} onCta={ctx.goTo} evidenceSummary="Show the full ranking"
+            evidence={
+              <>
+                <SectionTitle hint="ranked by gap × students affected">All development opportunities</SectionTitle>
+                <OpportunityList items={topOpportunities(dev.env, imp.env, 20)} target={dev.env.readiness_target} />
+                {qFindings.length && isLive(qp.env) ? (
+                  <div style={{ marginTop: 20 }}>
+                    <SectionTitle>Hardest question types</SectionTitle>
+                    <ScoreBars target={qp.env.readiness_target} rows={(qp.env.categories || []).map((c) => ({
+                      key: c.key, label: categoryLabel(c.key), mean: c.mean, suppressed: c.suppressed, n_students: c.n_students, min_n: MIN_COHORT_N }))} />
+                  </div>
+                ) : null}
+              </>
+            }
+          />
+          <p className="ii-text-sm ii-muted">
+            EKI² can't identify individual students to you here — cohort figures stay aggregated. Use appointments to work with students directly.
+          </p>
+          <AnonNote min={MIN_COHORT_N} />
         </>
       )}
     </>
@@ -1210,282 +1440,52 @@ function topOpportunities(devEnv, improvementEnv, n) {
 }
 
 /* =================================================================
- * PERFORMANCE
- * ================================================================= */
-function PerformanceView({ ctx }) {
-  const { loading, env, error } = useSection(api.getPerformance, ctx);
-  const findings = useMemo(() => (env ? rankFindings(derivePerformanceFindings(env)) : []), [env]);
-
-  return (
-    <>
-      <SectionHeader ctx={ctx} eyebrow="Interview performance"
-        title="Performance"
-        sub="How your students actually perform in practice interviews — overall scores, the spread across the cohort, and how it breaks down by round, format and over time." />
-      {loading ? <LoadState label="Loading performance…" /> : (
-        <>
-          <ContractOrError error={error} env={env} />
-          {env && isLive(env) && env.overall && !env.overall.suppressed ? (
-            <>
-              <FindingList findings={findings} />
-              <KeyStatRow stats={[
-                { label: "Cohort mean", value: env.overall.mean, sub: `median ${env.overall.median}` },
-                { label: "Interview-ready", value: `${env.overall.pct_at_or_above_target}%`,
-                  tone: env.overall.pct_at_or_above_target >= 50 ? "good" : env.overall.pct_at_or_above_target >= 25 ? "warn" : "bad" },
-                { label: "Middle half", value: `${env.overall.p25}–${env.overall.p75}` },
-                { label: "Interviews", value: env.overall.n_interviews, sub: `${env.overall.n_students} students` },
-              ]} />
-
-              <Card className="ii-section">
-                <SectionTitle>Distribution</SectionTitle>
-                <DistributionBar
-                  n={env.distribution?.n}
-                  min={MIN_COHORT_N}
-                  segments={(env.distribution?.buckets || []).map((b) => ({
-                    label: bandLabel(b.label), count: b.count,
-                    tone: b.label === "strong" || b.label === "solid" ? "good" : b.label === "developing" ? "warn" : "bad",
-                  }))}
-                />
-              </Card>
-
-              <div className="ii-grid ii-grid-2 ii-section">
-                <Card>
-                  <SectionTitle>By interview round</SectionTitle>
-                  <ScoreBars target={env.readiness_target} rows={(env.by_stage || []).map((s) => ({
-                    key: s.key, label: stageLabel(s.key), mean: s.mean, suppressed: s.suppressed,
-                    n_students: s.n_students, min_n: MIN_COHORT_N,
-                  }))} />
-                </Card>
-                <Card>
-                  <SectionTitle>By format</SectionTitle>
-                  <ScoreBars target={env.readiness_target} rows={(env.by_format || []).map((s) => ({
-                    key: s.key, label: formatLabel(s.key), mean: s.mean, suppressed: s.suppressed,
-                    n_students: s.n_students, min_n: MIN_COHORT_N,
-                  }))} />
-                </Card>
-              </div>
-
-              <Card className="ii-section">
-                <SectionTitle hint="reportable months only">Trend over time</SectionTitle>
-                <TrendLine points={env.trend_monthly} target={env.readiness_target} />
-              </Card>
-            </>
-          ) : <NoData env={env} whatFor="interview performance" />}
-          <AnonNote min={MIN_COHORT_N} />
-        </>
-      )}
-    </>
-  );
-}
-
-/* =================================================================
- * COMPETENCIES
- * ================================================================= */
-function CompetenciesView({ ctx }) {
-  const { loading, env, error } = useSection(api.getCompetencies, ctx);
-  const findings = useMemo(() => (env ? rankFindings(deriveCompetencyFindings(env)) : []), [env]);
-
-  const dims = (env?.dimensions || []);
-  const reportable = dims.filter((d) => !d.suppressed && d.mean != null);
-  const sorted = [...reportable].sort((a, b) => b.mean - a.mean);
-  const strongest = sorted[0];
-  const weakest = sorted[sorted.length - 1];
-
-  return (
-    <>
-      <SectionHeader ctx={ctx} eyebrow="Competency performance"
-        title="Competencies"
-        sub="Cohort strength across the six competency dimensions every interview answer is scored on. Each bar is the mean of students' own averages, so no one student dominates." />
-      {loading ? <LoadState label="Loading competencies…" /> : (
-        <>
-          <ContractOrError error={error} env={env} />
-          {env && isLive(env) && reportable.length >= 2 ? (
-            <>
-              <FindingList findings={findings} />
-              {strongest && weakest ? (
-                <div className="ii-section">
-                  <CalloutPair
-                    strong={{ label: dimensionLabel(strongest.key),
-                      detail: `Cohort mean ${strongest.mean}${env.competency_average != null ? ` — ${Math.abs(Math.round(strongest.mean - env.competency_average))} pts above the competency average` : ""}.` }}
-                    weak={{ label: dimensionLabel(weakest.key),
-                      detail: `Cohort mean ${weakest.mean} — ${Math.max(0, Math.round((env.readiness_target ?? 70) - weakest.mean))} pts below interview-ready.` }}
-                  />
-                </div>
-              ) : null}
-              <Card className="ii-section">
-                <SectionTitle hint={env.competency_average != null ? `competency average ${env.competency_average}` : null}>
-                  Six-dimension breakdown
-                </SectionTitle>
-                <ScoreBars target={env.readiness_target} rows={dims.map((d) => ({
-                  key: d.key, label: dimensionLabel(d.key), mean: d.mean, suppressed: d.suppressed,
-                  n_students: d.n_students, min_n: MIN_COHORT_N,
-                  deltaLabel: d.delta_vs_competency_avg != null
-                    ? `${d.delta_vs_competency_avg > 0 ? "+" : ""}${d.delta_vs_competency_avg} vs avg` : null,
-                  deltaTone: d.materially_below ? "bad" : d.delta_vs_competency_avg > 0 ? "good" : "neutral",
-                }))} />
-              </Card>
-            </>
-          ) : <NoData env={env} whatFor="competency performance" />}
-          <AnonNote min={MIN_COHORT_N} />
-        </>
-      )}
-    </>
-  );
-}
-
-/* =================================================================
- * CAREER INSIGHTS
- * ================================================================= */
-function CareerView({ ctx }) {
-  const { loading, env, error } = useSection(api.getCareerInsights, ctx);
-  const findings = useMemo(() => (env ? rankFindings(deriveCareerFindings(env)) : []), [env]);
-  const fams = env?.families || [];
-  const reportable = fams.filter((f) => !f.suppressed && f.mean != null);
-
-  return (
-    <>
-      <SectionHeader ctx={ctx} eyebrow="Career-path performance"
-        title="Career Insights"
-        sub="How prepared students are for each career path they are practising for. Paths are inferred from the role behind each interview — a documented keyword heuristic, not a definitive classification." />
-      {loading ? <LoadState label="Loading career insights…" /> : (
-        <>
-          <ContractOrError error={error} env={env} />
-          {env && isLive(env) ? (
-            <>
-              <FindingList findings={findings} emptyLabel="No career path has enough students with interview data to report on yet." />
-              {reportable.length ? (
-                <Card className="ii-section">
-                  <SectionTitle hint={env.cross_family_mean != null ? `average across reportable paths ${env.cross_family_mean}` : null}>
-                    Performance by career path
-                  </SectionTitle>
-                  <ScoreBars target={env.readiness_target} rows={fams.map((f) => ({
-                    key: f.key, label: roleFamilyLabel(f.key), mean: f.mean, suppressed: f.suppressed,
-                    n_students: f.n_students, min_n: MIN_COHORT_N,
-                    deltaLabel: f.delta_vs_cross_family != null
-                      ? `${f.delta_vs_cross_family > 0 ? "+" : ""}${f.delta_vs_cross_family} vs avg` : null,
-                    deltaTone: f.delta_vs_cross_family < 0 ? "bad" : f.delta_vs_cross_family > 0 ? "good" : "neutral",
-                  }))} />
-                  <p className="ii-text-sm ii-muted" style={{ marginTop: 10 }}>
-                    {env.families_reportable} of {env.families_total} career paths meet the {MIN_COHORT_N}-student reporting threshold.
-                  </p>
-                </Card>
-              ) : (
-                <NoData env={env} whatFor="career-path performance" />
-              )}
-            </>
-          ) : <NoData env={env} whatFor="career-path performance" />}
-          <AnonNote min={MIN_COHORT_N} />
-        </>
-      )}
-    </>
-  );
-}
-
-/* =================================================================
- * DEVELOPMENT AREAS
- * ================================================================= */
-function DevelopmentView({ ctx }) {
-  const dev = useSection(api.getDevelopmentAreas, ctx);
-  const imp = useSection(api.getImprovement, ctx);
-  const qp = useSection(api.getQuestionPerformance, ctx);
-  const loading = dev.loading || imp.loading;
-  const findings = useMemo(
-    () => (dev.env ? rankFindings(deriveDevelopmentFindings(dev.env, imp.env)) : []),
-    [dev.env, imp.env]
-  );
-  const qFindings = useMemo(() => (qp.env ? rankFindings(deriveQuestionFindings(qp.env)) : []), [qp.env]);
-
-  return (
-    <>
-      <SectionHeader ctx={ctx} eyebrow="Cohort development opportunities"
-        title="Development Areas"
-        sub="The specific, recurring things holding students back — competency dimensions and question types where the cohort is below interview-ready — ranked by how far below and how many students are affected." />
-      {loading ? <LoadState label="Loading development areas…" /> : (
-        <>
-          <ContractOrError error={dev.error} env={dev.env} />
-          {dev.env && isLive(dev.env) && (dev.env.opportunities || []).length ? (
-            <>
-              <FindingList findings={findings} />
-              <Card className="ii-section">
-                <SectionTitle hint={dev.env.method ? "gap × share of students below interview-ready" : null}>
-                  Ranked opportunities
-                </SectionTitle>
-                <OpportunityList
-                  items={topOpportunities(dev.env, imp.env, 20)}
-                  target={dev.env.readiness_target}
-                />
-              </Card>
-              {qFindings.length ? (
-                <Card className="ii-section">
-                  <SectionTitle hint="canonical question categories">Which question types are hardest</SectionTitle>
-                  <FindingList findings={qFindings} compact />
-                  {isLive(qp.env) ? (
-                    <div style={{ marginTop: 12 }}>
-                      <ScoreBars target={qp.env.readiness_target} rows={(qp.env.categories || []).map((c) => ({
-                        key: c.key, label: categoryLabel(c.key), mean: c.mean, suppressed: c.suppressed,
-                        n_students: c.n_students, min_n: MIN_COHORT_N,
-                      }))} />
-                    </div>
-                  ) : null}
-                </Card>
-              ) : null}
-            </>
-          ) : <NoData env={dev.env} whatFor="development opportunities" />}
-          <AnonNote min={MIN_COHORT_N} />
-        </>
-      )}
-    </>
-  );
-}
-
-/* =================================================================
- * IMPROVEMENT
+ * IMPROVEMENT — "Are students getting better with practice?"
  * ================================================================= */
 function ImprovementView({ ctx }) {
   const { loading, env, error } = useSection(api.getImprovement, ctx);
   const findings = useMemo(() => (env ? rankFindings(deriveImprovementFindings(env)) : []), [env]);
   const o = env?.overall;
   const s = env?.scope || {};
+  const live = env && isLive(env) && o && !o.suppressed;
 
   return (
     <>
-      <SectionHeader ctx={ctx} eyebrow="Improvement over repeated practice"
-        title="Improvement"
-        sub="Whether students get better as they practise more. Measured per student first — the change from their first interview to their latest — then averaged. It is never a comparison of two arbitrary interviews." />
-      {loading ? <LoadState label="Loading improvement…" /> : (
+      <SectionHeader ctx={ctx} eyebrow="Improvement" question="Are students getting better with practice?" />
+      {loading ? <LoadState label="Loading improvement…" /> : !live ? (
         <>
           <ContractOrError error={error} env={env} />
-          {env && isLive(env) && o && !o.suppressed ? (
-            <>
-              <FindingList findings={findings} />
-              <KeyStatRow stats={[
-                { label: "Avg change (first → latest)", value: `${o.mean_delta > 0 ? "+" : ""}${o.mean_delta}`, unit: "pts",
-                  tone: o.mean_delta >= 3 ? "good" : o.mean_delta <= -3 ? "bad" : "neutral" },
-                { label: "Median change", value: `${o.median_delta > 0 ? "+" : ""}${o.median_delta}`, unit: "pts" },
-                { label: "Improving", value: `${o.pct_improving}%`, tone: o.pct_improving >= 50 ? "good" : "warn" },
-                { label: "Students measured", value: o.n_students, sub: `${s.students_with_repeat_practice} practised repeatedly` },
-              ]} />
-              <Card className="ii-section">
-                <SectionTitle hint="change across repeated practice, per dimension">By competency dimension</SectionTitle>
+          <Card>
+            <div className="ii-empty">
+              <div className="ii-empty-icon"><LineChart size={22} /></div>
+              <h3 className="ii-h3">Not enough repeated practice to measure improvement</h3>
+              <p className="ii-text-sm" style={{ maxWidth: 480 }}>
+                Improvement is measured within each student. {s.students_with_repeat_practice ?? 0} student
+                {(s.students_with_repeat_practice ?? 0) === 1 ? " has" : "s have"} practised more than once in this scope;
+                {" "}{MIN_COHORT_N} are needed.
+              </p>
+            </div>
+          </Card>
+        </>
+      ) : (
+        <>
+          <ContractOrError error={error} env={env} />
+          <InsightLayout findings={findings} onCta={ctx.goTo} evidenceSummary="Show the per-dimension detail"
+            evidence={
+              <>
+                <div className="ii-qstats">
+                  <QuietStat label="Average change" word={`${o.mean_delta > 0 ? "+" : ""}${o.mean_delta} pts`} tone={o.mean_delta >= 3 ? "good" : o.mean_delta <= -3 ? "bad" : "neutral"} figure="first → latest interview" />
+                  <QuietStat label="Median change" word={`${o.median_delta > 0 ? "+" : ""}${o.median_delta} pts`} />
+                  <QuietStat label="Improving" word={`${o.pct_improving}%`} tone={o.pct_improving >= 50 ? "good" : "warn"} />
+                  <QuietStat label="Measured" word={`${o.n_students}`} figure={`${s.students_with_repeat_practice} practised repeatedly`} />
+                </div>
+                <SectionTitle hint="change across repeated practice">By competency dimension</SectionTitle>
                 <DeltaBars rows={(env.by_dimension || []).map((d) => ({
-                  key: d.key, label: dimensionLabel(d.key), delta: d.mean_delta, suppressed: d.suppressed,
-                  n_students: d.n_students, min_n: MIN_COHORT_N,
-                }))} />
-              </Card>
-              <p className="ii-text-sm ii-muted">{env.method}</p>
-            </>
-          ) : (
-            <Card>
-              <div className="ii-empty">
-                <div className="ii-empty-icon"><LineChart size={22} /></div>
-                <h3 className="ii-h3">Not enough repeated practice to measure improvement</h3>
-                <p className="ii-text-sm" style={{ maxWidth: 480 }}>
-                  Improvement is measured within each student, across their own interviews.
-                  {" "}{s.students_with_repeat_practice ?? 0} student{(s.students_with_repeat_practice ?? 0) === 1 ? " has" : "s have"} completed
-                  more than one interview in this scope; {MIN_COHORT_N} are needed to report a cohort figure.
-                </p>
-              </div>
-            </Card>
-          )}
+                  key: d.key, label: dimensionLabel(d.key), delta: d.mean_delta, suppressed: d.suppressed, n_students: d.n_students, min_n: MIN_COHORT_N }))} />
+                <p className="ii-text-sm ii-muted" style={{ marginTop: 12 }}>{env.method}</p>
+              </>
+            }
+          />
           <AnonNote min={MIN_COHORT_N} />
         </>
       )}
@@ -1494,7 +1494,7 @@ function ImprovementView({ ctx }) {
 }
 
 function bandLabel(k) {
-  return { strong: "Strong (75+)", solid: "Solid (60–74)", developing: "Developing (45–59)", priority: "Priority (<45)" }[k] || k;
+  return { strong: "Strong", solid: "Solid", developing: "Developing", priority: "Priority" }[k] || k;
 }
 function formatLabel(k) {
   return {

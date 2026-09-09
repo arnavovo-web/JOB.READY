@@ -89,7 +89,9 @@ describe("dashboard shell — the six insight sections + setup", () => {
   });
   it("frames the hero question around employability, not usage", () => {
     expect(APP).toMatch(/how prepared are/i);
-    expect(APP).toMatch(/usage is shown, but it is not the headline/i);
+    // the Overview leads with careers-team language, not a usage stat strip
+    expect(APP).toMatch(/overviewCards\(data, insights\)/);
+    expect(APP).toMatch(/<OverviewCard /);
   });
   it("each section view fetches a real inst_* RPC via api (no hard-coded numbers)", () => {
     for (const [view, fn] of [
@@ -106,12 +108,15 @@ describe("dashboard shell — the six insight sections + setup", () => {
   });
   it("renders derived findings, not just raw metrics, in every analytics view", () => {
     for (const d of [
-      "deriveOverviewFindings", "derivePerformanceFindings", "deriveCompetencyFindings",
+      "derivePerformanceFindings", "deriveCompetencyFindings",
       "deriveCareerFindings", "deriveQuestionFindings", "deriveImprovementFindings", "deriveDevelopmentFindings",
     ]) {
       expect(APP).toContain(d);
     }
-    expect(APP).toMatch(/<FindingList/);
+    // the UX pass presents findings as human insight, not a raw chart-first list
+    expect(APP).toMatch(/humanize\(/);
+    expect(APP).toMatch(/<InsightLayout|<InsightPanel/);
+    expect(APP).toMatch(/suggestedAction\(/);
   });
   it("shows k-anonymity states honestly — never a fabricated value where a group is suppressed", () => {
     expect(APP).toMatch(/isLive\(/);
@@ -192,12 +197,23 @@ describe("Student Careers Profile (relationship history)", () => {
     expect(APP).toMatch(/shapeCareersProfile\(state\.raw\)/);
     expect(APP).toMatch(/eyebrow="Student careers profile"/);
   });
-  it("renders the previous-support context, longitudinal statements, an editable outcome form and the history list", () => {
-    for (const cmp of ["<PreviousSupportCard", "<LongitudinalCard", "<OutcomeForm", "<HistoryList"]) {
+  it("renders the previous-support context, longitudinal statements, an editable outcome form and the careers journey", () => {
+    for (const cmp of ["<PreviousSupportCard", "<CareersJourney", "<OutcomeForm"]) {
       expect(APP).toContain(cmp);
     }
+    expect(APP).toMatch(/longitudinalStatement/);
     expect(APP).toMatch(/No previous careers appointments/);
-    expect(APP).toMatch(/factual — not a causal claim/);
+    expect(APP).toMatch(/not a causal claim/);
+  });
+  it("orders the profile adviser-first: why they're here, what to focus on, then interview detail lower", () => {
+    const iWhy = APP.indexOf("Why they're here");
+    const iFocus = APP.indexOf("What to focus on");
+    const iPerf = APP.indexOf("Interview performance</SectionTitle>");
+    expect(iWhy).toBeGreaterThan(0);
+    expect(iFocus).toBeGreaterThan(iWhy);
+    expect(iPerf).toBeGreaterThan(iFocus);
+    // the competency detail is behind progressive disclosure, not shown by default
+    expect(APP).toMatch(/Show the competency detail/);
   });
   it("the outcome form captures the required fields and saves via the RPC", () => {
     for (const f of ["What was discussed", "Actions agreed", "Recommended next steps", "Follow-up required"]) {
@@ -206,9 +222,13 @@ describe("Student Careers Profile (relationship history)", () => {
     expect(APP).toMatch(/api\.saveAppointmentOutcome\(outcomeFormToRpcArgs\(appointmentId, v\)\)/);
     expect(APP).toMatch(/the student cannot see this/);
   });
-  it("history entries are individually expand/collapse and not all shown by default", () => {
-    expect(APP).toMatch(/openId === h\.appointmentId/);
-    expect(APP).toMatch(/setOpenId\(open \? null : h\.appointmentId\)/);
+  it("the careers journey is one continuous, scannable record with collapsible entries", () => {
+    expect(APP).toMatch(/function CareersJourney/);
+    // sorted oldest -> newest so it reads as a journey
+    expect(APP).toMatch(/sort\(\(a, b\) => String\(a\.startsAt\)\.localeCompare\(String\(b\.startsAt\)\)\)/);
+    // each entry collapses its own detail
+    expect(read("disclosure.jsx")).toMatch(/JourneyEntry/);
+    expect(read("disclosure.jsx")).toMatch(/open \? "Less" : "More"/);
   });
   it("api.js exposes the two new gated RPC wrappers", () => {
     expect(API).toMatch(/export async function getStudentCareersProfile/);

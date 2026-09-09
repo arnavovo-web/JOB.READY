@@ -44,9 +44,35 @@ Browser  /institutional/*  ──►  src/institutional/InstitutionalApp.jsx
 | `taxonomy.js` | canonical vocabularies + `MIN_COHORT_N` (k-anonymity = 5) |
 | `analytics.js` | pure shaping (cohort summaries, k-anon suppression, filter state) |
 | `insights.js` | **pure** derivation of plain-English findings from RPC envelopes — no invented values |
+| `present.js` | **pure** presentation layer — turns a finding into `{ lead, why, figure }` careers-team language + a deterministic `suggestedAction`; builds the four Overview cards and the Performance/Competencies verdict line. Never adds a number or a causal claim. |
+| `disclosure.jsx` | insight-first presentational blocks: `InsightPanel` (insight → why → figure → suggested action → *Show the evidence*), `OverviewCard`, `VerdictHeader`, `Disclosure`, `QuietStat`, `JourneyEntry`, `FocusList` |
 | `api.js` | the only DB module: config CRUD + the `inst_*` analytics surface |
 | `ui.jsx` / `charts.jsx` | presentational primitives + inline-SVG visualisations (no chart lib) |
 | `InstitutionalApp.jsx` | auth gate + shell + the six section views + Cohorts & students setup |
+
+### UX model (insight-first)
+
+Every analytical screen answers **one question** and follows the same four levels of
+progressive disclosure, so a director can read it in ~30 seconds:
+
+1. **What matters** — a plain sentence (`present.humanize().lead`) and, on Performance /
+   Competencies, one calm verdict word (`Developing`, `Solid`, …).
+2. **Why it matters** — one supporting clause + at most one figure. A number that does
+   not inform a decision is not shown by default.
+3. **What to do** — a deterministic **Suggested action** where an insight leads to an
+   intervention, with a CTA (`Review appointments →`). Never "view affected students"
+   (k-anonymity / institution isolation forbid re-identification).
+4. **Evidence** — the original charts (`ScoreBars`, `DistributionBar`, …) live inside a
+   `Disclosure` ("Show the evidence"), never removed, just demoted.
+
+The **Student Careers Profile** is ordered for an adviser: name → *Why they're here*
+(booking reason) → *What to focus on* (numbered) + *What they're already good at* →
+*Careers journey* (continuous, oldest-first, collapsible entries) → outcome form →
+*Interview performance* (DNA / competency detail, behind a disclosure) → mark status.
+The **Appointments** schedule row is `Time · Student · Type · Reason · Status`, and a row
+opens that profile directly. The suppression, empty-state and "not enough data" handling
+from `insights.js` is unchanged — `present.js` produces no action and no figure for a
+suppressed finding.
 
 ## Data model & RLS
 
@@ -259,8 +285,10 @@ delete from public.institutions where slug = 'northgate-demo';
 
 `src/institutional/*.test.js` + `src/careersAppointments*.test.js` (node env, no DOM —
 consistent with the rest of the repo): `taxonomy`, `analytics`, `insights`,
-`insightsNoFabrication`, `appointments`, `chartsRender` (react-dom/server),
-`appStructure`, `foundationMigration`, `analyticsMigration`, `hardeningMigrations`,
+`insightsNoFabrication`, `present` (humanize / suggestedAction / overviewCards / verdictFor —
+no fabricated number, no causal language), `appointments`, `chartsRender` (react-dom/server),
+`appStructure` (route gate, isolation, insight-first UX ordering, adviser-first profile),
+`foundationMigration`, `analyticsMigration`, `hardeningMigrations`,
 `careersMigration`, `careersAppointmentsCore`, `careersAppointmentsWiring`. Plus the
 live SQL batteries (RLS/permission matrix, appointment isolation + privacy matrix,
 calculation spot-checks vs hand computation, `EXPLAIN`, query timing).

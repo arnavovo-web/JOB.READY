@@ -269,6 +269,110 @@ export const INSTITUTIONAL_CSS = `
 .ii-hist-body{ padding:4px 14px 14px 37px; display:flex; flex-direction:column; gap:8px; border-top:1px solid var(--ii-border-soft); }
 .ii-hist-row{ display:flex; flex-direction:column; gap:2px; }
 
+/* ================================================================== *
+ * EKI² UX pass — insight-first, calm, scannable
+ * ================================================================== */
+
+/* one-question header + section intro */
+.ii-sectionq{ font-size:13px; color:var(--ii-text-faint); margin:0 0 20px; }
+
+/* the big calm verdict */
+.ii-verdict{ margin-bottom:26px; }
+.ii-verdict-q{ font-size:13px; font-weight:600; color:var(--ii-text-faint); margin:0 0 10px; }
+.ii-verdict-word{ font-size:clamp(30px,4vw,40px); font-weight:800; letter-spacing:-0.02em; line-height:1; color:var(--ii-navy); }
+.ii-verdict-good{ color:var(--ii-good); }
+.ii-verdict-warn{ color:var(--ii-warn); }
+.ii-verdict-bad{ color:var(--ii-bad); }
+.ii-verdict-sentence{ font-size:15px; line-height:1.55; color:var(--ii-navy); margin:12px 0 4px; max-width:620px; }
+.ii-verdict-figure{ font-size:13px; color:var(--ii-text-dim); margin:0; font-variant-numeric:tabular-nums; }
+
+/* insight panel — the repeating unit */
+.ii-insight{ position:relative; padding:20px 22px 20px 24px; border-radius:var(--ii-r-lg); background:var(--ii-card); border:1px solid var(--ii-border-soft); margin-bottom:16px; }
+.ii-insight::before{ content:""; position:absolute; left:0; top:16px; bottom:16px; width:3px; border-radius:3px; background:var(--ii-accent, var(--ii-text-faint)); }
+.ii-insight-eyebrow{ font-size:11px; font-weight:800; letter-spacing:0.07em; text-transform:uppercase; color:var(--ii-text-faint); margin-bottom:8px; }
+.ii-insight-lead{ font-size:16px; font-weight:700; line-height:1.4; color:var(--ii-navy); margin:0; }
+.ii-insight-why{ font-size:13.5px; line-height:1.55; color:var(--ii-text-dim); margin:6px 0 0; max-width:640px; }
+.ii-insight-figure{ font-size:12.5px; font-weight:700; color:var(--ii-navy); margin:8px 0 0; font-variant-numeric:tabular-nums; }
+
+/* suggested action */
+.ii-action{ margin-top:14px; padding:12px 14px; border-radius:var(--ii-r-md); background:var(--ii-info-bg); }
+.ii-action-label{ font-size:10.5px; font-weight:800; letter-spacing:0.06em; text-transform:uppercase; color:var(--ii-blue-dark); }
+.ii-action-text{ font-size:13px; line-height:1.5; color:var(--ii-navy); margin:4px 0 0; }
+.ii-action-cta{ display:inline-flex; align-items:center; gap:5px; margin-top:8px; font-family:var(--ii-font); font-size:12.5px; font-weight:700; color:var(--ii-blue-dark); background:transparent; border:none; padding:0; cursor:pointer; }
+.ii-action-cta:hover{ text-decoration:underline; }
+
+/* progressive disclosure */
+.ii-disc{ margin-top:14px; }
+.ii-disc-toggle{ display:inline-flex; align-items:center; gap:6px; font-family:var(--ii-font); font-size:12.5px; font-weight:700; color:var(--ii-text-dim); background:transparent; border:none; padding:6px 0; cursor:pointer; }
+.ii-disc-toggle:hover{ color:var(--ii-navy); }
+.ii-disc-body{ margin-top:12px; padding-top:14px; border-top:1px solid var(--ii-border-soft); }
+
+/* the four overview cards */
+.ii-ovcards{ display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:14px; margin-bottom:28px; }
+.ii-ovcard{ position:relative; display:flex; flex-direction:column; gap:6px; text-align:left; padding:18px 20px; border-radius:var(--ii-r-lg); background:var(--ii-card); border:1px solid var(--ii-border-soft); cursor:pointer; font-family:var(--ii-font); transition:box-shadow 140ms var(--ii-ease), border-color 140ms var(--ii-ease); }
+.ii-ovcard:hover{ box-shadow:var(--ii-shadow-sm); border-color:var(--ii-border); }
+.ii-ovcard::before{ content:""; position:absolute; left:0; top:16px; bottom:16px; width:3px; border-radius:3px; }
+.ii-ovcard-bad::before{ background:var(--ii-bad); }
+.ii-ovcard-warn::before{ background:var(--ii-warn); }
+.ii-ovcard-good::before{ background:var(--ii-good); }
+.ii-ovcard-info::before{ background:var(--ii-blue); }
+.ii-ovcard-neutral::before{ background:var(--ii-text-faint); }
+.ii-ovcard-head{ display:inline-flex; align-items:center; gap:6px; font-size:11px; font-weight:800; letter-spacing:0.06em; text-transform:uppercase; color:var(--ii-text-faint); }
+.ii-ovcard-insight{ font-size:14.5px; font-weight:700; line-height:1.4; color:var(--ii-navy); }
+.ii-ovcard-figure{ font-size:12.5px; font-weight:700; color:var(--ii-text-dim); font-variant-numeric:tabular-nums; }
+.ii-ovcard-action{ font-size:12.5px; line-height:1.45; color:var(--ii-text-dim); }
+.ii-ovcard-link{ display:inline-flex; align-items:center; gap:4px; margin-top:4px; font-size:12px; font-weight:700; color:var(--ii-blue-dark); }
+
+/* quiet stat */
+.ii-qstats{ display:flex; flex-wrap:wrap; gap:26px; margin-bottom:24px; }
+.ii-qstat{ display:flex; flex-direction:column; gap:3px; }
+.ii-qstat-label{ font-size:11px; font-weight:700; letter-spacing:0.04em; text-transform:uppercase; color:var(--ii-text-faint); }
+.ii-qstat-word{ font-size:18px; font-weight:800; letter-spacing:-0.01em; color:var(--ii-navy); }
+.ii-qstat-good{ color:var(--ii-good); }
+.ii-qstat-warn{ color:var(--ii-warn); }
+.ii-qstat-bad{ color:var(--ii-bad); }
+.ii-qstat-figure{ font-size:12px; color:var(--ii-text-dim); font-variant-numeric:tabular-nums; }
+
+/* scannable journey entry */
+.ii-journey{ padding:14px 0; border-bottom:1px solid var(--ii-border-soft); }
+.ii-journey:last-child{ border-bottom:none; }
+.ii-journey-head{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:6px; }
+.ii-journey-type{ font-size:13.5px; font-weight:800; color:var(--ii-navy); }
+.ii-journey-date{ font-size:12.5px; color:var(--ii-text-faint); font-variant-numeric:tabular-nums; }
+.ii-journey-line{ font-size:13px; line-height:1.55; color:var(--ii-text-dim); margin:2px 0; }
+.ii-journey-line b{ color:var(--ii-navy); font-weight:700; margin-right:6px; }
+.ii-journey-more{ font-family:var(--ii-font); font-size:12px; font-weight:700; color:var(--ii-blue-dark); background:transparent; border:none; padding:4px 0; cursor:pointer; }
+.ii-journey-extra{ margin-top:6px; font-size:12.5px; color:var(--ii-text-dim); }
+
+/* small inline tags (calmer than badges) */
+.ii-tag{ display:inline-flex; align-items:center; font-size:10.5px; font-weight:800; letter-spacing:0.03em; text-transform:uppercase; padding:2px 7px; border-radius:var(--ii-r-pill); }
+.ii-tag-warn{ background:var(--ii-warn-bg); color:#9A5B08; }
+.ii-tag-good{ background:var(--ii-good-bg); color:var(--ii-good); }
+.ii-tag-info{ background:var(--ii-info-bg); color:var(--ii-blue-dark); }
+.ii-tag-bad{ background:var(--ii-bad-bg); color:var(--ii-bad); }
+.ii-tag-neutral{ background:var(--ii-border-soft); color:var(--ii-text-dim); }
+
+/* numbered focus list */
+.ii-focuslist{ margin:0; padding-left:22px; display:flex; flex-direction:column; gap:8px; }
+.ii-focuslist li{ font-size:14px; color:var(--ii-navy); }
+.ii-focuslist-plain{ list-style:none; padding-left:0; }
+.ii-focus-main{ font-weight:600; }
+.ii-focus-note{ display:block; font-size:12.5px; font-weight:400; color:var(--ii-text-dim); margin-top:1px; }
+
+/* softer default surfaces for the pass */
+.ii-content{ max-width:1080px; }
+.ii-section{ margin-bottom:30px; }
+.ii-profile-why{ font-size:15px; line-height:1.6; color:var(--ii-navy); margin:0; padding:16px 18px; border-radius:var(--ii-r-md); background:var(--ii-info-bg); }
+
+/* appointment schedule row — Time | Student | Type | Reason | Status */
+.ii-appt-reason{ flex:1; min-width:0; font-size:12.5px; color:var(--ii-text-dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+/* careers journey */
+.ii-journeylist{ border-top:1px solid var(--ii-border-soft); }
+.ii-journey-longitudinal{ margin-top:14px; padding-top:14px; border-top:1px solid var(--ii-border-soft); display:flex; flex-direction:column; gap:6px; }
+.ii-journey-longitudinal p{ margin:0; display:flex; gap:7px; align-items:flex-start; font-variant-numeric:tabular-nums; }
+
+
 @keyframes iiFade{ from{ opacity:0; transform:translateY(6px); } to{ opacity:1; transform:translateY(0); } }
 @keyframes iiSpin{ to{ transform:rotate(360deg); } }
 
@@ -293,9 +397,12 @@ export const INSTITUTIONAL_CSS = `
 }
 @media (max-width:640px){
   .ii-grid-2, .ii-grid-3, .ii-grid-4{ grid-template-columns:minmax(0,1fr); }
+  .ii-ovcards{ grid-template-columns:minmax(0,1fr); }
+  .ii-qstats{ gap:16px 22px; }
   .ii-bar-label{ width:130px; }
   .ii-briefing-grid{ grid-template-columns:minmax(0,1fr); }
   .ii-appt-row{ flex-wrap:wrap; }
+  .ii-appt-reason{ flex-basis:100%; white-space:normal; }
   .ii-appt-open{ display:none; }
   .ii-kv > div{ flex-direction:column; gap:2px; }
   .ii-kv dt{ flex-basis:auto; }
