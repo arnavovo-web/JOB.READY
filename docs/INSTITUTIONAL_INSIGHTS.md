@@ -136,6 +136,44 @@ appointments        one booked slot ↔ one student (slot_id UNIQUE) + optional 
   reopens the slot) and a functional smoke (book / double-book `slot_taken` /
   overlap `23P01` / cancel).
 
+### Careers Relationship History
+
+Each appointment can carry **one adviser outcome** (`appointment_outcomes`, keyed
+`UNIQUE(appointment_id)`): *what was discussed / actions agreed / recommended next
+steps / follow-up required + notes*, plus `created_at / updated_at / created_by /
+updated_by`. A later appointment never overwrites an earlier one; updating an
+outcome overwrites only that appointment's record (v1 keeps the latest version —
+no per-field revision history).
+
+* `appointment_outcomes` RLS = **one policy**: staff SELECT for the row's
+  institution. **No student policy, no write policy** — the only write path is
+  `save_appointment_outcome(...)` (SECURITY DEFINER, staff-gated, stamps
+  `created_by` on insert / `updated_by` on every write).
+* **`eki_student_careers_profile(appointment_id)`** replaces the briefing in the
+  detail view. Superset of `eki_student_briefing` (same student / appointment /
+  application / interview_dna / patterns), plus:
+  - `current_outcome` — this appointment's own outcome (prefills the adviser form).
+  - `previous_support` — the immediately-previous appointment at *this institution*:
+    days-ago, focus (type), the agreed action, follow-up flag, and the student's
+    **key development area as of that date** (weakest dimension over interviews
+    completed on/before it). `null` → the UI shows "No previous careers appointments".
+  - `history[]` — every prior appointment at this institution, **reverse-chronological**,
+    each with its recorded outcome (or `has_outcome: false`). Collapsed by default in the UI.
+  - `longitudinal[]` — a **factual, non-causal** statement only when a prior
+    appointment has a recorded outcome AND there is ≥1 completed interview on each
+    side of it: *"Interview performance increased by N points following the previous
+    recorded intervention (mean X across A interviews before, Y across B after)."*
+    Never *"the appointment caused …"*.
+* Double-gated exactly like the briefing; institution-scoped throughout (a
+  multi-institution student never sees institution B's cohort, history or notes in
+  institution A's profile). No transcript, no `jd_profile`.
+* Verified by a 25-case live matrix: outcome create/update (audit columns, one row,
+  no cross-appointment overwrite), multi-appointment chronological history,
+  `previous_support` correctness, longitudinal factual entry, cross-institution
+  isolation (staff-B → 42501 on profile + outcome write, sees 0 outcome rows),
+  student can't read outcomes / call the profile / write outcomes, cancel keeps the
+  outcome, empty-history first appointment.
+
 ## Deployment
 
 **No new environment variables. No new Edge Functions.** Only database migrations and
@@ -149,6 +187,7 @@ the front-end bundle.
    * `20260909170000_institutional_rls_policy_split.sql` — command-scoped write policies + merged read
    * `20260909180000_careers_appointments.sql` — appointment tables, RLS, 9 RPCs incl. `eki_student_briefing`
    * `20260909190000_careers_appointments_policy_merge.sql` — one SELECT policy per appointment table (perf)
+   * `20260909200000_careers_relationship_history.sql` — `appointment_outcomes` + `save_appointment_outcome` + `eki_student_careers_profile`
    All are idempotent (`create ... if not exists`, `create or replace`, `drop policy if
    exists` + recreate) and additive. The live project also carries a few folded-in
    hot-fix migrations in its ledger (`..._can_manage_bool`, `..._pin_helper_search_path`,
@@ -185,8 +224,11 @@ The live project has a demo institution **"Northgate University (demo)"**
 synthetic students** (`profiles.email like '%@northgate-demo.example'`, ~36 interviews
 / 144 evaluations) so the dashboard is populated above the k=5 threshold end to end.
 It also has ~12 demo careers-appointment slots (`appointment_slots.note = 'demo-seed'`)
-with two booked appointments so EKI² → Appointments and the student booking flow are
-populated (removed by the same student delete below).
+with two booked appointments, and two past completed appointments with recorded
+outcomes for *Demo Student 1-4* (`appointment_slots.note = 'demo-hist'`) so EKI² →
+Appointments, the Student Careers Profile (previous support + history + a
+longitudinal statement) and the student booking flow are all populated (removed by
+the same student delete below).
 
 Remove it entirely with:
 

@@ -15,8 +15,9 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   LayoutDashboard, BarChart3, Radar, Compass, Target, LineChart,
-  Users, LogOut, Building2, ChevronDown, ShieldCheck, RefreshCw, Lock,
-  CalendarClock, Clock, ArrowLeft, CheckCircle2, XCircle, Sparkles, Briefcase, MessageSquareText, Plus, Trash2,
+  Users, LogOut, Building2, ChevronDown, ChevronRight, ShieldCheck, RefreshCw, Lock,
+  CalendarClock, Clock, ArrowLeft, CheckCircle2, XCircle, Sparkles, Briefcase, MessageSquareText,
+  Plus, Trash2, History, ClipboardList, Save, TrendingUp,
 } from "lucide-react";
 import { INSTITUTIONAL_CSS } from "./theme.js";
 import {
@@ -28,8 +29,9 @@ import {
 import * as api from "./api.js";
 import { summariseCohorts, emptyFilters, describeFilters } from "./analytics.js";
 import {
-  shapeBriefing, deriveBriefingSummary, groupAppointmentsByDay, statusMeta,
+  shapeBriefing, shapeCareersProfile, deriveBriefingSummary, groupAppointmentsByDay, statusMeta,
   bandTone, bandWord, dateTimeLabel, timeRange, repeatedDevelopmentSentence, trendSentence,
+  previousSupportModel, longitudinalStatement, outcomeFormValues, outcomeFormToRpcArgs, dayLabel,
 } from "./appointments.js";
 import {
   deriveOverviewFindings, derivePerformanceFindings, deriveCompetencyFindings,
@@ -478,14 +480,15 @@ function AppointmentDetail({ ctx, appointmentId, onBack }) {
 
   const load = useCallback(() => {
     setState({ loading: true, raw: null, error: "" });
-    api.getStudentBriefing(appointmentId)
+    api.getStudentCareersProfile(appointmentId)
       .then((raw) => setState({ loading: false, raw, error: "" }))
-      .catch((e) => setState({ loading: false, raw: null, error: e.message || "Couldn't load this briefing." }));
+      .catch((e) => setState({ loading: false, raw: null, error: e.message || "Couldn't load this student careers profile." }));
   }, [appointmentId]);
   useEffect(load, [load]);
 
-  const shaped = useMemo(() => shapeBriefing(state.raw), [state.raw]);
+  const shaped = useMemo(() => shapeCareersProfile(state.raw), [state.raw]);
   const summary = useMemo(() => deriveBriefingSummary(shaped), [shaped]);
+  const prev = useMemo(() => previousSupportModel(shaped), [shaped]);
 
   async function act(status) {
     setActionBusy(status); setNotice("");
@@ -503,17 +506,19 @@ function AppointmentDetail({ ctx, appointmentId, onBack }) {
         <ArrowLeft size={13} /> Back to schedule
       </button>
 
-      {state.loading ? <Spinner label="Preparing the briefing…" />
+      {state.loading ? <Spinner label="Preparing the student careers profile…" />
         : state.error ? <Alert tone="error">{state.error}</Alert>
-        : !shaped ? <Alert tone="warn">No briefing data.</Alert>
+        : !shaped ? <Alert tone="warn">No profile data.</Alert>
         : (
           <>
             <PageHeader
-              eyebrow="Appointment briefing"
-              title={shaped.student.name || "Student briefing"}
-              sub={`${shaped.appointment.typeLabel}${shaped.appointment.startsAt ? ` · ${dateTimeLabel(shaped.appointment.startsAt)}` : ""}`}
+              eyebrow="Student careers profile"
+              title={shaped.student.name || "Student careers profile"}
+              sub={`${shaped.appointment.typeLabel}${shaped.appointment.startsAt ? ` · ${dateTimeLabel(shaped.appointment.startsAt)}` : ""} · ${shaped.student.institution || ""}`}
             />
             {notice ? <div style={{ marginBottom: 14 }}><Alert tone="info">{notice}</Alert></div> : null}
+
+            <PreviousSupportCard prev={prev} />
 
             <BriefingSummaryCard summary={summary} shaped={shaped} />
 
@@ -526,6 +531,12 @@ function AppointmentDetail({ ctx, appointmentId, onBack }) {
 
             <PatternsCard shaped={shaped} />
 
+            <LongitudinalCard entries={shaped.longitudinal} />
+
+            <OutcomeForm appointmentId={appointmentId} shaped={shaped} onSaved={load} />
+
+            <HistoryList history={shaped.history} />
+
             <Card className="ii-section">
               <SectionTitle hint="does not notify the student">Mark this appointment</SectionTitle>
               <div className="ii-row-wrap" style={{ gap: 8 }}>
@@ -536,12 +547,172 @@ function AppointmentDetail({ ctx, appointmentId, onBack }) {
             </Card>
 
             <p className="ii-anon-note">
-              <Lock size={11} /> Authorised individual briefing. Derived from this student's JOB.READY
-              interview practice and their own appointment note — no transcripts, nothing from other institutions.
+              <Lock size={11} /> Authorised, institution-scoped record. Interview intelligence is derived from
+              this student's JOB.READY practice; adviser notes are internal institutional data the student cannot see.
+              No transcripts, nothing from other institutions.
             </p>
           </>
         )}
     </>
+  );
+}
+
+function PreviousSupportCard({ prev }) {
+  return (
+    <div className="ii-prevsupport ii-section">
+      <div className="ii-briefing-head"><History size={14} /> Previous careers support</div>
+      {!prev ? (
+        <p className="ii-text-sm" style={{ margin: 0 }}>No previous careers appointments for this student at your institution.</p>
+      ) : (
+        <>
+          <div className="ii-briefing-grid">
+            {prev.rows.map((r) => (
+              <div className="ii-briefing-cell" key={r.label}>
+                <span className="ii-briefing-label">{r.label}</span>
+                <span className="ii-briefing-value">{r.value}</span>
+              </div>
+            ))}
+          </div>
+          {prev.studentComment ? (
+            <div className="ii-quote" style={{ marginTop: 12 }}>
+              <MessageSquareText size={13} /> <span>Their reason last time: “{prev.studentComment}”</span>
+            </div>
+          ) : null}
+          {!prev.hasOutcome ? (
+            <p className="ii-text-sm ii-muted" style={{ marginTop: 10 }}>No outcome was recorded for that appointment.</p>
+          ) : null}
+        </>
+      )}
+    </div>
+  );
+}
+
+function LongitudinalCard({ entries }) {
+  if (!entries || !entries.length) return null;
+  return (
+    <Card className="ii-section">
+      <SectionTitle hint="factual — not a causal claim">Interview performance around previous support</SectionTitle>
+      <ul className="ii-pattern-list">
+        {entries.map((l, i) => (
+          <li key={i} className="ii-pattern">
+            <TrendingUp size={13} /> <span>{longitudinalStatement(l)}</span>
+          </li>
+        ))}
+      </ul>
+    </Card>
+  );
+}
+
+function OutcomeForm({ appointmentId, shaped, onSaved }) {
+  const [v, setV] = useState(() => outcomeFormValues(shaped));
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const o = shaped?.currentOutcome;
+
+  useEffect(() => { setV(outcomeFormValues(shaped)); }, [shaped]);
+
+  async function save() {
+    setBusy(true); setMsg("");
+    try {
+      const res = await api.saveAppointmentOutcome(outcomeFormToRpcArgs(appointmentId, v));
+      setMsg(res?.is_new ? "Outcome saved." : "Outcome updated.");
+      onSaved && onSaved();
+    } catch (e) { setMsg(e.message || "Couldn't save the outcome."); }
+    setBusy(false);
+  }
+
+  return (
+    <Card className="ii-section">
+      <SectionTitle hint={o?.updatedAt ? `last updated ${dateTimeLabel(o.updatedAt).split(" · ")[0]}${o.updatedByName ? ` by ${o.updatedByName}` : ""}` : "not recorded yet"}>
+        Appointment outcome
+      </SectionTitle>
+      <div className="ii-outcome-form">
+        <label><span className="ii-label">What was discussed</span>
+          <textarea className="ii-input" rows={3} value={v.discussed} onChange={(e) => setV({ ...v, discussed: e.target.value })} /></label>
+        <label><span className="ii-label">Actions agreed</span>
+          <textarea className="ii-input" rows={3} value={v.actionsAgreed} onChange={(e) => setV({ ...v, actionsAgreed: e.target.value })} /></label>
+        <label><span className="ii-label">Recommended next steps</span>
+          <textarea className="ii-input" rows={3} value={v.nextSteps} onChange={(e) => setV({ ...v, nextSteps: e.target.value })} /></label>
+        <div className="ii-row" style={{ gap: 16, flexWrap: "wrap" }}>
+          <label className="ii-row" style={{ gap: 8 }}>
+            <input type="checkbox" checked={v.followUpRequired} onChange={(e) => setV({ ...v, followUpRequired: e.target.checked })} />
+            <span className="ii-label" style={{ margin: 0 }}>Follow-up required</span>
+          </label>
+        </div>
+        {v.followUpRequired ? (
+          <label><span className="ii-label">Follow-up notes</span>
+            <textarea className="ii-input" rows={2} value={v.followUpNotes} onChange={(e) => setV({ ...v, followUpNotes: e.target.value })} /></label>
+        ) : null}
+        <div className="ii-row-wrap" style={{ gap: 10, marginTop: 4 }}>
+          <Btn variant="accent" onClick={save} disabled={busy}><Save size={13} /> {busy ? "Saving…" : (o ? "Update outcome" : "Save outcome")}</Btn>
+          {msg ? <span className="ii-text-sm ii-muted">{msg}</span> : null}
+        </div>
+      </div>
+      <p className="ii-text-sm ii-muted" style={{ marginTop: 12 }}>
+        Internal institutional record — the student cannot see this. It becomes part of their careers history for the next adviser.
+      </p>
+    </Card>
+  );
+}
+
+function HistoryList({ history }) {
+  const [openId, setOpenId] = useState(null);
+  return (
+    <Card className="ii-section">
+      <SectionTitle hint={`${history.length} previous appointment${history.length === 1 ? "" : "s"}`}>Appointment history</SectionTitle>
+      {!history.length ? (
+        <p className="ii-text-sm ii-muted">This is the student's first recorded careers appointment at your institution.</p>
+      ) : (
+        <div className="ii-hist">
+          {history.map((h) => {
+            const open = openId === h.appointmentId;
+            const st = statusMeta(h.status);
+            return (
+              <div key={h.appointmentId} className="ii-histitem">
+                <button className="ii-hist-toggle" onClick={() => setOpenId(open ? null : h.appointmentId)}>
+                  {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                  <span className="ii-hist-date">{h.startsAt ? dayLabel(h.startsAt) : "—"}</span>
+                  <span className="ii-hist-type">{h.typeLabel}</span>
+                  {h.adviserName ? <span className="ii-text-sm ii-muted">{h.adviserName}</span> : null}
+                  <span className="ii-nav-spacer" />
+                  {h.followUpRequired ? <span className="ii-badge ii-badge-warn">follow-up</span> : null}
+                  <span className={`ii-badge ii-badge-${st.tone === "info" ? "info" : st.tone === "good" ? "good" : "neutral"}`}>{st.label}</span>
+                </button>
+                {open ? (
+                  <div className="ii-hist-body">
+                    {h.studentComment ? <HistRow label="Student's reason" value={`“${h.studentComment}”`} /> : null}
+                    {h.hasOutcome ? (
+                      <>
+                        <HistRow label="What was discussed" value={h.discussed} />
+                        <HistRow label="Actions agreed" value={h.actionsAgreed} />
+                        <HistRow label="Recommended next steps" value={h.nextSteps} />
+                        <HistRow label="Follow-up required" value={h.followUpRequired ? "Yes" : "No"} />
+                        {h.followUpNotes ? <HistRow label="Follow-up notes" value={h.followUpNotes} /> : null}
+                        {h.outcomeUpdatedAt ? (
+                          <p className="ii-text-sm ii-muted" style={{ marginTop: 8 }}>
+                            Recorded{h.outcomeBy ? ` by ${h.outcomeBy}` : ""} · {dateTimeLabel(h.outcomeUpdatedAt).split(" · ")[0]}
+                          </p>
+                        ) : null}
+                      </>
+                    ) : (
+                      <p className="ii-text-sm ii-muted">No outcome was recorded for this appointment.</p>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Card>
+  );
+}
+function HistRow({ label, value }) {
+  return (
+    <div className="ii-hist-row">
+      <span className="ii-briefing-label">{label}</span>
+      <span className="ii-text-sm" style={{ color: "var(--ii-navy)" }}>{value || <span className="ii-muted">—</span>}</span>
+    </div>
   );
 }
 

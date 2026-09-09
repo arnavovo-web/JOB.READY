@@ -237,6 +237,22 @@ export async function getStudentBriefing(appointmentId) {
   return rpc("eki_student_briefing", { p_appointment_id: appointmentId });
 }
 
+/**
+ * The full Student Careers Profile for an appointment: current snapshot
+ * (Interview DNA, patterns, application), the current appointment's own
+ * outcome, the previous-support context block, chronological appointment
+ * history and factual longitudinal statements. Double-gated + institution
+ * scoped server-side.
+ */
+export async function getStudentCareersProfile(appointmentId) {
+  return rpc("eki_student_careers_profile", { p_appointment_id: appointmentId });
+}
+
+/** Create or update this appointment's adviser outcome record (staff only). */
+export async function saveAppointmentOutcome(rpcArgs) {
+  return rpc("save_appointment_outcome", rpcArgs);
+}
+
 /** owner/admin/staff: mark an appointment completed / no_show / cancelled. */
 export async function setAppointmentStatus(appointmentId, status) {
   return rpc("set_appointment_status", { p_appointment_id: appointmentId, p_status: status });

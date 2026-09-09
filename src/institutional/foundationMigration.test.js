@@ -32,7 +32,7 @@ describe("the institutional foundation migration exists and applies after the la
   });
   it("sorts AFTER every pre-existing student migration (monotonic apply order)", () => {
     // every migration that is NOT part of the institutional / EKI² layer must sort before it
-    const studentMigrations = FILES.filter((f) => !/institutional_|careers_appointments/.test(f));
+    const studentMigrations = FILES.filter((f) => !/institutional_|careers_/.test(f));
     for (const f of studentMigrations) {
       expect(f.slice(0, 14) < FOUNDATION.slice(0, 14)).toBe(true);
     }

@@ -193,3 +193,141 @@ export function trendSentence(shaped) {
   const by = Math.abs(t.delta) >= 3 ? ` by ${Math.abs(t.delta)} points` : "";
   return `Overall interview score has ${dir}${by} across ${t.nInterviews} completed interviews (${t.first} → ${t.latest}).`;
 }
+
+/* ================================================================= *
+ * CAREERS RELATIONSHIP HISTORY
+ * ================================================================= */
+
+/**
+ * Shape the eki_student_careers_profile envelope: everything shapeBriefing
+ * produces, PLUS the current appointment's own outcome, previous_support,
+ * chronological history[], and longitudinal[] statements.
+ */
+export function shapeCareersProfile(raw) {
+  const base = shapeBriefing(raw);
+  if (!base) return null;
+  return {
+    ...base,
+    currentOutcome: raw?.current_outcome && typeof raw.current_outcome === "object"
+      ? {
+          discussed: raw.current_outcome.discussed || "",
+          actionsAgreed: raw.current_outcome.actions_agreed || "",
+          nextSteps: raw.current_outcome.next_steps || "",
+          followUpRequired: !!raw.current_outcome.follow_up_required,
+          followUpNotes: raw.current_outcome.follow_up_notes || "",
+          createdAt: raw.current_outcome.created_at || null,
+          updatedAt: raw.current_outcome.updated_at || null,
+          updatedByName: raw.current_outcome.updated_by_name || null,
+        }
+      : null,
+    previousSupport: shapePreviousSupport(raw?.previous_support),
+    history: (Array.isArray(raw?.history) ? raw.history : []).map(shapeHistoryEntry),
+    longitudinal: (Array.isArray(raw?.longitudinal) ? raw.longitudinal : []).map(shapeLongitudinal),
+  };
+}
+
+function shapePreviousSupport(p) {
+  if (!p || typeof p !== "object") return null;
+  return {
+    appointmentId: p.appointment_id,
+    startsAt: p.starts_at || null,
+    daysAgo: p.days_ago ?? null,
+    typeLabel: p.type_label || "Careers appointment",
+    adviserName: p.adviser_name || null,
+    status: p.status || null,
+    studentComment: p.student_comment || null,
+    keyDevelopmentArea: p.key_development_area ? dimensionLabel(p.key_development_area) : null,
+    hasOutcome: !!p.has_outcome,
+    actionAgreed: p.actions_agreed || null,
+    nextSteps: p.next_steps || null,
+    followUpRequired: !!p.follow_up_required,
+  };
+}
+
+function shapeHistoryEntry(h) {
+  return {
+    appointmentId: h.appointment_id,
+    startsAt: h.starts_at || null,
+    status: h.status || null,
+    typeLabel: h.type_label || "Careers appointment",
+    adviserName: h.adviser_name || null,
+    studentComment: h.student_comment || null,
+    hasOutcome: !!h.has_outcome,
+    discussed: h.discussed || null,
+    actionsAgreed: h.actions_agreed || null,
+    nextSteps: h.next_steps || null,
+    followUpRequired: !!h.follow_up_required,
+    followUpNotes: h.follow_up_notes || null,
+    outcomeUpdatedAt: h.outcome_updated_at || null,
+    outcomeBy: h.outcome_by || null,
+  };
+}
+
+function shapeLongitudinal(l) {
+  return {
+    kind: l.kind,
+    priorAppointmentId: l.prior_appointment_id,
+    priorDate: l.prior_date || null,
+    priorType: l.prior_type || null,
+    beforeMean: l.before_mean ?? null,
+    afterMean: l.after_mean ?? null,
+    delta: l.delta ?? null,
+    nBefore: l.n_before ?? 0,
+    nAfter: l.n_after ?? 0,
+  };
+}
+
+/**
+ * The "Previous careers support" context block model for the current
+ * appointment's header. Returns null when there is no prior appointment —
+ * the UI then shows "No previous careers appointments" (never fabricated).
+ */
+export function previousSupportModel(shaped) {
+  const p = shaped?.previousSupport;
+  if (!p) return null;
+  const rows = [];
+  if (p.daysAgo != null) rows.push({ label: "Last appointment", value: `${p.daysAgo} day${p.daysAgo === 1 ? "" : "s"} ago${p.adviserName ? ` · ${p.adviserName}` : ""}` });
+  rows.push({ label: "Focus", value: p.typeLabel });
+  if (p.keyDevelopmentArea) rows.push({ label: "Key development area then", value: p.keyDevelopmentArea });
+  if (p.actionAgreed) rows.push({ label: "Action agreed", value: p.actionAgreed });
+  if (p.nextSteps) rows.push({ label: "Recommended next steps", value: p.nextSteps });
+  rows.push({ label: "Follow-up required", value: p.followUpRequired ? "Yes" : "No" });
+  return { hasOutcome: p.hasOutcome, studentComment: p.studentComment, rows };
+}
+
+/**
+ * Factual longitudinal statement — NEVER causal. Only produced from a
+ * longitudinal entry the RPC already validated (prior appointment has an
+ * outcome, and there is ≥1 completed interview on each side of it).
+ */
+export function longitudinalStatement(l) {
+  if (!l || l.delta == null) return null;
+  const dir = l.delta > 0 ? "increased" : l.delta < 0 ? "decreased" : "was unchanged";
+  const amt = l.delta === 0 ? "" : ` by ${Math.abs(l.delta)} point${Math.abs(l.delta) === 1 ? "" : "s"}`;
+  return `Interview performance ${dir}${amt} following the previous recorded intervention `
+    + `(mean ${l.beforeMean} across ${l.nBefore} interview${l.nBefore === 1 ? "" : "s"} before, `
+    + `${l.afterMean} across ${l.nAfter} after).`;
+}
+
+/** Empty / prefilled adviser-outcome form values. */
+export function outcomeFormValues(shaped) {
+  const o = shaped?.currentOutcome;
+  return {
+    discussed: o?.discussed || "",
+    actionsAgreed: o?.actionsAgreed || "",
+    nextSteps: o?.nextSteps || "",
+    followUpRequired: !!o?.followUpRequired,
+    followUpNotes: o?.followUpNotes || "",
+  };
+}
+export function outcomeFormToRpcArgs(appointmentId, v) {
+  return {
+    p_appointment_id: appointmentId,
+    p_discussed: emptyToNull(v.discussed),
+    p_actions_agreed: emptyToNull(v.actionsAgreed),
+    p_next_steps: emptyToNull(v.nextSteps),
+    p_follow_up_required: !!v.followUpRequired,
+    p_follow_up_notes: emptyToNull(v.followUpNotes),
+  };
+}
+function emptyToNull(s) { const t = (s || "").trim(); return t ? t : null; }

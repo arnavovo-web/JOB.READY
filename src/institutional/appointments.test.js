@@ -3,6 +3,8 @@ import {
   statusMeta, groupAppointmentsByDay, splitUpcomingPast, shapeBriefing,
   deriveBriefingSummary, repeatedDevelopmentSentence, trendSentence,
   timeRange, dateTimeLabel,
+  shapeCareersProfile, previousSupportModel, longitudinalStatement,
+  outcomeFormValues, outcomeFormToRpcArgs,
 } from "./appointments.js";
 
 /* A realistic eki_student_briefing envelope (shape captured from the live RPC). */
@@ -148,5 +150,102 @@ describe("time helpers", () => {
     expect(timeRange("2026-09-12T13:00:00Z", "2026-09-12T13:30:00Z")).toMatch(/\d{2}:\d{2} – \d{2}:\d{2}/);
     expect(dateTimeLabel("2026-09-12T13:00:00Z")).toMatch(/\w+ \d+ \w+ · \d{2}:\d{2}/);
     expect(dateTimeLabel(null)).toBe("");
+  });
+});
+
+/* ================================================================= *
+ * CAREERS RELATIONSHIP HISTORY
+ * ================================================================= */
+const PROFILE_RAW = {
+  ...BRIEFING,
+  current_outcome: {
+    discussed: "Structured practice plan.", actions_agreed: "Do 3 mock interviews.",
+    next_steps: "Book a follow-up.", follow_up_required: true, follow_up_notes: "In 2 weeks",
+    created_at: "2026-08-01T10:00:00Z", updated_at: "2026-08-02T09:00:00Z", updated_by_name: "A. Adviser",
+  },
+  previous_support: {
+    appointment_id: "prev1", starts_at: "2026-08-10T13:00:00Z", days_ago: 30,
+    type_label: "Interview preparation", adviser_name: "A. Adviser", status: "completed",
+    student_comment: "Struggling with commercial awareness",
+    key_development_area: "evidence", has_outcome: true,
+    actions_agreed: "Read the FT markets page daily.", next_steps: "Book a mock.", follow_up_required: true,
+  },
+  history: [
+    { appointment_id: "h2", starts_at: "2026-08-10T13:00:00Z", status: "completed", type_label: "Interview preparation",
+      adviser_name: "A. Adviser", student_comment: "commercial awareness", has_outcome: true,
+      discussed: "Worked through 3 CA questions.", actions_agreed: "Read the FT.", next_steps: "Book a mock.",
+      follow_up_required: true, follow_up_notes: "after the final", outcome_updated_at: "2026-08-10T14:00:00Z", outcome_by: "A. Adviser" },
+    { appointment_id: "h1", starts_at: "2026-07-01T09:00:00Z", status: "completed", type_label: "Career guidance",
+      adviser_name: "B. Adviser", student_comment: "nervous about IB", has_outcome: false,
+      discussed: null, actions_agreed: null, next_steps: null, follow_up_required: false, follow_up_notes: null },
+  ],
+  longitudinal: [
+    { kind: "interview_score_change_after_intervention", prior_appointment_id: "h2", prior_date: "2026-08-10T13:00:00Z",
+      prior_type: "Interview preparation", before_mean: 49, after_mean: 61, delta: 12, n_before: 1, n_after: 2 },
+  ],
+};
+
+describe("shapeCareersProfile", () => {
+  const s = shapeCareersProfile(PROFILE_RAW);
+  it("is a superset of the briefing shape (dna, patterns, application all still there)", () => {
+    expect(s.dna.dimensions).toHaveLength(6);
+    expect(s.application.company).toBe("Goldman Sachs");
+    expect(s.patterns.performanceTrend.delta).toBe(16);
+  });
+  it("normalises the current appointment's own outcome for the form", () => {
+    expect(s.currentOutcome).toMatchObject({ discussed: "Structured practice plan.", followUpRequired: true, updatedByName: "A. Adviser" });
+  });
+  it("keeps history in the order given (reverse-chronological from the RPC) and flags has_outcome", () => {
+    expect(s.history.map((h) => h.appointmentId)).toEqual(["h2", "h1"]);
+    expect(s.history[0].hasOutcome).toBe(true);
+    expect(s.history[1].hasOutcome).toBe(false);
+    expect(s.history[0].discussed).toMatch(/3 CA questions/);
+  });
+  it("shapes previous_support and longitudinal", () => {
+    expect(s.previousSupport).toMatchObject({ appointmentId: "prev1", daysAgo: 30, keyDevelopmentArea: "Evidence", followUpRequired: true });
+    expect(s.longitudinal[0]).toMatchObject({ delta: 12, nBefore: 1, nAfter: 2 });
+  });
+  it("returns null for junk", () => {
+    expect(shapeCareersProfile(null)).toBeNull();
+  });
+});
+
+describe("previousSupportModel — the 'Previous careers support' block", () => {
+  it("builds factual rows: last appointment / focus / key dev area / action / follow-up", () => {
+    const m = previousSupportModel(shapeCareersProfile(PROFILE_RAW));
+    const labels = m.rows.map((r) => r.label);
+    expect(labels).toEqual(expect.arrayContaining(["Last appointment", "Focus", "Key development area then", "Action agreed", "Follow-up required"]));
+    expect(m.rows.find((r) => r.label === "Last appointment").value).toMatch(/30 days ago/);
+    expect(m.rows.find((r) => r.label === "Follow-up required").value).toBe("Yes");
+    expect(m.studentComment).toMatch(/commercial awareness/);
+  });
+  it("is null when there is no previous appointment (never fabricated)", () => {
+    expect(previousSupportModel(shapeCareersProfile({ ...PROFILE_RAW, previous_support: null }))).toBeNull();
+  });
+});
+
+describe("longitudinalStatement — factual, never causal", () => {
+  it("states the change following the previous recorded intervention, with counts", () => {
+    const l = shapeCareersProfile(PROFILE_RAW).longitudinal[0];
+    const s = longitudinalStatement(l);
+    expect(s).toBe("Interview performance increased by 12 points following the previous recorded intervention "
+      + "(mean 49 across 1 interview before, 61 across 2 after).");
+    expect(s).not.toMatch(/caused|because|led to|thanks to/i);
+  });
+  it("null when there is no delta", () => {
+    expect(longitudinalStatement(null)).toBeNull();
+    expect(longitudinalStatement({ delta: null })).toBeNull();
+  });
+});
+
+describe("outcome form helpers", () => {
+  it("prefills from the current outcome, or blanks when none", () => {
+    expect(outcomeFormValues(shapeCareersProfile(PROFILE_RAW))).toMatchObject({ discussed: "Structured practice plan.", followUpRequired: true });
+    expect(outcomeFormValues(shapeCareersProfile({ ...PROFILE_RAW, current_outcome: null })))
+      .toEqual({ discussed: "", actionsAgreed: "", nextSteps: "", followUpRequired: false, followUpNotes: "" });
+  });
+  it("maps to RPC args, trimming empties to null", () => {
+    expect(outcomeFormToRpcArgs("ap1", { discussed: "  x ", actionsAgreed: "", nextSteps: "  ", followUpRequired: true, followUpNotes: "note" }))
+      .toEqual({ p_appointment_id: "ap1", p_discussed: "x", p_actions_agreed: null, p_next_steps: null, p_follow_up_required: true, p_follow_up_notes: "note" });
   });
 });

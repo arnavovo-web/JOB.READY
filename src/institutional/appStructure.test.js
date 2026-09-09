@@ -168,7 +168,7 @@ describe("no parallel student store in the data layer", () => {
     // every RPC is a SECURITY DEFINER function that self-enforces institution-staff /
     // student-link authorisation — never a raw student table read from the client.
     const rpcs = [...API.matchAll(/\brpc\(["'](\w+)["']/g)].map((m) => m[1]);
-    const RPC_OK = /^(inst_|get_my_institutions|jr_inst_|inst_reconcile_cohort_members|list_institution_appointments|eki_student_briefing|set_appointment_status|list_appointment_types)$/;
+    const RPC_OK = /^(inst_|get_my_institutions|jr_inst_|inst_reconcile_cohort_members|list_institution_appointments|eki_student_briefing|eki_student_careers_profile|save_appointment_outcome|set_appointment_status|list_appointment_types)$/;
     for (const r of rpcs) expect(RPC_OK.test(r), `unexpected rpc: ${r}`).toBe(true);
   });
   it("the appointment RPCs the client calls are the authorised set (no direct student-table reads)", () => {
@@ -183,5 +183,37 @@ describe("no parallel student store in the data layer", () => {
     expect(briefing).toMatch(/jr_inst_role\(v_inst\) is null/);
     expect(briefing).toMatch(/cohort_members cm[\s\S]*?student_id = v_student/);
     expect(briefing).not.toMatch(/answer_text|transcript/i);
+  });
+});
+
+describe("Student Careers Profile (relationship history)", () => {
+  it("the appointment detail loads the full careers profile, not just the briefing", () => {
+    expect(APP).toMatch(/api\.getStudentCareersProfile\(appointmentId\)/);
+    expect(APP).toMatch(/shapeCareersProfile\(state\.raw\)/);
+    expect(APP).toMatch(/eyebrow="Student careers profile"/);
+  });
+  it("renders the previous-support context, longitudinal statements, an editable outcome form and the history list", () => {
+    for (const cmp of ["<PreviousSupportCard", "<LongitudinalCard", "<OutcomeForm", "<HistoryList"]) {
+      expect(APP).toContain(cmp);
+    }
+    expect(APP).toMatch(/No previous careers appointments/);
+    expect(APP).toMatch(/factual — not a causal claim/);
+  });
+  it("the outcome form captures the required fields and saves via the RPC", () => {
+    for (const f of ["What was discussed", "Actions agreed", "Recommended next steps", "Follow-up required"]) {
+      expect(APP).toContain(f);
+    }
+    expect(APP).toMatch(/api\.saveAppointmentOutcome\(outcomeFormToRpcArgs\(appointmentId, v\)\)/);
+    expect(APP).toMatch(/the student cannot see this/);
+  });
+  it("history entries are individually expand/collapse and not all shown by default", () => {
+    expect(APP).toMatch(/openId === h\.appointmentId/);
+    expect(APP).toMatch(/setOpenId\(open \? null : h\.appointmentId\)/);
+  });
+  it("api.js exposes the two new gated RPC wrappers", () => {
+    expect(API).toMatch(/export async function getStudentCareersProfile/);
+    expect(API).toMatch(/export async function saveAppointmentOutcome/);
+    expect(API).toMatch(/rpc\("eki_student_careers_profile"/);
+    expect(API).toMatch(/rpc\("save_appointment_outcome"/);
   });
 });

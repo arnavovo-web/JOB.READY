@@ -256,6 +256,19 @@ export const INSTITUTIONAL_CSS = `
 .ii-pattern strong{ color:var(--ii-navy); }
 .ii-pattern-watch{ border-color:#F5D9AE; background:linear-gradient(180deg, var(--ii-warn-bg), var(--ii-card) 60%); }
 
+/* ---- careers relationship history --------------------- */
+.ii-prevsupport{ border-radius:var(--ii-r-lg); border:1px solid var(--ii-border); background:var(--ii-bg); padding:18px 20px; }
+.ii-outcome-form{ display:flex; flex-direction:column; gap:12px; }
+.ii-outcome-form label{ display:block; }
+.ii-hist{ display:flex; flex-direction:column; gap:8px; }
+.ii-histitem{ border:1px solid var(--ii-border); border-radius:var(--ii-r-md); overflow:hidden; background:var(--ii-card); }
+.ii-hist-toggle{ display:flex; align-items:center; gap:10px; width:100%; text-align:left; padding:11px 13px; background:transparent; border:none; cursor:pointer; font-family:var(--ii-font); }
+.ii-hist-toggle:hover{ background:var(--ii-bg); }
+.ii-hist-date{ font-size:12.5px; font-weight:800; color:var(--ii-navy); white-space:nowrap; }
+.ii-hist-type{ font-size:12.5px; color:var(--ii-text-dim); }
+.ii-hist-body{ padding:4px 14px 14px 37px; display:flex; flex-direction:column; gap:8px; border-top:1px solid var(--ii-border-soft); }
+.ii-hist-row{ display:flex; flex-direction:column; gap:2px; }
+
 @keyframes iiFade{ from{ opacity:0; transform:translateY(6px); } to{ opacity:1; transform:translateY(0); } }
 @keyframes iiSpin{ to{ transform:rotate(360deg); } }
 
