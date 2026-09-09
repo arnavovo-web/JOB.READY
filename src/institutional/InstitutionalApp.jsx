@@ -12,34 +12,31 @@
  * until the Milestone 2 analytics engine is deployed — no placeholder
  * numbers.
  * ================================================================== */
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   LayoutDashboard, BarChart3, Radar, Compass, Target, LineChart,
   Users, LogOut, Building2, ChevronDown, ShieldCheck, RefreshCw, Lock,
 } from "lucide-react";
 import { INSTITUTIONAL_CSS } from "./theme.js";
 import {
-  MIN_COHORT_N, dimensionLabel, categoryLabel, roleFamilyLabel, readinessMeta, stageLabel,
+  MIN_COHORT_N, dimensionLabel, categoryLabel, roleFamilyLabel, stageLabel,
 } from "./taxonomy.js";
 import {
   getSession, signInWithPassword, signOut, onAuthStateChange,
 } from "./supabaseClient.js";
 import * as api from "./api.js";
-import {
-  summariseCohorts, emptyFilters, describeFilters,
-} from "./analytics.js";
+import { summariseCohorts, emptyFilters, describeFilters } from "./analytics.js";
 import {
   deriveOverviewFindings, derivePerformanceFindings, deriveCompetencyFindings,
   deriveCareerFindings, deriveQuestionFindings, deriveImprovementFindings,
   deriveDevelopmentFindings, contractIssue, isLive, rankFindings,
 } from "./insights.js";
 import {
-  Btn, Card, PageHeader, SectionTitle, Stat, Alert, EmptyState, Spinner,
-  Field, AnonNote, Badge,
+  Btn, Card, PageHeader, SectionTitle, Alert, EmptyState, Spinner, Field, AnonNote, Badge,
 } from "./ui.jsx";
 import {
   FindingList, ScoreBars, DistributionBar, DeltaBars, TrendLine,
-  OpportunityList, SuppressedBlock, KeyStatRow, CalloutPair,
+  OpportunityList, KeyStatRow, CalloutPair,
 } from "./charts.jsx";
 
 /* ---- style injection (once) ----------------------------------- */

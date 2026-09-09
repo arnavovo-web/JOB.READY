@@ -208,8 +208,8 @@ export const INSTITUTIONAL_CSS = `
 @media (max-width:820px){
   .ii-shell{ flex-direction:column; }
   .ii-sidebar{ width:100%; height:auto; position:static; flex-direction:row; align-items:center; gap:8px; padding:10px 12px; overflow-x:auto; }
-  .ii-brand{ margin-bottom:0; margin-right:8px; }
-  .ii-brand-sub{ display:none; }
+  .ii-sidebar .ii-brand{ margin-bottom:0; margin-right:8px; }
+  .ii-sidebar .ii-brand-sub{ display:none; }
   .ii-nav{ flex-direction:row; margin-top:0; gap:4px; }
   .ii-navlink{ white-space:nowrap; padding:7px 10px; }
   .ii-nav-spacer{ display:none; }

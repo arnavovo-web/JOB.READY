@@ -116,7 +116,8 @@ describe("dashboard shell — the six insight sections + setup", () => {
   it("shows k-anonymity states honestly — never a fabricated value where a group is suppressed", () => {
     expect(APP).toMatch(/isLive\(/);
     expect(APP).toMatch(/<NoData/);
-    expect(APP).toMatch(/SuppressedBlock|Suppressed/);
+    // the actual suppression rendering lives in charts.jsx (Suppressed / SuppressedBlock)
+    expect(read("charts.jsx")).toMatch(/SuppressedBlock|Suppressed/);
     expect(read("charts.jsx")).toMatch(/fewer than \{min \|\| 5\}/);
   });
 });

@@ -187,7 +187,7 @@ export function deriveImprovementFindings(env) {
   const eps = env.improve_epsilon ?? 3;
   const out = [];
 
-  if (o.suppressed) {
+  if (o.suppressed || o.mean_delta == null) {
     out.push(finding(
       "improvement", "neutral",
       `Not enough repeated practice to measure improvement`,
@@ -242,7 +242,7 @@ export function deriveImprovementFindings(env) {
 export function derivePerformanceFindings(env) {
   if (!isLive(env)) return [];
   const o = env.overall || {};
-  if (o.suppressed) return notEnough("performance", env, "interview performance");
+  if (o.suppressed || o.mean == null) return notEnough("performance", env, "interview performance");
   const target = env.readiness_target ?? 70;
   const out = [];
 

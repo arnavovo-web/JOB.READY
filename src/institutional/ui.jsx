@@ -152,18 +152,6 @@ export function Spinner({ label }) {
   );
 }
 
-/** A metric section that the analytics engine does not yet support. */
-export function PendingMetric({ what }) {
-  return (
-    <Card>
-      <EmptyState title="Arriving in the analytics engine" icon={Info}>
-        {what} is wired to a real query and will populate once the Milestone 2 analytics
-        engine is deployed. No placeholder numbers are shown.
-      </EmptyState>
-    </Card>
-  );
-}
-
 export function Field({ label, children }) {
   return (
     <label style={{ display: "block", marginBottom: 14 }}>
