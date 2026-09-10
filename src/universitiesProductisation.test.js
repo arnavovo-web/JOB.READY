@@ -242,6 +242,14 @@ describe("EkiAuth — a distinct premium institutional environment", () => {
     expect(EKI).toMatch(/onSignOut/);
   });
 
+  it("the EKI² wordmark keeps its glyph but is announced 'E K I squared' (matches the institutional impl)", () => {
+    // visible text stays exactly EKI<sup>2</sup>; every wordmark carries the label
+    const marks = RAW.match(/className="eki-wordmark[^"]*"[^>]*>/g) || [];
+    expect(marks.length).toBeGreaterThanOrEqual(2);
+    for (const m of marks) expect(m).toMatch(/aria-label="E K I squared"/);
+    expect(EKI).toMatch(/EKI<sup>2<\/sup>/);
+  });
+
   it("is accessible: semantic form, labels, password toggle, focus + reduced-motion", () => {
     expect(EKI).toMatch(/<form[\s\S]*?onSubmit=\{\(e\) => \{ e\.preventDefault\(\); onSubmit\(\); \}\}/);
     expect(EKI).toMatch(/<label className="eki-label" htmlFor="eki-email"/);

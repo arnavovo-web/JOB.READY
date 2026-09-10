@@ -98,7 +98,7 @@ export default function EkiAuth({
 
       {/* minimal application header — not the JOB.READY site nav */}
       <header className="eki-header">
-        <div className="eki-wordmark eki-wordmark-sm">
+        <div className="eki-wordmark eki-wordmark-sm" aria-label="E K I squared">
           EKI<sup>2</sup>
         </div>
         <div className="eki-product-tag">A JOB.READY product</div>
@@ -108,7 +108,7 @@ export default function EkiAuth({
         {/* ---- hero / identity ------------------------------------ */}
         <section className="eki-hero">
           <div className="eki-brand">
-            <div className="eki-wordmark eki-wordmark-lg">EKI<sup>2</sup></div>
+            <div className="eki-wordmark eki-wordmark-lg" aria-label="E K I squared">EKI<sup>2</sup></div>
             <div className="eki-expanded">Employability Knowledge Intelligence Interface</div>
           </div>
           <p className="eki-proposition">
