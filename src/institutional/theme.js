@@ -427,7 +427,16 @@ export const INSTITUTIONAL_CSS = `
   .ii-grid-4{ grid-template-columns:repeat(2, minmax(0,1fr)); }
   .ii-grid-3{ grid-template-columns:repeat(2, minmax(0,1fr)); }
 }
-@media (max-width:820px){
+/* Small-desktop band (roughly 900-1180px): the fixed 248px sidebar left the
+   content column cramped and long nav labels ("Career Insights",
+   "Development Areas") crowded their 216px inner width. Narrow the rail and
+   ease the nav typography here so nothing wraps before the 900px collapse. */
+@media (max-width:1180px) and (min-width:901px){
+  .ii-sidebar{ width:216px; padding:20px 12px; }
+  .ii-navlink{ font-size:13px; padding:8px 9px; gap:9px; }
+  .ii-content{ padding:clamp(20px,3vw,32px) clamp(16px,3vw,28px); }
+}
+@media (max-width:900px){
   .ii-shell{ flex-direction:column; }
   .ii-sidebar{ width:100%; height:auto; position:static; flex-direction:row; align-items:center; gap:8px; padding:10px 12px; overflow-x:auto; }
   .ii-sidebar .ii-brand{ margin-bottom:0; margin-right:8px; }

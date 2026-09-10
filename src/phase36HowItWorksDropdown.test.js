@@ -378,11 +378,12 @@ describe("Phase 36 — regression", () => {
     expect(LANDING_SCREEN).toContain("<LandingPage");
   });
 
-  it("the 'For universities' nav tab is removed, but the universities screen/route is preserved", () => {
-    // fix(landing): the public nav no longer exposes a "For universities" tab…
+  it("the public nav exposes a 'Universities' tab (two-sided platform); screen/route preserved", () => {
+    // The productisation push reintroduces a public "Universities" nav entry —
+    // it points at the EKI² marketing page. The old wordier "For universities"
+    // label is still not used.
     expect(NAVBAR).not.toMatch(/label: "For universities"/);
-    // …and nothing underneath it was touched — the screen, its route and the
-    // landing-page strip CTA that reaches it are all still here (re-linkable later).
+    expect(NAVBAR).toContain('{ label: "Universities", to: "universities" }');
     expect(SRC).toContain('{screen === "universities" && (');
     expect(SRC).toMatch(/onUniversities=\{\(\) => setScreen\("universities"\)\}/);
   });

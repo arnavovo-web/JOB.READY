@@ -1,5 +1,12 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, lazy, Suspense } from "react";
 import { createPortal } from "react-dom";
+
+// JOB.READY for Universities — the public EKI² landing page. Lazy-loaded so its
+// ~1 module of marketing markup never enters the student bundle and it runs no
+// Supabase query for a public visitor. (The institutional APP itself is a
+// separate React tree behind the /institutional path gate in main.jsx — this is
+// only its marketing page.)
+const UniversitiesPage = lazy(() => import("./UniversitiesPage.jsx"));
 import {
   ChevronRight, Loader2, TrendingDown, CheckCircle2, ArrowLeft, ArrowRight, Sparkles,
   Target, BarChart3, AlertCircle, Upload, Mic, MicOff, Menu, X,
@@ -17,6 +24,8 @@ import {
   // already a dependency; ChevronDown is an additional name from the same
   // package, no new dep).
   ChevronDown,
+  // JOB.READY for Universities — audience-choice login + EKI² routing.
+  Building2, ShieldCheck,
 } from "lucide-react";
 // Phase 2A/2B: canonical taxonomy / anchor-source / stage-methodology
 // engine. A companion layer to the Phase 4A INTERVIEW_STAGES/
@@ -2993,12 +3002,12 @@ function isPlausibleEmail(value) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || "").trim());
 }
 
-function ContactDialog({ user, onClose, onSubmit }) {
+function ContactDialog({ user, onClose, onSubmit, intro = "", defaultMessage = "" }) {
   const [name, setName] = useState(
     user ? [user.first_name, user.last_name].filter(Boolean).join(" ") : ""
   );
   const [email, setEmail] = useState(user?.email || "");
-  const [message, setMessage] = useState("");
+  const [message, setMessage] = useState(defaultMessage || "");
   const [touched, setTouched] = useState(false);
   const [status, setStatus] = useState("idle"); // idle | sending | sent | error
   const [errorText, setErrorText] = useState("");
@@ -3070,7 +3079,7 @@ function ContactDialog({ user, onClose, onSubmit }) {
         ) : (
           <form onSubmit={handleSubmit} noValidate>
             <div style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.55, marginBottom: 16 }}>
-              Have feedback, a question, or a query? We'd love to hear from you.
+              {intro || "Have feedback, a question, or a query? We'd love to hear from you."}
             </div>
 
             <div style={fieldWrap}>
@@ -4625,7 +4634,13 @@ function HowItWorksPage({ onStart, onBack }) {
   );
 }
 
-function NavBar({ screen, setScreen, user, classroomNeedsWorkCount, onSignOut, onContact }) {
+function NavBar({ screen, setScreen, setAuthView, user, classroomNeedsWorkCount, onSignOut, onContact }) {
+  // The public "Log in" affordance opens the audience chooser (Student vs
+  // University); the acquisition CTA goes straight to student sign-up. Both
+  // still route through setScreen("login") — the auth screen itself decides
+  // what to show from authView.
+  const openLogin = () => { if (setAuthView) setAuthView("choose"); setScreen("login"); };
+  const openSignup = () => { if (setAuthView) setAuthView("signup"); setScreen("login"); };
   const [isMobile, setIsMobile] = useState(typeof window !== "undefined" ? window.innerWidth < 768 : false);
   const [menuOpen, setMenuOpen] = useState(false);
   useEffect(() => {
@@ -4637,7 +4652,7 @@ function NavBar({ screen, setScreen, user, classroomNeedsWorkCount, onSignOut, o
 
   const links = user
     ? [{ label: "Dashboard", to: "dashboard" }, { label: "Applications", to: "applications" }, { label: "Classroom", to: "classroom" }, { label: "Assessment Centre", to: "ac_home" }, { label: "Progress", to: "progress" }, { label: "Careers support", to: "careers" }]
-    : [{ label: "How it works", to: "how" }, { label: "Pricing", to: "pricing" }];
+    : [{ label: "How it works", to: "how" }, { label: "Universities", to: "universities" }, { label: "Pricing", to: "pricing" }];
 
   return (
     <div style={{ position: "sticky", top: 0, zIndex: 40, background: "rgba(248,250,252,0.95)", backdropFilter: "blur(8px)", borderBottom: "1px solid var(--border)" }}>
@@ -4673,8 +4688,8 @@ function NavBar({ screen, setScreen, user, classroomNeedsWorkCount, onSignOut, o
             )}
             {!user && (
               <>
-                <LinkBtn onClick={() => setScreen("login")} style={{ fontSize: 14, fontWeight: 500, color: "var(--text-dim)", cursor: "pointer", padding: "7px 11px" }}>Log in</LinkBtn>
-                <Btn variant="accent" onClick={() => setScreen("login")}>Start practising for free</Btn>
+                <LinkBtn onClick={openLogin} style={{ fontSize: 14, fontWeight: 500, color: "var(--text-dim)", cursor: "pointer", padding: "7px 11px" }}>Log in</LinkBtn>
+                <Btn variant="accent" onClick={openSignup}>Start practising for free</Btn>
               </>
             )}
             {user && (
@@ -4714,8 +4729,11 @@ function NavBar({ screen, setScreen, user, classroomNeedsWorkCount, onSignOut, o
             </LinkBtn>
           )}
           {!user ? (
-            <div style={{ paddingTop: 14 }}>
-              <Btn variant="accent" full onClick={() => setScreen("login")}>Start practising for free</Btn>
+            <div style={{ paddingTop: 8 }}>
+              <LinkBtn onClick={openLogin} style={{ width: "100%", padding: "13px 10px", fontSize: 15, fontWeight: 500, color: "var(--text-dim)", background: "transparent", borderRadius: "var(--r-sm)", display: "flex", alignItems: "center", cursor: "pointer" }}>Log in</LinkBtn>
+              <div style={{ paddingTop: 6 }}>
+                <Btn variant="accent" full onClick={openSignup}>Start practising for free</Btn>
+              </div>
             </div>
           ) : (
             <LinkBtn onClick={onSignOut} style={{ width: "100%", padding: "14px 10px", fontSize: 15, fontWeight: 500, color: "var(--text-dim)", cursor: "pointer" }}>Sign out</LinkBtn>
@@ -5405,10 +5423,25 @@ function LandingPage({ onStart, onHow, onUniversities }) {
 
 function App() {
   const [screen, setScreen] = useState("landing");
+
+  // Screen-scoped document title. The student app otherwise keeps the static
+  // "JOB.READY" tab title; the public Universities page gets its own so a
+  // bookmark / shared tab reads correctly (the SPA has no per-route SSR).
+  useEffect(() => {
+    const base = "JOB.READY";
+    document.title = screen === "universities"
+      ? "JOB.READY for Universities | EKI² Employability Intelligence"
+      : base;
+    return () => { document.title = base; };
+  }, [screen]);
   const [user, setUser] = useState(null); // { id, email, first_name, last_name }
   const [session, setSession] = useState(null);
   const [authChecked, setAuthChecked] = useState(false); // true once initial session restore attempt has completed
-  const [authView, setAuthView] = useState("signin"); // "signin" | "signup" | "forgot" | "reset"
+  const [authView, setAuthView] = useState("signin"); // "choose" | "signin" | "signup" | "university" | "forgot" | "reset"
+  // Set true when a University sign-in succeeds but the account is not authorised
+  // institution staff — the "university" auth view then shows a no-workspace panel
+  // instead of routing to /institutional.
+  const [uniNoWorkspace, setUniNoWorkspace] = useState(false);
   const [firstNameInput, setFirstNameInput] = useState("");
   const [lastNameInput, setLastNameInput] = useState("");
   const [emailInput, setEmailInput] = useState("");
@@ -5525,8 +5558,17 @@ function App() {
   const [freeUnlockBusy, setFreeUnlockBusy] = useState(false);
   const [paywall, setPaywall] = useState(null);
   // Contact Us / feedback dialog — available from the shared NavBar on both the
-  // public landing pages and the authenticated app.
+  // public landing pages and the authenticated app. `contactIntro` /
+  // `contactDraft` let a caller (e.g. the Universities page "Book a demo" CTA)
+  // pre-frame the enquiry; both are cleared when the dialog closes.
   const [contactOpen, setContactOpen] = useState(false);
+  const [contactIntro, setContactIntro] = useState("");
+  const [contactDraft, setContactDraft] = useState("");
+  const openContact = useCallback((opts = {}) => {
+    setContactIntro(opts.intro || "");
+    setContactDraft(opts.draft || "");
+    setContactOpen(true);
+  }, []);
   const [checkoutBusy, setCheckoutBusy] = useState(null);
   const [entitlementFlash, setEntitlementFlash] = useState("");
   // Phase 40: the post-Stripe-Checkout confirmation banner. null, or
@@ -6052,6 +6094,49 @@ function App() {
       const { data, error: signInErr } = await supabase.auth.signInWithPassword({ email: sanitizeText(emailInput.trim().toLowerCase()), password: passwordInput });
       if (signInErr) { setError(friendlyAuthError(signInErr.message, "Couldn't sign in. Please try again.")); return; }
       await onAuthed(data.session);
+    } catch (e) {
+      setError(friendlyAuthError(e?.message, "Couldn't sign in. Please try again."));
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  // University / Careers-Team sign in. Authentication is the SAME Supabase
+  // password flow as a student — there is no separate identity provider yet.
+  // What differs is the destination: after a successful sign in we ask the
+  // database (SECURITY DEFINER `get_my_institutions`, which reads
+  // `institution_staff`) whether this account is authorised staff for any
+  // institution. Only then do we hand off to the EKI² tree at /institutional.
+  //
+  // This is a routing convenience, NOT the security boundary: /institutional
+  // performs the exact same check on load and shows "No workspace linked" to a
+  // non-staff account, and every institutional RPC re-authorises server-side.
+  // A student cannot reach institutional data by choosing this form, forcing
+  // authView, or typing /institutional.
+  async function handleUniversitySignIn() {
+    setError(""); setAuthNotice(""); setUniNoWorkspace(false);
+    if (!emailInput.trim() || !passwordInput) { setError("Enter your email and password."); return; }
+    if (authBusy) return;
+    setAuthBusy(true);
+    try {
+      const supabase = await getSupabase();
+      const { data, error: signInErr } = await supabase.auth.signInWithPassword({ email: sanitizeText(emailInput.trim().toLowerCase()), password: passwordInput });
+      if (signInErr) { setError(friendlyAuthError(signInErr.message, "Couldn't sign in. Please try again.")); return; }
+      let institutions = [];
+      try {
+        const { data: insts } = await supabase.rpc("get_my_institutions");
+        institutions = Array.isArray(insts) ? insts : [];
+      } catch { institutions = []; }
+      if (institutions.length > 0) {
+        // Same Supabase session; the EKI² tree picks it up on load.
+        window.location.assign("/institutional");
+        return;
+      }
+      // Authenticated, but not authorised staff anywhere. Keep the session (they
+      // may also be a student) and explain on this screen — never bounce them to
+      // /institutional, and don't auto-forward into the student app either: the
+      // "Continue to JOB.READY" action in the no-workspace panel does that.
+      setUniNoWorkspace(true);
     } catch (e) {
       setError(friendlyAuthError(e?.message, "Couldn't sign in. Please try again."));
     } finally {
@@ -8839,10 +8924,10 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
   return (
     <div style={{ fontFamily: "var(--font)", background: "var(--bg)", minHeight: "100%", color: "var(--text)" }}>
       <style>{TOKENS}</style>
-      {showNav && <NavBar screen={screen} setScreen={setScreen} user={user} classroomNeedsWorkCount={classroomNeedsWorkCount} onSignOut={() => guarded(handleSignOut)} onContact={() => setContactOpen(true)} />}
+      {showNav && <NavBar screen={screen} setScreen={setScreen} setAuthView={setAuthView} user={user} classroomNeedsWorkCount={classroomNeedsWorkCount} onSignOut={() => guarded(handleSignOut)} onContact={() => openContact()} />}
 
       {contactOpen && (
-        <ContactDialog user={user} onClose={() => setContactOpen(false)} onSubmit={dbSubmitContactMessage} />
+        <ContactDialog user={user} intro={contactIntro} defaultMessage={contactDraft} onClose={() => { setContactOpen(false); setContactIntro(""); setContactDraft(""); }} onSubmit={dbSubmitContactMessage} />
       )}
 
       {/* ---------------- PHASE 40: post-checkout confirmation banner ---------------- */}
@@ -9015,11 +9100,20 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
         </div>
       )}
       {screen === "universities" && (
-        <div className="jr-fade" style={{ maxWidth: 640, margin: "0 auto", padding: "64px 24px", textAlign: "center" }}>
-          <Btn variant="ghost" onClick={() => setScreen("landing")} style={{ marginBottom: 20, padding: "8px 4px" }}><ArrowLeft size={14} /> Back</Btn>
-          <h2 style={{ fontSize: 26, fontWeight: 800, color: "var(--navy)", marginBottom: 14 }}>JOB.READY for universities</h2>
-          <p style={{ color: "var(--text-dim)", fontSize: 15, lineHeight: 1.6 }}>The institutional dashboard is on the roadmap. This MVP is focused on proving the individual student experience first.</p>
-          <LegalFooter openLegal={openLegal} />
+        <div className="jr-fade">
+          <Suspense fallback={<div style={{ minHeight: "60vh", display: "flex", alignItems: "center", justifyContent: "center" }}><Loader2 size={22} className="animate-spin" color="var(--text-faint)" aria-label="Loading" /></div>}>
+            <UniversitiesPage
+              onBack={() => setScreen("landing")}
+              onDemo={() => openContact({
+                intro: "Tell us about your Careers & Employability team and we'll be in touch about a JOB.READY + EKI² demo.",
+                draft: "[University demo request]\n\nInstitution:\nRole / team:\nApprox. student numbers:\nWhat you'd like to see:\n",
+              })}
+              onExplore={() => { setAuthView("university"); setScreen("login"); }}
+            />
+          </Suspense>
+          <div style={{ maxWidth: 1120, margin: "0 auto", padding: "0 24px" }}>
+            <LegalFooter openLegal={openLegal} />
+          </div>
         </div>
       )}
 
@@ -9090,9 +9184,85 @@ Rules: score honestly, 0-100 per competency, using exactly the keys given in "br
       {screen === "login" && (() => {
         // Phase 23: one place to reset the auth sub-state when switching views, so a stale
         // error / success banner / in-flight flag never bleeds across signin↔signup↔forgot.
-        const goAuth = (view) => { recoveryErrorRef.current = false; setError(""); setAuthNotice(""); setResetEmailSent(false); setAuthBusy(false); setAuthView(view); };
+        const goAuth = (view) => { recoveryErrorRef.current = false; setError(""); setAuthNotice(""); setResetEmailSent(false); setAuthBusy(false); setUniNoWorkspace(false); setAuthView(view); };
         return (
         <div className="jr-fade" style={{ maxWidth: 420, margin: "0 auto", padding: "72px 24px" }}>
+          {authView === "choose" && (
+            <>
+              <h2 style={{ fontSize: 24, fontWeight: 800, color: "var(--navy)", marginBottom: 6 }}>Welcome to JOB.READY</h2>
+              <p style={{ fontSize: 14, color: "var(--text-dim)", marginBottom: 20 }}>Choose how you'd like to sign in.</p>
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                <Card style={{ padding: 20 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 4 }}>
+                    <GraduationCap size={17} color="var(--blue)" aria-hidden="true" />
+                    <div style={{ fontSize: 15.5, fontWeight: 800, color: "var(--navy)" }}>Student</div>
+                  </div>
+                  <div style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.55, marginBottom: 14 }}>Prepare for your next interview.</div>
+                  <Btn variant="accent" full onClick={() => goAuth("signin")}>Continue as Student <ChevronRight size={16} /></Btn>
+                </Card>
+                <Card style={{ padding: 20 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 4 }}>
+                    <Building2 size={17} color="var(--violet)" aria-hidden="true" />
+                    <div style={{ fontSize: 15.5, fontWeight: 800, color: "var(--navy)" }}>University / Careers Team</div>
+                  </div>
+                  <div style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.55, marginBottom: 14 }}>Access your institution's employability intelligence in EKI².</div>
+                  <Btn variant="secondary" full onClick={() => goAuth("university")}>Continue as University <ChevronRight size={16} /></Btn>
+                </Card>
+              </div>
+              <div style={{ fontSize: 12.5, color: "var(--text-faint)", marginTop: 16, textAlign: "center", lineHeight: 1.55 }}>
+                Not sure? <LinkBtn onClick={() => setScreen("universities")} style={{ display: "inline", color: "var(--blue)", fontWeight: 600, cursor: "pointer" }}>See JOB.READY for universities</LinkBtn>
+              </div>
+            </>
+          )}
+
+          {authView === "university" && (
+            <>
+              <LinkBtn onClick={() => goAuth("choose")} style={{ fontSize: 12.5, color: "var(--blue)", cursor: "pointer", fontWeight: 600, marginBottom: 14, display: "inline-flex", alignItems: "center", gap: 4 }}><ArrowLeft size={13} /> Back</LinkBtn>
+              <h2 style={{ fontSize: 24, fontWeight: 800, color: "var(--navy)", marginBottom: 6 }}>University / Careers Team sign in</h2>
+              <p style={{ fontSize: 13.5, color: "var(--text-dim)", marginBottom: 20, lineHeight: 1.55 }}>Use the JOB.READY account your institution registered with the Careers team. You'll be taken into EKI² after signing in.</p>
+              {uniNoWorkspace ? (
+                <Card style={{ padding: 24 }}>
+                  <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+                    <ShieldCheck size={20} color="var(--violet)" style={{ flexShrink: 0, marginTop: 1 }} />
+                    <div>
+                      <div style={{ fontSize: 14.5, fontWeight: 700, color: "var(--navy)", marginBottom: 4 }}>No workspace linked yet</div>
+                      <div style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.55 }}>
+                        <strong>{sanitizeText(emailInput.trim().toLowerCase())}</strong> is a valid JOB.READY account, but it isn't authorised for an institution's EKI² workspace. Ask your institution's EKI² administrator to add you as a Careers-team member, or book a demo.
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2" style={{ marginTop: 16 }}>
+                    <Btn variant="accent" onClick={() => openContact({
+                      intro: "Tell us about your Careers & Employability team and we'll be in touch about a JOB.READY + EKI² demo.",
+                      draft: "[University demo request]\n\nInstitution:\nRole / team:\nApprox. student numbers:\nWhat you'd like to see:\n",
+                    })}>Book a university demo</Btn>
+                    <Btn variant="secondary" onClick={() => guarded(async () => { const supabase = await getSupabase(); const { data } = await supabase.auth.getSession(); if (data?.session) await onAuthed(data.session); })}>Continue to JOB.READY</Btn>
+                    <Btn variant="ghost" onClick={() => { setUniNoWorkspace(false); guarded(handleSignOut); }}>Sign out</Btn>
+                  </div>
+                </Card>
+              ) : (
+                <Card style={{ padding: 24 }}>
+                  <label htmlFor="uni-signin-email" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Work email</label>
+                  <input id="uni-signin-email" type="email" autoComplete="email" value={emailInput} onChange={(e) => setEmailInput(e.target.value)} placeholder="you@university.ac.uk" style={{ ...inputStyle, marginTop: 6, marginBottom: 16 }} />
+                  <label htmlFor="uni-signin-password" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-dim)" }}>Password</label>
+                  <PasswordInput id="uni-signin-password" autoComplete="current-password" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} onKeyDown={onEnterKey(handleUniversitySignIn)} style={{ marginTop: 6, marginBottom: 8 }} />
+                  <div className="flex justify-end" style={{ marginBottom: 8 }}>
+                    <LinkBtn onClick={() => goAuth("forgot")} style={{ fontSize: 12.5, color: "var(--blue)", cursor: "pointer", fontWeight: 600 }}>Forgot password?</LinkBtn>
+                  </div>
+                  {error && <div role="alert" style={{ color: "var(--bad)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
+                  <Btn variant="accent" full disabled={authBusy} onClick={() => guarded(handleUniversitySignIn)} style={{ marginTop: 8 }}>{authBusy ? "Signing in…" : <>Sign in to EKI² <ChevronRight size={16} /></>}</Btn>
+                  <div className="jr-help" style={{ marginTop: 14, lineHeight: 1.5 }}>
+                    Single sign-on for universities (SAML / OIDC) is planned. For now, sign in with the JOB.READY account your Careers team registered.
+                  </div>
+                </Card>
+              )}
+              <div style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 16, textAlign: "center" }}>
+                Are you a student?{" "}
+                <LinkBtn onClick={() => goAuth("signin")} style={{ display: "inline", color: "var(--blue)", fontWeight: 600, cursor: "pointer" }}>Student sign in</LinkBtn>
+              </div>
+            </>
+          )}
+
           {authView === "signup" && (
             <>
               <h2 style={{ fontSize: 24, fontWeight: 800, color: "var(--navy)", marginBottom: 20 }}>Create your account</h2>

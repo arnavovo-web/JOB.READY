@@ -50,19 +50,23 @@ describe("Phase 27 — the shell defines a small, intentional set of content wid
 });
 
 describe("Phase 27 — navigation destinations and the public/authenticated split are unchanged", () => {
-  it("authenticated nav points at exactly the five product sections", () => {
+  it("authenticated nav points at the product sections; the public nav carries Universities", () => {
     const li = NAVBAR.indexOf("const links = user");
-    const authed = NAVBAR.slice(li, li + 500);
+    const block = NAVBAR.slice(li, li + 600);
+    // split the ternary into its two array literals
+    const authed = block.slice(block.indexOf("? ["), block.indexOf("]", block.indexOf("? [")));
+    const publicNav = block.slice(block.indexOf(": ["), block.indexOf("]", block.indexOf(": [")));
     for (const dest of ['to: "dashboard"', 'to: "applications"', 'to: "classroom"', 'to: "ac_home"', 'to: "progress"']) {
       expect(authed).toContain(dest);
     }
-    // public nav after fix(landing): "How it works" + "Pricing" (the
-    // "For universities" tab was removed; its screen + route still exist)
-    expect(authed).toContain('to: "how"');
-    expect(authed).toContain('to: "pricing"');
+    // The two-sided platform: "Universities" (the EKI² marketing page) is a
+    // PUBLIC nav destination only — never shown to a signed-in student.
     expect(authed).not.toContain('to: "universities"');
+    expect(publicNav).toContain('to: "how"');
+    expect(publicNav).toContain('to: "pricing"');
+    expect(publicNav).toContain('{ label: "Universities", to: "universities" }');
     // the split is still a single `user ?` ternary
-    expect(authed).toMatch(/const links = user\s*\?/);
+    expect(block).toMatch(/const links = user\s*\?/);
   });
 
   it("still routes via setScreen with no new navigation mechanism", () => {

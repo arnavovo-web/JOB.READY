@@ -132,22 +132,22 @@ describe("Feature 2 — voice input hook + control", () => {
  * FEATURE 3 — Contact Us / feedback
  * ================================================================== */
 describe("Feature 3 — Contact Us dialog + nav entry + sink", () => {
-  const DIALOG = slice("function ContactDialog({ user, onClose, onSubmit }) {", "\n/* ==");
+  const DIALOG = slice('function ContactDialog({ user, onClose, onSubmit, intro = "", defaultMessage = "" }) {', "\n/* ==");
   const SUBMIT = slice("async function dbSubmitContactMessage(", "\n}\n");
 
   it("adds a 'Contact Us' item to the shared NavBar on BOTH desktop and mobile, keyboard-reachable", () => {
-    expect(SRC).toMatch(/function NavBar\(\{ screen, setScreen, user, classroomNeedsWorkCount, onSignOut, onContact \}\)/);
+    expect(SRC).toMatch(/function NavBar\(\{ screen, setScreen, setAuthView, user, classroomNeedsWorkCount, onSignOut, onContact \}\)/);
     // rendered in both <nav> blocks (desktop + mobile) as a real <button> via LinkBtn
     expect((SRC.match(/\{onContact && \(/g) || []).length).toBe(2);
     expect((SRC.match(/<LinkBtn onClick=\{onContact\}/g) || []).length).toBe(2);
     expect((SRC.match(/>\s*Contact Us\s*<\/LinkBtn>/g) || []).length).toBe(2);
     // shown regardless of auth state (App passes onContact whenever the nav is shown)
-    expect(SRC).toMatch(/<NavBar [\s\S]*?onContact=\{\(\) => setContactOpen\(true\)\} \/>/);
+    expect(SRC).toMatch(/<NavBar [\s\S]*?onContact=\{\(\) => openContact\(\)\} \/>/);
     expect(SRC).toMatch(/\{showNav && <NavBar /); // the single shared header, both public + authed
   });
 
   it("opens a portalled modal (not a new route) reusing the ConfirmDialog/FreeUnlockDialog pattern", () => {
-    expect(SRC).toMatch(/\{contactOpen && \(\s*<ContactDialog user=\{user\} onClose=\{\(\) => setContactOpen\(false\)\} onSubmit=\{dbSubmitContactMessage\} \/>/);
+    expect(SRC).toMatch(/\{contactOpen && \(\s*<ContactDialog user=\{user\}[\s\S]*?onClose=\{\(\) => \{ setContactOpen\(false\)[\s\S]*?\}\} onSubmit=\{dbSubmitContactMessage\} \/>/);
     expect(DIALOG).toMatch(/return createPortal\(/);
     expect(DIALOG).toMatch(/role="dialog" aria-modal="true"/);
     expect(DIALOG).toMatch(/e\.key === "Escape"/); // Escape closes

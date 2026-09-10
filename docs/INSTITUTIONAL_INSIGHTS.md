@@ -13,6 +13,30 @@ else**. It creates **no parallel student / application / interview store** — e
 number is computed from the existing tables. The normal student-facing JOB.READY
 branding is unchanged.
 
+### Public positioning + audience login
+
+The marketing site presents JOB.READY as one platform with two products:
+**JOB.READY for Students** and **EKI² by JOB.READY for Universities**.
+
+* **`/universities`** (`screen === "universities"`) — a lazy-loaded B2B landing
+  page, `src/UniversitiesPage.jsx`. Presentation only: it imports **no data
+  layer** and **not the institutional tree**, runs **no Supabase query** for a
+  public visitor, and renders the EKI² dashboard patterns from small static
+  replicas fed **clearly-synthetic data**. Reached from the public nav
+  ("Universities") and the landing "For universities" strip. "Book a university
+  demo" reuses the existing `contact_messages` sink (no new backend, no invented
+  address).
+* **Audience-choice login** — `authView === "choose"` ("Welcome to JOB.READY /
+  Choose how you'd like to sign in") splits Student vs University. Student →
+  the unchanged sign-in flow. University → `authView === "university"`:
+  the **same Supabase password flow** (no SSO yet — SAML/OIDC is only mentioned),
+  then `handleUniversitySignIn` calls **`get_my_institutions`** and only routes
+  to `/institutional` when that RPC (which reads `institution_staff`) returns a
+  membership. A non-staff account stays on the login screen with a "no workspace
+  linked" panel — never bounced. This is a routing convenience, **not** the
+  security boundary: `/institutional` runs the same `getMyInstitutions()` check
+  on load and every institutional RPC re-authorises server-side.
+
 `DATA → INSIGHT → HUMAN INTERVENTION` — JOB.READY collects the practice data, EKI²
 finds the patterns, the careers team acts on them; Appointments connects the two.
 
@@ -386,6 +410,11 @@ delete from public.institutions where slug = 'northgate-demo';
   careers-adviser role yet); appointment types are seeded globally and can be extended
   per institution only via SQL (no admin UI yet); no reminders / calendar sync; a slot
   is a single window (no recurring availability). Architected for all of these.
+* **University login v1**: no dedicated identity provider — university staff sign in
+  with the same email/password Supabase flow as students; `institution_staff` +
+  `get_my_institutions` decide EKI² access. SAML/OIDC university SSO is *architected
+  for* (the "university" auth view is the seam) but **not built**. No SIS import, lead
+  CRM, or demo-request email automation — "Book a demo" writes to `contact_messages`.
 
 ## Test surface
 
@@ -405,7 +434,14 @@ UX ordering, adviser-first profile, readiness-first Performance),
 `foundationMigration`, `analyticsMigration`, `hardeningMigrations`, `careersMigration`,
 `careersHistoryMigration`, `careersPerformanceInterventionMigration`,
 `careersIntelligenceMigration` (k-anon on programme pulse, double gates, RLS, no LLM in SQL),
-`careersAppointmentsCore`, `careersAppointmentsWiring`. Plus the live SQL batteries
+`careersAppointmentsCore`, `careersAppointmentsWiring`. The public-site push adds
+`src/universitiesProductisation.test.js` (root `src/`, node env): `/universities`
+is lazy + query-free + doesn't import the institutional tree; copy sells the EKI²
+ecosystem without employment-outcome overclaims, fabricated certifications or an
+invented email; login opens on the Student/University chooser and the student
+flow is untouched; `handleUniversitySignIn` gates the `/institutional` redirect
+on `get_my_institutions` and `/institutional` still self-authorises; SEO metadata.
+Plus the live SQL batteries
 (RLS/permission matrix, appointment isolation + privacy matrix, readiness-roster + intelligence
 role-simulated matrix, cross-institution / student-isolation checks, programme k-anon
 suppression, calculation spot-checks vs hand computation, `EXPLAIN`, query timing).
