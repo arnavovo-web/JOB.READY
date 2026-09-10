@@ -28,14 +28,27 @@ The marketing site presents JOB.READY as one platform with two products:
   address).
 * **Audience-choice login** — `authView === "choose"` ("Welcome to JOB.READY /
   Choose how you'd like to sign in") splits Student vs University. Student →
-  the unchanged sign-in flow. University → `authView === "university"`:
-  the **same Supabase password flow** (no SSO yet — SAML/OIDC is only mentioned),
-  then `handleUniversitySignIn` calls **`get_my_institutions`** and only routes
-  to `/institutional` when that RPC (which reads `institution_staff`) returns a
-  membership. A non-staff account stays on the login screen with a "no workspace
-  linked" panel — never bounced. This is a routing convenience, **not** the
-  security boundary: `/institutional` runs the same `getMyInstitutions()` check
-  on load and every institutional RPC re-authorises server-side.
+  the unchanged sign-in flow.
+* **`src/EkiAuth.jsx`** — University → `authView === "university"` renders a
+  **dedicated full-bleed EKI² authentication environment** (lazy chunk, ~4 kB
+  gzip), not a re-skinned student card: deep-navy ground, a faint grid/network
+  intelligence motif, restrained blue accent, a glass sign-in panel, the large
+  `EKI²` wordmark + expanded name + "Institutional intelligence for student
+  employability.", and three clearly-labelled **synthetic** signal tiles
+  (Readiness / Trajectory / Intervention). Minimal app header ("A JOB.READY
+  product") — the JOB.READY site nav is suppressed for this view. CSS-only
+  motion, honours `prefers-reduced-motion`; deliberate single-column mobile
+  composition (brand first, then panel). Pure presentation — every handler comes
+  from `App`. The visual language previews the `/institutional` app so login →
+  app feels like one product.
+* **Auth is unchanged.** `EkiAuth`'s form calls `App.handleUniversitySignIn`:
+  the **same Supabase password flow** (no SSO — SAML/OIDC is only mentioned in
+  copy), then `get_my_institutions` (reads `institution_staff`) gates the
+  `/institutional` redirect. A non-staff account stays in `EkiAuth` with a "no
+  workspace linked" panel (arrange a demo / continue to JOB.READY / sign out) —
+  never bounced. Routing convenience, **not** the boundary: `/institutional`
+  runs the same `getMyInstitutions()` check on load and every institutional RPC
+  re-authorises server-side.
 
 `DATA → INSIGHT → HUMAN INTERVENTION` — JOB.READY collects the practice data, EKI²
 finds the patterns, the careers team acts on them; Appointments connects the two.
@@ -440,7 +453,9 @@ is lazy + query-free + doesn't import the institutional tree; copy sells the EKI
 ecosystem without employment-outcome overclaims, fabricated certifications or an
 invented email; login opens on the Student/University chooser and the student
 flow is untouched; `handleUniversitySignIn` gates the `/institutional` redirect
-on `get_my_institutions` and `/institutional` still self-authorises; SEO metadata.
+on `get_my_institutions` and `/institutional` still self-authorises; SEO metadata;
+the dedicated `EkiAuth` environment (branding, synthetic signals, institutional
+language only, a11y + reduced-motion, code-split, no library, mobile order).
 Plus the live SQL batteries
 (RLS/permission matrix, appointment isolation + privacy matrix, readiness-roster + intelligence
 role-simulated matrix, cross-institution / student-isolation checks, programme k-anon

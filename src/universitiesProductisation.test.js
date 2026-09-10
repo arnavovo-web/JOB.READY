@@ -172,20 +172,96 @@ describe("university sign-in routes into EKI² only for authorised staff", () =>
     expect(FN).toMatch(/setUniNoWorkspace\(true\)/);
   });
 
-  it("the no-workspace panel keeps the session on this screen (no silent bounce)", () => {
+  it("routes the 'university' auth view to the dedicated <EkiAuth> env, not the student card", () => {
     const LOGIN = slice(APP, '{screen === "login" && ', "{/* ---------------- LEGAL (public, no auth)");
-    const uni = slice(LOGIN, 'authView === "university"', 'authView === "signup"');
-    expect(uni).toMatch(/uniNoWorkspace \?/);
-    expect(uni).toMatch(/No workspace linked yet/);
-    expect(uni).toMatch(/Book a university demo/);
-    expect(uni).toMatch(/Continue to JOB\.READY/);
-    expect(uni).toMatch(/Sign in to EKI²/);
+    // a ternary at the top of the login return: university -> EkiAuth, else the 420 card
+    expect(LOGIN).toMatch(/authView === "university" \? \([\s\S]*?<EkiAuth\b/);
+    expect(LOGIN).toMatch(/<Suspense fallback=\{<div style=\{\{ position: "fixed", inset: 0[^}]*background: "#0A0E1A"/);
+    // the shared JOB.READY site nav is suppressed for this full-bleed environment
+    expect(APP).toMatch(/showNav && !\(screen === "login" && authView === "university"\) && <NavBar/);
+    // it is code-split, not in the student bundle
+    expect(APP).toMatch(/const EkiAuth = lazy\(\(\) => import\("\.\/EkiAuth\.jsx"\)\)/);
+    // wired to the unchanged auth backend + the no-bounce no-workspace state
+    const eki = slice(LOGIN, "<EkiAuth", "/>");
+    expect(eki).toMatch(/onSubmit=\{\(\) => guarded\(handleUniversitySignIn\)\}/);
+    expect(eki).toMatch(/noWorkspace=\{uniNoWorkspace\}/);
+    expect(eki).toMatch(/onReturn=\{\(\) => goAuth\("choose"\)\}/);
   });
 
   it("does NOT weaken the institutional gate — /institutional still self-authorises", () => {
     const INST = readFileSync(join(HERE, "institutional", "InstitutionalApp.jsx"), "utf8");
     expect(INST).toMatch(/api\.getMyInstitutions\(\)/);
     expect(INST).toMatch(/if \(!insts\.length\) \{ setPhase\("no-access"\)/);
+  });
+});
+
+/* ---------------------------------------------------------------- *
+ * 4b. The dedicated EKI² authentication environment
+ * ---------------------------------------------------------------- */
+describe("EkiAuth — a distinct premium institutional environment", () => {
+  const RAW = readFileSync(join(HERE, "EkiAuth.jsx"), "utf8");
+  const EKI = RAW.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+
+  it("is presentation only — all state + handlers come from App via props", () => {
+    // no auth calls of its own; App.handleUniversitySignIn stays the single gate
+    expect(EKI).not.toMatch(/supabase|getSupabase|signInWithPassword|get_my_institutions|createClient/);
+    expect(EKI).not.toMatch(/window\.location\.assign/);
+  });
+
+  it("prominently brands EKI² with the expanded name and a concise proposition", () => {
+    expect(EKI).toMatch(/EKI<sup>2<\/sup>/);
+    expect(EKI).toMatch(/Employability Knowledge Intelligence Interface/);
+    expect(EKI).toMatch(/Institutional intelligence for student employability/);
+    expect(EKI).toMatch(/eki-wordmark-lg\{ font-size:clamp\(/);   // the acronym is visually large
+  });
+
+  it("has a minimal app header ('A JOB.READY product'), not the site nav", () => {
+    expect(EKI).toMatch(/A JOB\.READY product/);
+    expect(EKI).not.toMatch(/How it works|Pricing|Start practising/);
+  });
+
+  it("shows illustrative signals, explicitly labelled synthetic", () => {
+    expect(EKI).toMatch(/Readiness/);
+    expect(EKI).toMatch(/Trajectory/);
+    expect(EKI).toMatch(/Intervention/);
+    expect(EKI).toMatch(/Illustrative interface signals .*synthetic data/);
+  });
+
+  it("uses institutional language, never student CTAs", () => {
+    expect(EKI).toMatch(/Sign in to EKI/);
+    expect(EKI).toMatch(/employability intelligence workspace/);
+    expect(EKI).toMatch(/Return to JOB\.READY/);
+    expect(EKI).not.toMatch(/Start practising|Prepare for your (next )?interview|Practice now|your next interview/i);
+  });
+
+  it("keeps the no-workspace outcome on this screen (demo / continue / sign out)", () => {
+    expect(EKI).toMatch(/noWorkspace \?/);
+    expect(EKI).toMatch(/No workspace linked yet/);
+    expect(EKI).toMatch(/onBookDemo/);
+    expect(EKI).toMatch(/onContinueStudent/);
+    expect(EKI).toMatch(/onSignOut/);
+  });
+
+  it("is accessible: semantic form, labels, password toggle, focus + reduced-motion", () => {
+    expect(EKI).toMatch(/<form[\s\S]*?onSubmit=\{\(e\) => \{ e\.preventDefault\(\); onSubmit\(\); \}\}/);
+    expect(EKI).toMatch(/<label className="eki-label" htmlFor="eki-email"/);
+    expect(EKI).toMatch(/<label className="eki-label" htmlFor="eki-password"/);
+    expect(EKI).toMatch(/aria-pressed=\{show\}/);
+    expect(EKI).toMatch(/aria-label=\{show \? "Hide password" : "Show password"\}/);
+    expect(EKI).toMatch(/:focus-visible\{ outline:/);
+    expect(EKI).toMatch(/@media \(prefers-reduced-motion:reduce\)\{[\s\S]*?animation:none/);
+  });
+
+  it("is lightweight: no animation library, no image assets, CSS-only motion", () => {
+    expect(RAW).not.toMatch(/from "(framer-motion|gsap|lottie|animejs|@react-spring)/);
+    expect(EKI).not.toMatch(/\.(png|jpe?g|gif|webp)("|')/);
+    expect(EKI).toMatch(/@keyframes eki/);
+  });
+
+  it("has a deliberate mobile composition (no huge desktop stack, no overflow)", () => {
+    expect(EKI).toMatch(/@media \(max-width:900px\)\{[\s\S]*?grid-template-columns:1fr/);
+    expect(EKI).toMatch(/\.eki-hero\{ order:1; \}/);       // brand first on mobile
+    expect(EKI).toMatch(/\.eki-panelwrap\{[\s\S]*?order:2/);
   });
 });
 

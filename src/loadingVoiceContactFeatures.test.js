@@ -143,7 +143,7 @@ describe("Feature 3 — Contact Us dialog + nav entry + sink", () => {
     expect((SRC.match(/>\s*Contact Us\s*<\/LinkBtn>/g) || []).length).toBe(2);
     // shown regardless of auth state (App passes onContact whenever the nav is shown)
     expect(SRC).toMatch(/<NavBar [\s\S]*?onContact=\{\(\) => openContact\(\)\} \/>/);
-    expect(SRC).toMatch(/\{showNav && <NavBar /); // the single shared header, both public + authed
+    expect(SRC).toMatch(/\{showNav && [\s\S]{0,90}<NavBar /); // the single shared header, both public + authed (suppressed only for the full-bleed EKI² auth view)
   });
 
   it("opens a portalled modal (not a new route) reusing the ConfirmDialog/FreeUnlockDialog pattern", () => {
